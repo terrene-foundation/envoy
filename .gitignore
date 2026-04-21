@@ -1,0 +1,67 @@
+# Envoy — gitignore
+
+# Environments
+.env
+.env.local
+.env.*.local
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node (if SKILL.md ingest needs it)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Platform
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Secrets (never commit)
+*.pem
+*.key
+*-secret.*
+trust-vault/
+shamir-shards/
+
+# Build artifacts
+*.log
+coverage/
+.coverage
+.coverage.*
+
+# Envoy-specific
+envoy-data/
+envoy-ledger/
+*.ledger.jsonl
+
+# Internal working state — never public
+workspaces/
+.session-notes

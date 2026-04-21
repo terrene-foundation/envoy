@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Working package name; final legal mark pending Phase 00 trademark sweep (see DECISIONS §ADR-0002).
+name = "envoy-agent"
+version = "0.0.0"
+description = "Autonomous AI where you set the boundaries. Terrene Foundation."
+authors = [
+    {name = "Terrene Foundation", email = "info@terrene.foundation"}
+]
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    # Kailash (Rust-accelerated Python binding — free, no registration, no gating).
+    # Published on PyPI, source hosted on the Terrene Foundation GitHub org.
+    # The binding links against a Rust runtime whose source is trade secret,
+    # but install + use is free for every user.
+    # Alternative: replace with `kailash-py` for the fully open-source
+    # (Apache 2.0) pure-Python implementation of the same specs.
+    "kailash>=3.20.0",
+    # CLI Framework
+    "click>=8.0",
+    "rich>=13.0.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "structlog>=23.1.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    # PyTorch - On Windows, install separately: pip install torch --index-url https://download.pytorch.org/whl/cu118
+    "torch>=2.7.1",
+]
+dev = [
+    # Testing (pytest>=7.2.0 removes vulnerable py dependency)
+    "pytest>=7.2.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21.0",
+    # Linting & Formatting
+    "black>=23.0",
+    "isort>=5.12.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    # Security & Pre-commit
+    "detect-secrets>=1.5.0",
+    "pre-commit>=4.2.0",
+]
+
+[project.urls]
+# Final GitHub org pending Phase 00 namespace reservation.
+"Homepage" = "https://terrene.foundation"
+# "Source" and "Bug Tracker" to be filled in once the public GitHub repo is created.
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", ".*", "__pycache__*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312", "py313"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
