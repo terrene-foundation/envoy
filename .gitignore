@@ -62,6 +62,9 @@ envoy-data/
 envoy-ledger/
 *.ledger.jsonl
 
-# Internal working state — never public
-workspaces/
+# Session state — never public
 .session-notes
+
+# Internal research — lives in ~/repos/dev/envoy-internal-research/ (sibling
+# directory, outside this repo). Anything added inside workspaces/ here is
+# considered public-safe and gets tracked; see workspaces/README.md.
