@@ -19,7 +19,7 @@ Never write code from scratch before checking whether the Kailash frameworks alr
 
 ### 2. .env Is the Single Source of Truth
 
-All API keys and model names MUST come from `.env`. Never hardcode model strings like `"gpt-4"` or `"claude-3-opus"`. Root `conftest.py` auto-loads `.env` for pytest; `spec/spec_helper.rb` auto-loads `.env` for RSpec.
+All API keys and model names MUST come from `.env`. Never hardcode model strings like `"gpt-4"` or `"claude-3-opus"`. Root `conftest.py` auto-loads `.env` for pytest. (RSpec scaffolding is not present — envoy is a docs/specs project; re-add `spec/spec_helper.rb` when Ruby code lands.)
 
 See `rules/env-models.md` for full details.
 
@@ -175,12 +175,12 @@ end
 
 ## Kailash Platform
 
-| Framework      | Purpose                                | Python Install                   | Ruby Install          |
-| -------------- | -------------------------------------- | -------------------------------- | --------------------- |
+| Framework      | Purpose                                | Python Install        | Ruby Install          |
+| -------------- | -------------------------------------- | --------------------- | --------------------- |
 | **Core SDK**   | Workflow orchestration, 140+ nodes     | `pip install kailash` | `gem install kailash` |
-| **DataFlow**   | Zero-config database operations        | included                         | included              |
-| **Nexus**      | Multi-channel deployment (API+CLI+MCP) | included                         | included              |
-| **Kaizen**     | AI agent framework                     | included                         | included              |
-| **Enterprise** | RBAC, ABAC, audit, multi-tenancy       | included                         | included              |
+| **DataFlow**   | Zero-config database operations        | included              | included              |
+| **Nexus**      | Multi-channel deployment (API+CLI+MCP) | included              | included              |
+| **Kaizen**     | AI agent framework                     | included              | included              |
+| **Enterprise** | RBAC, ABAC, audit, multi-tenancy       | included              | included              |
 
 All frameworks ship in a single package per language. Python: `pip install kailash` (import via `import kailash`). Ruby: `gem install kailash` (require via `require "kailash"`). Enterprise infrastructure auto-scales via env vars — see `skills/01-core-sdk/enterprise-infrastructure.md`.
