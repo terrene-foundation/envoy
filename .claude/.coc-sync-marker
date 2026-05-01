@@ -1,0 +1,31 @@
+last_synced: "2026-05-01T10:36:00Z"
+loom_version: "2.11.2"
+template_version: "2.11.2"
+template_full_caught_up: false
+sync_direction: "PARTIAL surgical adoption from kailash-coc-claude-rs 2.11.2. NOT a full sync — template still ahead by 50 modified rules + 53 modified skills (mostly slot-marker frontmatter for multi-CLI emission). Three artifacts adopted on user request and project relevance: /sweep + /autonomize commands, upstream-issue-hygiene rule. Rest deferred."
+scope: "Surgical adoption — envoy is a docs-only Phase-00 alignment project with no Python/Rust source, so most upstream skill churn is irrelevant. Multi-CLI emission infrastructure (cli-audit, cli-orchestrator, codex-architect, gemini-architect, cross-cli-parity, variant-authoring, build-repo-release-discipline) is BUILD/loom-only and intentionally skipped. claude-code-architect → cc-architect rename deferred (cosmetic, 6 reference files)."
+files_adopted:
+  - .claude/commands/sweep.md            # NEW (5908 B) — repo-wide outstanding-work audit; pre-/wrapup gate
+  - .claude/commands/autonomize.md       # NEW (5752 B) — autonomous-execution posture directive
+  - .claude/rules/upstream-issue-hygiene.md  # NEW (9740 B) — human-gated SDK issue filing + downstream-context redaction
+files_intentionally_skipped:
+  - .claude/commands/cli-audit.md                     # multi-CLI emission, requires bin/emit.mjs (BUILD-only)
+  - .claude/agents/cli-orchestrator.md                # multi-CLI orchestration (BUILD-only)
+  - .claude/agents/codex-architect.md                 # multi-CLI emission target (BUILD-only)
+  - .claude/agents/gemini-architect.md                # multi-CLI emission target (BUILD-only)
+  - .claude/rules/build-repo-release-discipline.md    # BUILD-only release discipline
+  - .claude/rules/cross-cli-parity.md                 # multi-CLI parity contract (BUILD/loom-only)
+  - .claude/rules/variant-authoring.md                # variant authoring lives at loom (loom-only)
+  - 50 modified rules + 53 modified skills            # slot-marker frontmatter and minor compaction; substance unchanged
+  - claude-code-architect → cc-architect rename       # cosmetic; touches 6 reference files; defer
+not_applied: []
+unchanged_skipped:
+  - .claude/VERSION                                   # NOT updated — partial sync, would falsely imply caught up
+  - CLAUDE.md (NEVER overwritten — preserved)
+  - .claude/settings.local.json (NEVER overwritten — preserved)
+sdk_pins:
+  kailash-enterprise: ">=3.20.0"             # unchanged from prior cycle
+hooks_verified:
+  count: NOT_RUN
+  note: "Surgical adoption — no hooks added or removed."
+build_repo_changes: []
