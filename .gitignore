@@ -65,6 +65,19 @@ envoy-ledger/
 # Session state — never public
 .session-notes
 
-# Internal research — lives in ~/repos/dev/envoy-internal-research/ (sibling
-# directory, outside this repo). Anything added inside workspaces/ here is
-# considered public-safe and gets tracked; see workspaces/README.md.
+# COC runtime + learning state — per-repo, contains absolute filesystem
+# paths from the user's local machine and free-text agent observations.
+# Never tracked publicly. Preserved across /sync per template convention.
+**/.claude/learning/
+**/.claude/scheduled_tasks.lock
+
+# Internal research — pulled back into the repo for working speed + clarity
+# (per user decision 2026-04-21). Everything under workspaces/internal/ is
+# internal-voice: sharp claims about third parties, strategic positioning,
+# unsanitized analysis. It is NEVER committed. The public-safe deep-analysis
+# output lives at workspaces/phase-00-alignment/01-analysis/ and is tracked.
+#
+# If you move a file out of workspaces/internal/ into any tracked path, you
+# MUST rewrite it to Foundation voice first. See workspaces/README.md and
+# the communications mandate in rules/terrene-naming.md.
+workspaces/internal/
