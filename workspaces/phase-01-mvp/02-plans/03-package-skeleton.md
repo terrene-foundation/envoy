@@ -401,12 +401,13 @@ envoy/
 │   ├── types.py                       # InboundMessage, SendReceipt, ChannelKind enum
 │   └── errors.py                      # 11 typed errors per specs/channel-adapters.md § Error taxonomy
 │
-└── heartbeat/                         # shard 17 — 4 stubs only (DE-SCOPED to Phase 02 entry)
+└── heartbeat/                         # shard 17 — 5 stubs (R2-H-02 fix; DE-SCOPED to Phase 02 entry)
     ├── __init__.py
-    ├── star_prio.py                   # PhaseDeferredError stub
-    ├── ohttp.py                       # PhaseDeferredError stub
-    ├── signed_consent.py              # PhaseDeferredError stub
-    └── registry.py                    # PhaseDeferredError stub
+    ├── client.py                      # HeartbeatClient: no-op in Phase 01; called from 21 emit-site primitives
+    ├── star_prio.py                   # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+    ├── ohttp.py                       # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+    ├── signed_consent.py              # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+    └── registry.py                    # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
 ```
 
 ### 2.1 `envoy/cli.py` — 11 subcommand routing

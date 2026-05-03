@@ -133,7 +133,7 @@ Per `specs/trust-lineage.md` § Algorithms — Nonce per-principal partitioning 
 Per `~/repos/loom/kailash-py/src/kailash/trust/signing/algorithm_id.py` lines 80–91 + `specs/trust-lineage.md` § Algorithm migration: every Genesis / Delegation / Revocation / KeyRotation record written through the adapter MUST embed `algorithm_identifier` matching the canonical wire shape `{"algorithm": "ed25519+sha256"}`. The Envoy-new-code structural defense:
 
 - Adapter exposes a single `_with_algorithm_id()` helper that every record-construction code path goes through. No record dataclass is constructed without algorithm_identifier set.
-- The mint ISS-31 forward path (per the algorithm_id.py module docstring) only changes the _value space_ of `algorithm`; the dict shape stays. The Envoy adapter is therefore future-proof: a future migration to (say) `"mldsa44+sha256"` (post-quantum) requires zero re-threading of code, only a value-space update — the structural form is already there.
+- The mint ISS-31 forward path (per the algorithm*id.py module docstring) only changes the \_value space* of `algorithm`; the dict shape stays. The Envoy adapter is therefore future-proof: a future migration to (say) `"mldsa44+sha256"` (post-quantum) requires zero re-threading of code, only a value-space update — the structural form is already there.
 - BLOCKED rationalization (per Phase 00 survey item 19 + `rules/zero-tolerance.md` Rule 4): re-introducing hardcoded `"Ed25519"` strings anywhere in Envoy code is BLOCKED, even though kailash-py's own legacy `chain.py` GenesisRecord dataclass (line 523, Phase 00 survey citation) still has `signature_algorithm: str = "Ed25519"` at the dataclass level. The adapter wraps that legacy field but writes the canonical algorithm_identifier dict alongside.
 
 ---
@@ -237,13 +237,54 @@ class TrustStoreAdapter:
     async def import_master_key_from_shamir(self, reconstructed: bytes) -> None: ...
 
     # --- Internal: structural lock-ins ---
+    def _to_spec_wire_form(self, algorithm_dict: dict) -> dict:
+        """Translate upstream's 1-key form into the spec's 3-key wire form.
+
+        Round 2 R2-H-01 fix: spec-mandated 3-key wire form
+        (specs/trust-lineage.md L24).
+
+        Upstream `kailash.trust.signing.algorithm_id.AlgorithmIdentifier.to_dict()`
+        emits the 1-key scaffold form `{"algorithm": "ed25519+sha256"}` (kailash-py
+        algorithm_id.py line 105, post-#604 scaffold awaiting mint ISS-31).
+        The Phase 00 frozen specs `specs/trust-lineage.md` line 24 +
+        `specs/independent-verifier.md` line 35 mandate the 3-key form
+        `{"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}` on every
+        on-disk DelegationRecord / GenesisRecord / RevocationRecord that the
+        Independent Verifier (shard 7) consumes.
+
+        This helper is the SINGLE point of producer-side translation per
+        `rules/specs-authority.md` MUST Rule 6 (deviations from upstream are
+        explicitly acknowledged at one bottleneck, never spread across call
+        sites). Every record-construction path routes through
+        `_with_algorithm_id()` which routes through this helper before write.
+
+        Verified by `tests/integration/test_producer_verifier_wire_shape_round_trip.py`
+        (R2-H-01 regression) — see `02-plans/02-test-strategy.md` § EC-9 battery.
+        """
+        # Parse upstream's compound "ed25519+sha256" form
+        compound = algorithm_dict.get("algorithm", "")
+        sig, _, hash_alg = compound.partition("+")
+        return {
+            "sig": sig or "ed25519",
+            "hash": hash_alg or "sha256",
+            "shamir": "slip39",
+        }
+
     def _with_algorithm_id(self, record_dict: dict) -> dict:
         """Embed canonical algorithm_identifier on every signed-record dict.
 
         Single point of enforcement — no record-construction path bypasses
         this helper. Forward-path-safe per kailash-py#604 / mint ISS-31.
+
+        Round 2 R2-H-01 fix: spec-mandated 3-key wire form
+        (specs/trust-lineage.md L24). Upstream's 1-key dict from
+        `AlgorithmIdentifier().to_dict()` is translated by
+        `_to_spec_wire_form()` before persistence; the on-wire bytes match
+        the 3-key spec form that the Independent Verifier (shard 7,
+        `specs/independent-verifier.md` L35) consumes.
         """
-        record_dict["algorithm_identifier"] = AlgorithmIdentifier().to_dict()
+        upstream_form = AlgorithmIdentifier().to_dict()
+        record_dict["algorithm_identifier"] = self._to_spec_wire_form(upstream_form)
         return record_dict
 
     def _key(self, principal_id: str, suffix: str) -> str:
@@ -329,11 +370,13 @@ Per `01-shard-plan.md` § 4 ("Failure modes + mitigations"), HIGH-severity spec 
 
 **Disposition:** logged as a Phase 03 readiness concern; not a Phase 01 blocker.
 
-### 7.2 LOW — algorithm_identifier wire shape during mint ISS-31 transition
+### 7.2 RESOLVED (Round 2 R2-H-01) — algorithm_identifier wire shape
 
-`specs/trust-lineage.md` § Schema GenesisRecord uses `"algorithm_identifier": {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}` (three-key form). `kailash-py`'s `algorithm_id.py` (#604 scaffold) uses `{"algorithm": "ed25519+sha256"}` (single-key form). The mint ISS-31 spec gate will reconcile.
+`specs/trust-lineage.md` line 24 + `specs/independent-verifier.md` line 35 mandate the 3-key form `{"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}` on every signed-record on-disk wire shape. `kailash-py`'s `algorithm_id.py` (post-#604 scaffold awaiting mint ISS-31) emits the 1-key form `{"algorithm": "ed25519+sha256"}` from `AlgorithmIdentifier().to_dict()` (line 105).
 
-**Disposition:** the Envoy adapter MUST track the resolved wire shape after mint ISS-31 lands and update `_with_algorithm_id()` accordingly; this is a tracked technical-debt item, not a Phase 01 blocker — both forms are valid until mint ISS-31, and the kailash-py scaffold is the structural defense.
+**Resolution (Round 2 R2-H-01 fix):** the Envoy adapter is the SINGLE point of producer-side translation between upstream's 1-key form and the spec's 3-key form. `_to_spec_wire_form()` (§ 4 sketch, sibling helper to `_with_algorithm_id()`) performs the translation; every record-construction path routes through `_with_algorithm_id()` which routes through `_to_spec_wire_form()` before persistence. The on-wire bytes match the 3-key spec form that the Independent Verifier (shard 7) consumes via the bundle parser per `specs/independent-verifier.md` line 35.
+
+**Per `rules/specs-authority.md` MUST Rule 6 — explicit deviation from upstream:** the Envoy adapter intentionally diverges from `kailash.trust.signing.algorithm_id.AlgorithmIdentifier.to_dict()`'s 1-key wire format because the Phase 00 frozen specs `specs/trust-lineage.md` L24 + `specs/independent-verifier.md` L35 mandate the 3-key form on the signed-record on-disk surface. Spec authority overrides upstream scaffold form. The deviation is contained to ONE bottleneck (`_to_spec_wire_form()`), so when mint ISS-31 reconciles upstream to the 3-key form, the helper becomes a pass-through and removal is mechanical. This is the structural defense per `rules/specs-authority.md` Rule 4 (read-then-act): Envoy's wire shape matches the spec, full stop. Verified by `tests/integration/test_producer_verifier_wire_shape_round_trip.py` per `02-plans/02-test-strategy.md` § EC-9 battery.
 
 ### 7.3 None HIGH-severity surfaced
 

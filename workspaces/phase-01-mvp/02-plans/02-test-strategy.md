@@ -286,6 +286,7 @@ Per `02-mvp-objectives.md` EC-8 line 116: (a) zero state-drift findings, (b) no 
 
 - `tests/integration/test_verifier_consumes_envoy_export.py` — verifier reads `envoy ledger export` JSON output; verifies chain.
 - `tests/integration/test_verifier_trust_anchor_self_anchoring.py` — first-verification self-anchoring; subsequent verifications honor the anchor.
+- `tests/integration/test_producer_verifier_wire_shape_round_trip.py` (R2-H-01 regression) — produces a `DelegationRecord` via `TrustStoreAdapter`, parses it via Independent Verifier's bundle parser, asserts the `algorithm_identifier` dict has 3 keys (`sig`, `hash`, `shamir`) matching `specs/trust-lineage.md` line 24. Verifies the producer-side single-point translation helper `TrustStoreAdapter._to_spec_wire_form()` (shard 5 § 4) produces the spec-mandated 3-key wire form that the Independent Verifier consumes per `specs/independent-verifier.md` line 35.
 
 #### Tier 3 end-to-end battery — the EC-9 source-isolation gate
 
@@ -345,6 +346,14 @@ For every spec acceptance assertion (signatures, fields, decorators, MOVE shims,
 ### 3.6 Pytest-xdist safety
 
 Per `rules/testing.md` § Env-Var Test Isolation: any Tier 2 test that mutates `ENVOY_*` env vars MUST hold the module-scope lock; verified under `pytest-xdist -n auto`.
+
+### 3.6a Heartbeat stub no-op wiring + Phase 02 module non-call regression (R2-H-02)
+
+Per `rules/zero-tolerance.md` Rule 2 + `rules/orphan-detection.md` Rule 1 + Rule 4a, the heartbeat 5-stub partition (shard 17 § 7.3 fix) requires two distinct test surfaces:
+
+- `tests/integration/test_heartbeat_stub_no_op_wiring.py` (R2-H-02 regression) — invokes `HeartbeatClient.maybe_record_flag('completed_boundary_conversation')` from a real `BoundaryConversationRuntime` completion path, asserts NO exception, NO Ledger entry, NO network call. Verifies the 21 emit-site primitives (across shards 8/9/10/11/12/16/18) call into the genuine no-op `HeartbeatClient` — never into any of the four `PhaseDeferredError` network/crypto modules.
+
+- `tests/regression/test_no_envoy_heartbeat_phase02_module_call_sites.py` (R2-H-02 regression) — greps `envoy/` (excluding tests) for imports of `envoy.heartbeat.{star_prio,ohttp,signed_consent,registry}`; asserts zero matches. The grep is the structural defense per `rules/orphan-detection.md` Rule 4a — when Phase 02 entry replaces the `PhaseDeferredError` body with a real implementation, this regression flips green automatically and any premature Phase 01 caller surfaces as a HIGH finding.
 
 ### 3.7 Per-package collect-only gate per `rules/orphan-detection.md` MUST Rule 5a
 

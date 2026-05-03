@@ -246,6 +246,14 @@ class EntryEnvelope:
     signed_by: str
     signature_hex: str
     algorithm_identifier: dict
+    # Wire shape per shard 5 fix R2-H-01 — 3-key spec form
+    # `{sig, hash, shamir}` (`specs/trust-lineage.md` L24,
+    # `specs/independent-verifier.md` L35); upstream's
+    # `AlgorithmIdentifier().to_dict()` 1-key form is translated by
+    # `TrustStoreAdapter._to_spec_wire_form()` at the single emission
+    # point in shard 5. Ledger entries inherit the resolved 3-key form
+    # transitively via the Trust Store adapter; no Ledger-side translation
+    # is needed.
     schema_version: str        # "ledger-entry/1.0"
 
 class HashChainBuilder:

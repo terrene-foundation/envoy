@@ -85,7 +85,8 @@ Source: `01-analysis/05-trust-store-implementation.md` § 4.
 3. **AES-256-GCM Trust Vault container** — wrap SQLite file in vault per `specs/trust-vault.md` § File format. Argon2id + Secure-Enclave/TPM-bound secret.
 4. **Cascade revocation glue** — wraps `kailash.trust.revocation.cascade.cascade_revoke`; `verify_cascade_complete` for EC-8.
 5. **Algorithm-identifier helper + Shamir export hooks** — `_with_algorithm_id` single-point; `export_master_key_for_shamir` / `import_master_key_from_shamir`.
-6. **Tier 2 wiring** — 8 tests per shard 5 § 6.1.
+   - **Step 5a (R2-H-01):** Implement `TrustStoreAdapter._to_spec_wire_form(algorithm_dict)` translation helper. Land BEFORE any record persistence path lights up. Verifies producer-verifier wire-shape round-trip per `specs/independent-verifier.md` L35. The helper sits as a sibling to `_with_algorithm_id()`; every record-construction path routes through `_with_algorithm_id()` which routes through `_to_spec_wire_form()` before write, translating upstream's 1-key `{"algorithm": "ed25519+sha256"}` form into the spec-mandated 3-key `{"sig", "hash", "shamir"}` form per `specs/trust-lineage.md` L24.
+6. **Tier 2 wiring** — 8 tests per shard 5 § 6.1 + the R2-H-01 producer-verifier wire-shape round-trip regression test.
 
 Estimate: **2 sessions** (vault crypto work has lower feedback loop; need real Argon2id timing).
 
@@ -141,7 +142,7 @@ Estimate: **0.5 session** (tiny shim; gates Phase 02 mechanicality).
 
 Source: `01-analysis/17-foundation-health-heartbeat-decision-implementation.md` (referenced in shard plan summary; DECISION shard = de-scope).
 
-1. **4 module stubs** — `envoy/heartbeat/{star_prio,ohttp,signed_consent,registry}.py` each raising `PhaseDeferredError("Heartbeat deferred to Phase 02 entry per de-scope #2")`.
+1. **5 stubs** (R2-H-02 fix): (1) `envoy/heartbeat/client.py` — `HeartbeatClient.maybe_record_flag()` **no-op** invoked by 21 emit-site primitives; (2–5) `envoy/heartbeat/{star_prio,ohttp,signed_consent,registry}.py` raising `PhaseDeferredError` (Phase 02 only). The first stub is the genuine Phase 01 hot-path consumer (the 21 emit-site primitives at Boundary Conversation completion, Daily Digest open, Grant Moment approve/deny, etc., all invoke `client.maybe_record_flag(...)` as a literal `pass` no-op); the latter four cover deferred network/crypto primitives (STAR/Prio, OHTTP, signed-consent, registry handshake) that Phase 01 production code MUST NEVER call. Per `rules/zero-tolerance.md` Rule 2 + `rules/orphan-detection.md` Rule 4a — a regression grep MUST verify zero non-test imports of the four `PhaseDeferredError` modules.
 
 Estimate: **0.25 session** (pure boilerplate; Phase 02 trigger).
 

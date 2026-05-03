@@ -210,14 +210,24 @@ If those four Phase 01 stubs ship, Phase 02 entry is "wire HeartbeatClient.send(
 
 ### 7.3 The four mandatory Phase 01 stubs
 
-These MUST ship in Phase 01 even under de-scope, because they preserve the Phase 02 re-entry contract:
+# Round 2 R2-H-02 fix: separates the no-op-in-production HeartbeatClient (called from 21 emit sites) from the deferred network/crypto primitives (never called from Phase 01 code paths).
+
+These MUST ship in Phase 01 even under de-scope, because they preserve the Phase 02 re-entry contract. The stubs partition into two structurally distinct categories — one that production code DOES call (as a genuine no-op), and three that production code MUST NEVER call (because they cover network/crypto primitives Phase 02 will activate). Conflating these categories is the failure mode Round 2 R2-H-02 caught: if the 21 emit-site primitives invoke a stub that raises `PhaseDeferredError`, every emit primitive crashes in Phase 01 production runs (Boundary Conversation completion → crash; Daily Digest open → crash; Grant Moment approve → crash). The fix is to separate the two categories at the module boundary.
 
 1. **`FoundationHealthHeartbeatConsent` ledger entry type** — reserved in `specs/ledger.md` already (per cross-references); Phase 01 ledger writer must accept and round-trip the entry type even though it never fires in Phase 01.
 2. **`DuressFlagLeakageRefusedError` structural defense** — per spec § "Error taxonomy" + § "Flags NEVER reported", T-041 defense. Ships as a one-line guard at every flag-emit hook (which themselves are no-ops in Phase 01); the guard catches programming errors / hostile patches even when the emit pipeline is stubbed. Cost: ~5 LOC.
 3. **21-flag payload schema validation (T-054 defense)** — `_validate_payload_schema(payload: HeartbeatPayload)` raises `PayloadSchemaDriftError` on any field outside the 21-flag set. Ships as the type-frozen `@dataclass(frozen=True) class HeartbeatPayload` with explicit field whitelist. Cost: ~30 LOC.
 4. **Integration-point no-op hooks** — at each of the 21 emit sites (Boundary Conversation completion, Daily Digest open, Grant Moment approve/deny, etc.), a single line `self._heartbeat.maybe_record_flag("...")` that calls the stub `HeartbeatClient.maybe_record_flag()` which is a no-op in Phase 01. Cost: ~21 lines + a stub class with one method.
 
-**Total Phase 01 stub cost: ~100 LOC, 4 invariants.** Within a single sub-shard budget. The stubs preserve every Phase 02 re-entry contract while shipping zero Foundation-ops infrastructure.
+**Phase 01 stub partitioning (R2-H-02 fix per `rules/zero-tolerance.md` Rule 2 + `rules/orphan-detection.md` Rule 1 + Rule 4a):**
+
+- **Stub 1 — `envoy/heartbeat/client.py`**: `class HeartbeatClient: def maybe_record_flag(self, flag_name: str) -> None: pass` — **genuine no-op**. THIS is what the 21 emit-site primitives invoke (per § 7.6 cross-shard implications below). The method body is a literal `pass`; no exception is raised; no Ledger entry is written; no network call is made. This stub class is the orphan-detection counterpart to the four `PhaseDeferredError` modules: it exists precisely BECAUSE production code calls it on the hot path. Without this stub, Boundary Conversation completion / Daily Digest open / Grant Moment approve / etc. would all crash on first emit.
+
+- **Stubs 2, 3, 4, 5 — `envoy/heartbeat/{star_prio,ohttp,signed_consent,registry}.py`**: each raises `PhaseDeferredError("Phase 02 entry deliverable")`. These cover the network and cryptographic primitives that Phase 02 will activate (STAR/Prio share-splitting, OHTTP key-server + relay, signed-consent records on the Foundation aggregator side, runtime/device registry handshake). **Phase 01 production code MUST NEVER call these.** Per `rules/zero-tolerance.md` Rule 2, a stub that raises on call when production code is supposed to invoke it is the fake-implementation pattern at the extreme; per `rules/orphan-detection.md` Rule 1, every facade-shape attribute requires a production call site within 5 commits — these four stubs exist for the inverse reason: they are placeholders for Phase 02 entry, not Phase 01 hot-path consumers.
+
+  A regression grep `grep -rln "import envoy.heartbeat.\(star_prio\|ohttp\|signed_consent\|registry\)\|from envoy.heartbeat.\(star_prio\|ohttp\|signed_consent\|registry\)" envoy/` MUST return zero matches in non-test code. The grep is the structural defense per `rules/orphan-detection.md` Rule 4a (a stub that is implemented later MUST NOT have any caller silently assuming the deferred behavior); when Phase 02 entry replaces the `PhaseDeferredError` body with a real implementation, the regression grep flips green automatically and any premature Phase 01 caller surfaces as a HIGH finding.
+
+**Total Phase 01 stub cost: ~100 LOC, 5 invariants.** Within a single sub-shard budget. The 5-stub partition (1 no-op `HeartbeatClient` + 4 `PhaseDeferredError` network/crypto modules) preserves every Phase 02 re-entry contract while shipping zero Foundation-ops infrastructure AND zero production crashes on the 21 emit-site hot path.
 
 ### 7.4 What de-scope does NOT cost
 
