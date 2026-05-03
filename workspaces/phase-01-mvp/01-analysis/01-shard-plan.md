@@ -55,7 +55,7 @@ Sharding is therefore not a stylistic preference; it is the structural defense a
 
 ---
 
-### Shard 3 — `kailash-py` survey re-read + primitive-provider table
+### Shard 3 — `kailash-py` survey re-read + primitive-provider table — DONE
 
 **Outputs:**
 
@@ -67,6 +67,8 @@ Sharding is therefore not a stylistic preference; it is the structural defense a
 **Capacity check:** 1 doc, surveys an existing artifact. Within budget. CRITICAL gate before any implementation deep-dive.
 
 **Why before deep-dives:** every shard 4–14 deep-dive will say "wire X primitive via Y kailash-py module." If the kailash-py module doesn't yet exist, the deep-dive has to design Envoy-new-code OR declare an upstream PR dependency. Shard 3 surfaces this for ALL primitives at once.
+
+**Status:** DONE 2026-05-03. Major finding: 12 of 13 Phase 00-filed kailash-py issues (#594–#606) closed Apr 24–26; only #596 (TieredAuditDispatcher) remains OPEN. ISS-36 N4/N5 conformance Python runner closure removes the previously-identified Phase 02 blocker on the kailash-py axis. Net Phase 01 has 1 structural Envoy-new-code commitment (`#596` TieredAuditDispatcher → local hash-chain Ledger writer) and zero hard upstream-PR blockers. Per-primitive verification protocol pre-declared in §5 of the readiness doc. See `journal/0002-DISCOVERY-upstream-readiness-improved.md` for the velocity-signal entry.
 
 ---
 
