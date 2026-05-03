@@ -157,6 +157,14 @@ Wave D produced **1 HIGH-severity frozen-spec ambiguity** (shards 11 + 12 share 
 
 Wave E (shard 19 pipx distribution) launched immediately after wave D commits.
 
+**Wave-E completion (2026-05-03):** Shard 19 — DONE.
+
+| Shard | Status | Headline                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 19    | DONE   | `kailash-ml` confirmed OUT of dep tree by direct `~/repos/loom/kailash-py/pyproject.toml` inspection — appears ONLY in `[ml]` + `[all]` extras, NOT in core `[project] dependencies`; #752 lightning quarantine structurally mitigated. Envoy declares `kailash[shamir,nexus,kaizen]>=2.13.4` + `keyring>=24.0` + `python-dotenv>=1.0` + 3 channel SDKs (`python-telegram-bot` LGPL-3.0+, `slack-sdk`, `discord.py`); LGPL-3.0+ satisfied by pipx dynamic-link semantics; NOTICES file aggregation = action item for shard 20. CLI: 11 Phase 01 subcommands + 2 Phase 02 stubs. Cross-OS: macOS full, Linux requires desktop env (KeychainUnavailableError fallback to Phase 02 HashiCorp backend), Windows x86_64 covered, ARM64 deferred Phase 02. 0 HIGH; 2 LOW. |
+
+All 16 primitive shards (4–19) complete. Wave F (shards 20 plans + 21 user flows + 22 spec gap analysis) launched in parallel — 3 aggregation/synthesis shards.
+
 ---
 
 ### Shard 20 — Plans (`02-plans/`)
