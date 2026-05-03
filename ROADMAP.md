@@ -11,7 +11,7 @@ Goal: land the concept; verify names, registries, licensing; Foundation sign-off
 
 - [ ] USPTO + EUIPO + UK IPO trademark sweep, Class 9 (software) + Class 42 (SaaS)
 - [ ] Final legal mark — "Envoy Agent" vs "Envoy AI" vs alternatives
-- [ ] GitHub org + namespace reservation (`envoy-agent` confirmed available on npm/PyPI/crates 2026-04-21)
+- [ ] GitHub org + namespace reservation (`envoy-agent` confirmed available on npm/PyPI/crates 2026-04-21; rechecked 2026-05-03 still all 404; GitHub org `envoy-agent` also confirmed 404 / available 2026-05-03 — actual reservation pending trademark close)
 
 **Envoy-claim verification:**
 

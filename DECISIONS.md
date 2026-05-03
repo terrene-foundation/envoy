@@ -118,8 +118,8 @@ All are legally sound and widely accepted in production open-source distribution
 ### Consequences
 
 - Legal sweep mandatory before public launch (Phase 00 gate).
-- `envoy-agent` namespace confirmed available on npm, PyPI, crates.io as of 2026-04-21.
-- GitHub org availability to be confirmed.
+- `envoy-agent` namespace confirmed available on npm, PyPI, crates.io as of 2026-04-21 (rechecked 2026-05-03 — still all 404 / available).
+- GitHub org `envoy-agent` confirmed available 2026-05-03 (`gh api orgs/envoy-agent` → 404; `users/envoy-agent` also 404, no user-account collision).
 
 ---
 
