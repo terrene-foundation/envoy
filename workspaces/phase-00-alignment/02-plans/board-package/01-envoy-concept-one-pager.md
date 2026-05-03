@@ -22,7 +22,7 @@ Envoy answers the question "**what is the human for** in a world of autonomous A
 | Source                               | Apache 2.0, Foundation-owned                                                         |
 | Specifications consumed              | CARE / EATP / CO / PACT (CC BY 4.0, Foundation-owned)                                |
 | User cost                            | Zero — no payment, no registration, no commercial ToS, no gating                     |
-| Open-source runtime always available | Yes — `kailash-py`, fully Apache 2.0 + CC BY 4.0, one-flag opt-in                    |
+| Open-source runtime always available | Yes — `kailash-py` (Apache 2.0 code; references CC BY 4.0 specs), one-flag opt-in    |
 | Forkable                             | Yes — Envoy itself, the spec family, and the open runtime                            |
 | Commercial-vendor dependency         | None — if the Rust runtime were ever unavailable, the open runtime continues to work |
 
@@ -32,20 +32,20 @@ Envoy is the Foundation's flagship implementation of CARE / EATP / CO / PACT for
 
 **One decision:** the runtime-pluggability model in `DECISIONS.md §ADR-0009`.
 
-| Layer                               | License                                      | Open-source                            | Free to user |
-| ----------------------------------- | -------------------------------------------- | -------------------------------------- | ------------ |
-| Envoy application                   | Apache 2.0                                   | Yes                                    | Yes          |
-| `kailash-runtime` interface         | Apache 2.0                                   | Yes                                    | Yes          |
-| CARE/EATP/CO/PACT specs             | CC BY 4.0                                    | Yes                                    | Yes          |
-| `kailash-rs-bindings` Python glue   | Apache 2.0                                   | Yes                                    | Yes          |
-| `kailash-rs-bindings` compiled core | Freely-redistributable binary; source closed | Source: no; binary: freely distributed | Yes          |
-| `kailash-py` (alternative runtime)  | Apache 2.0 + CC BY 4.0                       | Yes                                    | Yes          |
+| Layer                               | License                                       | Open-source                            | Free to user |
+| ----------------------------------- | --------------------------------------------- | -------------------------------------- | ------------ |
+| Envoy application                   | Apache 2.0                                    | Yes                                    | Yes          |
+| `kailash-runtime` interface         | Apache 2.0                                    | Yes                                    | Yes          |
+| CARE/EATP/CO/PACT specs             | CC BY 4.0                                     | Yes                                    | Yes          |
+| `kailash-rs-bindings` Python glue   | Apache 2.0                                    | Yes                                    | Yes          |
+| `kailash-rs-bindings` compiled core | Freely-redistributable binary; source closed  | Source: no; binary: freely distributed | Yes          |
+| `kailash-py` (alternative runtime)  | Apache 2.0 (code; references CC BY 4.0 specs) | Yes                                    | Yes          |
 
 **The structural compromise:** envoy ships fast (Rust default) AND fully open (Python alternative, one-flag swap). Nobody is locked out of a free, open path; performance-first users get a Terrene-hosted compiled binary at no cost, no registration, no terms.
 
 **Precedent patterns the board should weigh:**
 
-- PyTorch ships with CUDA-compiled binaries from NVIDIA (closed source) as the default backend; pure-CPU OSS path is the alternative. Foundation projects already depend on this pattern transitively.
+- PyTorch ships with CUDA-compiled binaries from NVIDIA (closed source) as the default backend; pure-CPU OSS path is the alternative. Many open-source projects in scientific computing already depend on this pattern transitively.
 - Linux kernel distributions ship freely-redistributable firmware blobs alongside the GPL kernel. The blobs are closed-source; the kernel is not.
 - Mozilla Firefox ships Widevine (closed-source DRM) for streaming media as an opt-in. Firefox itself is fully open.
 
@@ -53,7 +53,7 @@ In all three precedents, the open-source project endorses a closed-binary depend
 
 ## What's at stake if the Board declines
 
-- **Default to Python-only runtime.** Envoy ships, but with measurably slower hot-path performance on every grant-check, envelope-intersect, and ledger-append. Real-world impact: noticeable latency on Daily Digest rendering, Grant Moment evaluation, and channel-fan-out.
+- **Default to Python-only runtime.** Envoy ships, but with measurably slower hot-path performance on every grant-check, envelope-intersect, and ledger-append. Per `acceptance-metrics.md`, hot-path P50 latency targets are <10ms (Rust) vs <80ms (Python) — an 8× spread. Whether the gap is user-perceptible at scale is part of Phase-03 measurement.
 - **No structural blocker.** Envoy can ship under either decision. The Board's call is which performance/openness posture is the public default.
 
 ## Phase-00 status (this is the readiness check)
@@ -116,7 +116,7 @@ Welcome to Envoy. Two runtime options:
 
   [2] Open — Pure Python from Terrene Foundation.
       Free, fully open-source, fully forkable.
-      Apache 2.0 + CC BY 4.0.
+      Apache 2.0 (code; references CC BY 4.0 specs).
 
   Choose [1/2/?] >
 ```

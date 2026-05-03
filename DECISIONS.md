@@ -13,6 +13,7 @@ Kailash has two implementations of the same CARE / EATP / CO / PACT specs:
 - **kailash-py** — Terrene Foundation's **fully open-source Python implementation** of the same specs. Apache 2.0 code + CC BY 4.0 methodology. Fully forkable.
 
 Envoy is a Foundation-stewarded product. Its USPs depend on:
+
 - Performant Rust hot path (sovereignty + single-binary + speed-through-governance).
 - Absolute openness (nothing forced on any user; no gating; fully open-source alternative always available).
 
@@ -43,27 +44,27 @@ Envoy's openness posture is therefore simple: application code is Apache 2.0, me
 └──────────────────────────────────────────────────────┘
 ```
 
-**First-run picker asks one question:** *"Run Envoy with Rust acceleration (free, faster, via a compiled binary from PyPI), or with the pure-Python Foundation runtime (free, fully open-source, forkable, somewhat slower)?"* Default is Rust-accelerated. Opt-out is one keystroke.
+**First-run picker asks one question:** _"Run Envoy with Rust acceleration (free, faster, via a compiled binary from PyPI), or with the pure-Python Foundation runtime (free, fully open-source, forkable, somewhat slower)?"_ Default is Rust-accelerated. Opt-out is one keystroke.
 
 **What each shipped package contains:**
 
-| Package | Source | Binary | License | Cost |
-|---|---|---|---|---|
-| `envoy` (Apache 2.0) | Open (Foundation GitHub) | N/A | Apache 2.0 | Free |
-| `kailash-runtime` (Apache 2.0) | Open (Foundation GitHub) | N/A | Apache 2.0 | Free |
+| Package                                            | Source                             | Binary                                                | License                                                     | Cost |
+| -------------------------------------------------- | ---------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------- | ---- |
+| `envoy` (Apache 2.0)                               | Open (Foundation GitHub)           | N/A                                                   | Apache 2.0                                                  | Free |
+| `kailash-runtime` (Apache 2.0)                     | Open (Foundation GitHub)           | N/A                                                   | Apache 2.0                                                  | Free |
 | `kailash-rs-bindings` (PyPI + Terrene open GitHub) | Python glue open; Rust core closed | Compiled `.so`/`.dylib`/`.pyd` freely redistributable | Composite — Apache 2.0 glue + freely-redistributable binary | Free |
-| `kailash-py` (PyPI + Terrene open GitHub) | Fully open | Pure Python | Apache 2.0 | Free |
+| `kailash-py` (PyPI + Terrene open GitHub)          | Fully open                         | Pure Python                                           | Apache 2.0                                                  | Free |
 
 **Nothing in Envoy's distribution requires payment, registration, commercial license acceptance, or a hosted service.**
 
 ### Phase migration
 
-| Phase | Runtime default | Distribution | Notes |
-|---|---|---|---|
-| 01 MVP | `kailash-py` only (fastest to ship; interim) | `pipx install envoy-agent` | Prove the UX; Rust binding integration lands in Phase 02 |
-| 02 | `kailash-rs-bindings` default, `kailash-py` opt-out | `curl | sh` single-binary launcher; `brew install envoy-agent`; `winget`; `cargo install` | Runtime picker in first-run; static binary bundles Python interpreter via uv-managed or PyO3 embedded |
-| 03 | Same, with cross-SDK conformance test vectors validating feature parity between both runtimes | Same | Conformance vectors (PACT N1–N6 pattern) ensure opt-out users get identical behavior, only slower |
-| 04+ | Same | Mobile clients (Flutter) bundle `kailash-rs-bindings` for device performance; pure-Python fallback available on desktop | |
+| Phase  | Runtime default                                                                                       | Distribution                                                                                                            | Notes                                                                                                 |
+| ------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| 01 MVP | `kailash-py` runtime only; abstract interface defined but Rust binding not yet wired (lands Phase 02) | `pipx install envoy-agent`                                                                                              | Prove the UX; Rust binding integration lands in Phase 02                                              |
+| 02     | `kailash-rs-bindings` default, `kailash-py` opt-out                                                   | `curl \| sh` single-binary launcher; `brew install envoy-agent`; `winget`; `cargo install`                              | Runtime picker in first-run; static binary bundles Python interpreter via uv-managed or PyO3 embedded |
+| 03     | Same, with cross-SDK conformance test vectors validating feature parity between both runtimes         | Same                                                                                                                    | Conformance vectors (PACT N1–N6 pattern) ensure opt-out users get identical behavior, only slower     |
+| 04+    | Same                                                                                                  | Mobile clients (Flutter) bundle `kailash-rs-bindings` for device performance; pure-Python fallback available on desktop |                                                                                                       |
 
 ### Rationale
 
@@ -76,11 +77,11 @@ Envoy's openness posture is therefore simple: application code is Apache 2.0, me
 ### Precedents for the mixed-wheel pattern
 
 - **PyTorch + CUDA.** PyTorch is BSD-3; CUDA libraries are freely redistributable in wheels.
-- **`ring` (Rust).** Permissive license; binary freely distributable; widely used in Foundation-grade projects.
+- **`ring` (Rust).** Permissive license; binary freely distributable; widely used in Rust ecosystem cryptographic stacks.
 - **SQLite.** Public-domain source for the library.
 - **NVIDIA CUDA Python.** Free pip install combining an open binding with vendor libraries.
 
-All are legally sound and widely accepted in Foundation-grade ecosystems.
+All are legally sound and widely accepted in production open-source distribution.
 
 ### Consequences
 
@@ -111,7 +112,7 @@ All are legally sound and widely accepted in Foundation-grade ecosystems.
 
 1. **Thematic fit.** An envoy carries delegated authority from a sovereign — which is literally what every Envoy action does (signed EATP Delegation Record rooted in a named human Genesis Record).
 2. **Verb + noun scalability.** "Send an envoy to draft 3 emails." "Your envoy declined Jamie's request." "Envoy up."
-3. **Audience separation.** CNCF Envoy Proxy users are infra/SRE; Envoy Agent users are prosumers, solo developers, and families. Different search intent and different user contexts; a clear legal disambiguator removes practical confusion.
+3. **Audience separation.** CNCF Envoy Proxy occupies the infrastructure-tier project space; the legal disambiguator (e.g. "Envoy Agent") makes Envoy's product context explicit at first contact, independent of any other project's positioning.
 4. **The metaphor names the product accurately.** An envoy carries delegated authority; the product's architecture is delegated authority. The name and the substance match.
 
 ### Consequences
@@ -282,14 +283,14 @@ iOS + Android native apps from Phase 02. Flutter (Kailash `flutter-specialist` a
 
 Envoy's openness posture is composite and Foundation-compliant:
 
-| Layer | License | Open-source | Free to user | Foundation artifact |
-|---|---|---|---|---|
-| Envoy application | Apache 2.0 | Yes — source on Foundation GitHub | Yes | Yes |
-| `kailash-runtime` interface | Apache 2.0 | Yes — source on Foundation GitHub | Yes | Yes |
-| CARE/EATP/CO/PACT specs | CC BY 4.0 | Yes | Yes | Yes |
-| `kailash-rs-bindings` Python glue | Open license (Apache 2.0 or BSD, TBD) | Yes — source on Terrene open GitHub | Yes | Terrene-hosted |
-| `kailash-rs-bindings` compiled core | Freely redistributable binary; source held closed | Source: no; binary: freely distributed | Yes | Terrene-distributed |
-| `kailash-py` | Apache 2.0 + CC BY 4.0 | Yes — source on Foundation GitHub | Yes | Yes |
+| Layer                               | License                                           | Open-source                            | Free to user | Foundation artifact |
+| ----------------------------------- | ------------------------------------------------- | -------------------------------------- | ------------ | ------------------- |
+| Envoy application                   | Apache 2.0                                        | Yes — source on Foundation GitHub      | Yes          | Yes                 |
+| `kailash-runtime` interface         | Apache 2.0                                        | Yes — source on Foundation GitHub      | Yes          | Yes                 |
+| CARE/EATP/CO/PACT specs             | CC BY 4.0                                         | Yes                                    | Yes          | Yes                 |
+| `kailash-rs-bindings` Python glue   | Open license (Apache 2.0 or BSD, TBD)             | Yes — source on Terrene open GitHub    | Yes          | Terrene-hosted      |
+| `kailash-rs-bindings` compiled core | Freely redistributable binary; source held closed | Source: no; binary: freely distributed | Yes          | Terrene-distributed |
+| `kailash-py`                        | Apache 2.0 (code; references CC BY 4.0 specs)     | Yes — source on Foundation GitHub      | Yes          | Yes                 |
 
 **Key Foundation-compliance properties:**
 
@@ -304,7 +305,7 @@ Envoy's openness posture is composite and Foundation-compliant:
 The architecture is sound; professional drafting required for:
 
 1. **Composite LICENSE file in `kailash-rs-bindings` wheel.** Delineate Apache 2.0 Python glue + freely-redistributable compiled binary, with explicit end-user grants (use, redistribute as part of Python applications, reverse-engineering terms on binary).
-2. **SPDX metadata on PyPI.** Choose a composite expression that reads cleanly under automated scanners (FOSSA, Snyk, Sonatype). Candidates: `Apache-2.0 AND LicenseRef-kailash-rs-bindings-binary` with a clear `License-File` reference.
+2. **SPDX metadata on PyPI.** Choose a composite expression that reads cleanly under automated scanners (FOSSA, Snyk, Sonatype). Candidates: `Apache-2.0 AND LicenseRef-kailash-rs-bindings-binary-grant` with a clear `License-File` reference.
 3. **Terrene Foundation charter compatibility statement.** Foundation board/counsel to confirm that Foundation projects (Envoy) may transitively depend on a Terrene-hosted binary-closed-source PyPI package by default, with an open-source alternative available. Precedent patterns: distributions that ship open code alongside vendor-distributed compiled firmware or numerical libraries; Python projects that depend on PyTorch-with-CUDA.
 4. **User-facing disclosure.** Installer screen + README + runtime-picker copy explicitly name the closed-binary component and the fully open-source alternative.
 5. **Export control.** Rust binary redistribution may intersect US / Singapore dual-use / crypto export regulations depending on what crypto primitives ship. Scope: what EATP cryptography (Ed25519, SHA-256, Shamir libs) is compiled into the binary.

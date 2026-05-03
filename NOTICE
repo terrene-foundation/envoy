@@ -19,7 +19,8 @@ Runtime dependencies:
     GitHub organization. Envoy's default runtime.
   * kailash-py (PyPI: `kailash` on the pure-Python track) — the
     Terrene Foundation's fully open-source Python implementation of
-    the same specifications. Apache 2.0 + CC BY 4.0. Fully forkable.
+    the same specifications. Apache 2.0 (code; references CC BY 4.0
+    specs). Fully forkable.
     Envoy's opt-in alternative runtime.
 
 Envoy does not require payment, license keys, or account registration

@@ -4,7 +4,7 @@
 
 **Steward:** Terrene Foundation (Singapore CLG), under the CARE / EATP / CO / COC methodology family (CC BY 4.0). Envoy source code: Apache 2.0.
 
-**Working codename:** Envoy. *(Trademark sweep required — see DECISIONS §ADR-0002.)*
+**Working codename:** Envoy. _(Trademark sweep required — see DECISIONS §ADR-0002.)_
 
 ## The Question Envoy Answers
 
@@ -19,20 +19,20 @@ An **envoy** is an agent that carries delegated authority from a sovereign. In o
 
 Envoy's openness posture across every layer users interact with:
 
-| Layer | License | Cost to user |
-|---|---|---|
-| Envoy application code | Apache 2.0 (Foundation-owned) | Free |
-| `kailash-runtime` abstraction | Apache 2.0 (Foundation-owned) | Free |
-| CARE / EATP / CO / PACT specifications | CC BY 4.0 (Foundation-owned) | Free |
-| `kailash-rs-bindings` (Rust-accelerated runtime) | Open-source Python glue; freely-redistributable compiled binary; Terrene-hosted | Free |
-| `kailash-py` (pure-Python runtime) | Apache 2.0 + CC BY 4.0, fully forkable | Free |
+| Layer                                            | License                                                                         | Cost to user |
+| ------------------------------------------------ | ------------------------------------------------------------------------------- | ------------ |
+| Envoy application code                           | Apache 2.0 (Foundation-owned)                                                   | Free         |
+| `kailash-runtime` abstraction                    | Apache 2.0 (Foundation-owned)                                                   | Free         |
+| CARE / EATP / CO / PACT specifications           | CC BY 4.0 (Foundation-owned)                                                    | Free         |
+| `kailash-rs-bindings` (Rust-accelerated runtime) | Open-source Python glue; freely-redistributable compiled binary; Terrene-hosted | Free         |
+| `kailash-py` (pure-Python runtime)               | Apache 2.0 (code; references CC BY 4.0 specs), fully forkable                   | Free         |
 
 **Nothing in Envoy's distribution requires payment, registration, commercial license acceptance, or a hosted service.** No third-party proprietary component is required for any Envoy capability. A fully-open-source runtime (`kailash-py`) is always available as a one-flag install. See DECISIONS §ADR-0001 and §ADR-0009.
 
 **Envoy runtime is pluggable.** Two free implementations:
 
 1. **`kailash-rs-bindings`** — Rust-accelerated. Python glue is open-source; the compiled binary is freely redistributable; hosted on Terrene Foundation's open GitHub org; installed from PyPI; zero cost, no gating. **Default** (performance-first).
-2. **`kailash-py`** — Pure Python, Apache 2.0 + CC BY 4.0, fully forkable. **Opt-in** (purity-first).
+2. **`kailash-py`** — Pure Python, Apache 2.0 (code; references CC BY 4.0 specs), fully forkable. **Opt-in** (purity-first).
 
 First-run picker offers the choice. Default is fast; opt-out is one keystroke.
 
@@ -40,9 +40,9 @@ First-run picker offers the choice. Default is fast; opt-out is one keystroke.
 
 **1. Responsibility and safety, together.** Responsibility is the user's — expressed through Grant Moments. Safety is the runtime's — delivered through PACT envelopes, EATP Trust Lineage, Kaizen governed agents, and cascade revocation. Every action is hash-chained to a named human. One-tap revoke on anything, anywhere, forever.
 
-**2. Governance as the source of performance.** Pre-compiled envelope checks are O(1) hot-path lookups. Typed Kaizen L3 Plan DAGs parallelise safely because every branch is envelope-verified at compile time. No mid-stream permission prompts — the envelope is declared up front through the Boundary Conversation. Rust hot path by default (with pure-Python fallback). **Governance is the source of speed, not the tax.**
+**2. Governance as the source of performance.** Pre-compiled envelope checks meet bounded per-class latency budgets (≤5ms structural, ≤50ms semantic-cached; full per-spec budgets in `specs/envelope-model.md` §80). Typed Kaizen L3 Plan DAGs are envelope-verified at the envelope intersection so safe parallelism is structurally available (per `specs/sub-agent-delegation.md` + ADR-0009; binding integration tracked in kailash-rs#509 / #510). No mid-stream permission prompts — the envelope is declared up front through the Boundary Conversation. Rust hot path by default (with pure-Python fallback). **Governance is the source of speed, not the tax.**
 
-**3. Features, first-class and seamless.** 23+ channels (iMessage, Telegram, Slack, Discord, WhatsApp, Signal, Matrix, Feishu, Apple Shortcuts, Calendar, RCS, browser extension, IDE extensions, AR/VR, and more). Full OpenClaw `SKILL.md` compatibility with a CO-compliant `ENVELOPE.md` companion — users' existing skill libraries carry across. Model choice at install (local + cloud). Single static binary distribution. Trust Vault with Shamir 3-of-5 recovery. Mobile onboarding first-class.
+**3. Features, first-class and seamless.** Channel coverage builds across phases — Phase 01 ships CLI + Web (2); Phase 02 adds 6 messaging surfaces (iMessage, Telegram, Slack, Discord, WhatsApp, Signal); Phase 04 adds 15 more (Matrix, Feishu, RCS, browser extension, IDE extensions, voice, and others) for a 23+ total. AR/VR is on the research backlog, not yet phased. Full OpenClaw `SKILL.md` compatibility with a CO-compliant `ENVELOPE.md` companion — users' existing skill libraries carry across. Model choice at install (local + cloud). Single static binary distribution. Trust Vault with Shamir 3-of-5 recovery. Mobile onboarding first-class.
 
 ## Extended USPs
 
@@ -54,7 +54,7 @@ First-run picker offers the choice. Default is fast; opt-out is one keystroke.
 
 **Foundation-stewardship + CC BY 4.0 methodology.** Terrene Foundation (Singapore CLG), non-commercial, independent. Envoy's specification family is forkable. Legal and Procurement can evaluate it on open, documented terms.
 
-**Python + Rust byte-identical parity via conformance vectors.** BP-series cross-SDK commits land invariants in both runtime implementations with byte-identical semantics. Envoy's runtime abstraction contract is enforced by conformance test vectors at every release gate. Users swapping between `kailash-rs-bindings` and `kailash-py` get the same behaviour, only different performance.
+**Python + Rust conformance via published test vectors.** Per `specs/runtime-abstraction.md` §5, the contract is byte-identical on spec-driven outputs and semantically-equivalent on LLM-composed outputs. BP-series cross-SDK commits land invariants in both runtime implementations under that conformance partition. Envoy's runtime abstraction contract is enforced by conformance test vectors at every release gate. Users swapping between `kailash-rs-bindings` and `kailash-py` get the same behaviour under the partition, only different performance.
 
 **Structural no-orphan guarantee.** The build fails if a governance primitive lacks a call site (`rules/orphan-detection.md` + `rules/facade-manager-detection.md`). Every primitive Envoy ships is wired into a hot path and exercised by tests.
 
