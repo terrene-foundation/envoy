@@ -124,7 +124,17 @@ That's 19 shards if shard count is taken seriously, not 17. Adjusting from the b
 | 17    | DONE   | DECISION: **DE-SCOPE to Phase 02 entry**; ~100 LOC stubs in Phase 01; k≥100 anonymity floor unclearable at Phase 01 cohort; only BET-8 falsifiability flips                 |
 | 18    | DONE   | 24 byte-identical / 5 semantically-equivalent partition; feature-flagged `kailash_rs_bindings` adapter slot; import-discipline IS the Phase 02 mechanicality guarantee      |
 
-Wave A produced 0 HIGH spec ambiguities → no MUST Rule 5b sweeps → wave B safe to launch immediately. Wave B (shards 7, 9, 15) is in flight as of 2026-05-03.
+Wave A produced 0 HIGH spec ambiguities → no MUST Rule 5b sweeps → wave B safe to launch immediately.
+
+**Wave-B completion (2026-05-03):** Shards 7, 9, 15 — DONE in parallel.
+
+| Shard | Status | Headline                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 7     | DONE   | Recommend separate `terrene-foundation/envoy-ledger-verifier` repo; Python first as Phase 01 EC-9 minimum + Rust sibling stretch; user-supplied trust-anchor with first-verification self-anchoring; STRONGLY recommend additive `specs/independent-verifier.md` draft at shard 22; 0 HIGH                                                                                                                                     |
+| 9     | DONE   | Authorship Score is stateless pure function over **Ledger slice** (not PostureStore) with JCS-sorted byte-deterministic recompute; PostureGate is 5-step fail-closed; cross-shard invariant flagged for shard 4 (envelope compiler MUST sort `authored_constraints` in JCS canonical order); BET-12 + BET-1 + BET-10 + BET-6 falsifiable; 0 HIGH                                                                               |
+| 15    | DONE   | Disposition (b) verified — `kailash 2.11.0` ships `kailash.trust.vault.shamir` as wrapper around `shamir-mnemonic` (PyPI; gated `pip install kailash[shamir]`); Envoy bypasses gated `back_up_vault_key` (still NotImplementedError pending mint ISS-37) and calls `shamir.generate(...)` directly with master-key from shard 5; 5 Envoy modules (ritual + paper + reconstruct + commitments + distribution_checklist); 0 HIGH |
+
+Wave B produced 0 HIGH ambiguities. Wave C (shards 8, 10) launched immediately in parallel.
 
 ---
 
