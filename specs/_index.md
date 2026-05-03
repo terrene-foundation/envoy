@@ -51,6 +51,8 @@
 | [cross-domain-flows.md](cross-domain-flows.md)                   | Cross-domain rule engine (work↔personal / classification↔public)          | doc 02 v3 §3.4.4               | `envoy-registry:cross-domain-flows:v1` consumer + specs/tool-output-sanitization.md dependency       |
 | [envelope-library.md](envelope-library.md)                       | Foundation + Community publisher surface; Sybil + reputation              | doc 09 v3 §3 T-020-T-022       | Publisher-side primitives for T-020/T-021/T-022/T-024/T-051/T-092                                    |
 | [model-adapter.md](model-adapter.md)                             | Per-LLM-provider abstraction; response filter + provider-risk             | doc 05 v2 + doc 09 v3 §3 T-014 | T-014/T-016/T-017/T-030/T-094 mitigation primitives                                                  |
+| [independent-verifier.md](independent-verifier.md)               | Separately-codebased Ledger verifier CLI                                  | phase-01 shard 7               | EC-4 mutation battery + EC-9 source-isolation gate; Python P01 / Rust P02                            |
+| [mvp-build-sequence.md](mvp-build-sequence.md)                   | Phase 01 build order + integration milestones + Phase 02 hooks            | phase-01 shard 20 + 22         | Authoritative reference for Phase 01 implementation planning across sessions                         |
 
 ---
 
