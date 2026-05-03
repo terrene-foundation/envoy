@@ -112,6 +112,20 @@ That's 19 shards if shard count is taken seriously, not 17. Adjusting from the b
 
 **Capacity check per shard:** one primitive, one source spec re-read, ≤3 cross-spec dependencies. Within budget.
 
+**Wave-A completion (2026-05-03):** Shards 4, 5, 6, 13, 14, 17, 18 — DONE in parallel (7 worktree-isolated agents). Net findings:
+
+| Shard | Status | Headline                                                                                                                                                                    |
+| ----- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 4     | DONE   | A-grade upstream `kailash.trust.pact.envelopes`; thin Envoy `EnvelopeCompiler` materializer; 0 HIGH                                                                         |
+| 5     | DONE   | A-grade across the 4 trust modules; `TrustStoreAdapter` wraps `SqliteTrustStore`+posture+ops with `principal_id` keying ready for Phase 03 multi-principal; 0 HIGH          |
+| 6     | DONE   | Only #596 OPEN; `envoy.ledger` composes upstream pieces with deterministic `CanonicalJsonEncoder`; sunset clause for #596 per zero-tolerance Rule 4; 0 HIGH                 |
+| 13    | DONE   | Materially-improved upstream LlmDeployment (11 closures verified); ~330 LOC Envoy glue (router + risk annotator + token-budget filter); 1 HIGH-candidate held not escalated |
+| 14    | DONE   | Fully Envoy-new keyring wrapper; MIT-licensed `keyring`; principal-distinct from Trust Vault per spec; 0 HIGH                                                               |
+| 17    | DONE   | DECISION: **DE-SCOPE to Phase 02 entry**; ~100 LOC stubs in Phase 01; k≥100 anonymity floor unclearable at Phase 01 cohort; only BET-8 falsifiability flips                 |
+| 18    | DONE   | 24 byte-identical / 5 semantically-equivalent partition; feature-flagged `kailash_rs_bindings` adapter slot; import-discipline IS the Phase 02 mechanicality guarantee      |
+
+Wave A produced 0 HIGH spec ambiguities → no MUST Rule 5b sweeps → wave B safe to launch immediately. Wave B (shards 7, 9, 15) is in flight as of 2026-05-03.
+
 ---
 
 ### Shard 20 — Plans (`02-plans/`)
