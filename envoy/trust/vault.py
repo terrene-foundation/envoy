@@ -28,12 +28,16 @@ File format (Phase 01 minimal — a strict subset of the eventual spec layout):
     nonce       12 bytes  AES-256-GCM nonce (random per encrypt)
     ciphertext  variable  AES-256-GCM(plaintext, AAD=header_bytes) || tag(16)
 
-Total fixed-size header: 53 bytes. AAD covers everything before `nonce`
-inclusive — any header tamper fails MAC verification per
-`specs/trust-vault.md` § Error taxonomy `VaultMACVerificationFailedError`.
+Total fixed-size header: 53 bytes. AAD covers the FULL 53-byte header
+(magic + version + payload_len + salt + Argon2id params + nonce) — any
+header byte tamper fails MAC verification per `specs/trust-vault.md`
+§ Error taxonomy `VaultMACVerificationFailedError`.
 
-Per `rules/trust-plane-security.md` MUST Rule 7 (atomic_write) — vault
-writes go through `os.replace` after fsync to ensure crash-safety.
+Per `rules/trust-plane-security.md` MUST Rule 7 (atomic-write pattern)
+— vault writes use temp file + fsync + `os.replace` to ensure crash-safety.
+The kailash `atomic_write` helper is JSON-only (dict→json), so the binary
+vault hand-rolls the same pattern at the bytes level rather than routing
+through the helper.
 
 Per `rules/trust-plane-security.md` MUST NOT Rule 3 (no private key material
 in memory) — the master key is held only between `unlock()` and `lock()`,
@@ -49,6 +53,7 @@ import os
 import secrets
 import struct
 import time
+import warnings
 from pathlib import Path
 
 from argon2.low_level import Type, hash_secret_raw
@@ -91,6 +96,13 @@ _HEADER_LEN = struct.calcsize(_HEADER_FMT)
 
 # Phase 01 default idle TTL — 15 minutes per specs/trust-vault.md § Memory hygiene.
 DEFAULT_IDLE_TTL_SECONDS = 15 * 60
+
+# Memory-DoS bound on payload size. Phase 04 padding-bucket ceiling is 64 MiB
+# per specs/trust-vault.md § Padding buckets; capping payload_len reads to that
+# ceiling forecloses the malicious-inflated-payload_len memory-DoS (a tampered
+# header can declare any 64-bit length; a reader that f.read(payload_len)
+# unbounded would allocate gigabytes before the AES-GCM tag check runs).
+_MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +223,15 @@ class TrustVault:
         `VaultMACVerificationFailedError`. Mismatched stored Argon2id params
         raise `Argon2ParameterMismatchError`.
         """
-        if self.is_unlocked:
-            return  # idempotent
+        # Validate passphrase BEFORE the is_unlocked short-circuit so the
+        # empty-passphrase contract holds uniformly: an empty passphrase is
+        # always rejected with VaultUnlockFailedError, never silently no-op'd
+        # because the vault was already open. Defense against zero-cost brute
+        # force AND consistent error contract.
         if not isinstance(passphrase, str) or not passphrase:
             raise VaultUnlockFailedError("passphrase must be a non-empty string")
+        if self.is_unlocked:
+            return  # idempotent
         if not self.exists_on_disk:
             raise FileNotFoundError(f"no vault at {self._vault_path}")
 
@@ -337,6 +354,10 @@ class TrustVault:
         Cancel-and-recreate is the simplest correct semantics: the timer
         always counts down from the most recent activity. Observable order:
         (1) cancel old task; (2) update last_activity_ts; (3) start new task.
+
+        Uses `asyncio.create_task` (3.10+) rather than the deprecated
+        `asyncio.get_event_loop()` — this method is only ever called from
+        an `async` method body so a running loop is guaranteed.
         """
         self._last_activity_ts = time.monotonic()
         if self._idle_timer_task is not None and not self._idle_timer_task.done():
@@ -344,19 +365,30 @@ class TrustVault:
         # Schedule a new sleep-then-lock task. We don't await the cancellation
         # because cancel is cooperative — the task observes the cancel and
         # exits at the next await. The newly-scheduled task supersedes it.
-        loop = asyncio.get_event_loop()
-        self._idle_timer_task = loop.create_task(self._idle_lock_after_ttl(self._idle_ttl_seconds))
+        self._idle_timer_task = asyncio.create_task(
+            self._idle_lock_after_ttl(self._idle_ttl_seconds)
+        )
 
     async def _idle_lock_after_ttl(self, ttl_seconds: float) -> None:
-        """Sleep for `ttl_seconds`; if no activity in the meantime, lock."""
+        """Sleep for `ttl_seconds`; if no activity in the meantime, lock.
+
+        Race-safety: capture the task identity into a local BEFORE sleep so
+        a concurrent `_touch_activity()` (which mutates self._idle_timer_task)
+        does not race with the post-sleep ownership check. Without the local
+        capture, the comparison `self._idle_timer_task is current_task()`
+        could observe an updated `self._idle_timer_task` set by a fresher
+        activity tick that fired between our sleep return and the check.
+        """
+        self_task = asyncio.current_task()
         try:
             await asyncio.sleep(ttl_seconds)
         except asyncio.CancelledError:
             return  # superseded by a fresher timer
-        # Race-safety: if a cancel-and-recreate happened concurrently, the
-        # newer task is now in self._idle_timer_task; only fire if WE are
-        # still the owner.
-        if self._idle_timer_task is not asyncio.current_task():
+        # Race-safety: only fire if WE (captured task identity) are still
+        # the owner of self._idle_timer_task. A cancel-and-recreate that
+        # raced with our sleep-return will have installed a NEW task; we
+        # exit silently so the auto-lock fires only once per quiescent TTL.
+        if self._idle_timer_task is not self_task:
             return
         # Lock without going through `_require_unlocked` (vault MAY have been
         # locked manually between sleep wakeup and this branch).
@@ -392,7 +424,7 @@ class TrustVault:
         Returns (header_bytes, salt, (m, t, p), nonce, ciphertext_with_tag).
         Header_bytes is the raw 53-byte header used as AES-GCM AAD.
         """
-        with open(self._vault_path, "rb") as f:
+        with self._open_no_follow_symlinks() as f:
             header_bytes = f.read(_HEADER_LEN)
             if len(header_bytes) < _HEADER_LEN:
                 raise VaultMACVerificationFailedError(
@@ -409,6 +441,15 @@ class TrustVault:
                 raise VaultMACVerificationFailedError(
                     f"vault version mismatch: expected {_VERSION}, got {version}"
                 )
+            # Memory-DoS guard — a tampered header can declare any 64-bit length;
+            # cap reads at the Phase 04 padding-bucket ceiling so an unbounded
+            # f.read(payload_len) does not allocate gigabytes before the AES-GCM
+            # tag check runs.
+            if payload_len > _MAX_PAYLOAD_BYTES:
+                raise VaultMACVerificationFailedError(
+                    f"vault declared payload_len={payload_len} exceeds max "
+                    f"{_MAX_PAYLOAD_BYTES} bytes — refusing read"
+                )
             ciphertext = f.read(payload_len)
             if len(ciphertext) != payload_len:
                 raise VaultMACVerificationFailedError(
@@ -418,10 +459,38 @@ class TrustVault:
 
     def _read_existing_salt(self) -> bytes:
         """Read the salt from the on-disk container without decrypting."""
-        with open(self._vault_path, "rb") as f:
+        with self._open_no_follow_symlinks() as f:
             header_bytes = f.read(_HEADER_LEN)
+        if len(header_bytes) < _HEADER_LEN:
+            raise VaultMACVerificationFailedError(
+                "vault file truncated reading salt (header < expected size)"
+            )
         _, _, _, salt, _, _, _, _ = struct.unpack(_HEADER_FMT, header_bytes)
         return salt
+
+    def _open_no_follow_symlinks(self):
+        """Open the vault file with O_NOFOLLOW so a symlink redirect — e.g. a
+        parent-directory writer pointing the vault path at /etc/shadow — is
+        rejected at open time rather than silently followed.
+
+        Per `rules/trust-plane-security.md` MUST Rule 1 ("No bare open() for
+        record files"). On platforms without O_NOFOLLOW (Windows), the flag
+        is not defined; fall back to bare open. Phase 02 platform abstraction
+        will add the Windows-equivalent symlink-rejection path.
+        """
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(str(self._vault_path), flags)
+        except OSError as exc:
+            # POSIX raises ELOOP (symbolic link cycle) on O_NOFOLLOW symlink
+            # rejection. Surface as the same typed error class as other
+            # file-level integrity rejections so callers handle uniformly.
+            raise VaultMACVerificationFailedError(
+                f"vault open refused (likely symlink redirect): {exc}"
+            ) from exc
+        return os.fdopen(fd, "rb")
 
     async def _write_container(self, *, master_key: bytearray, salt: bytes, payload: bytes) -> None:
         """Encrypt `payload` and write the container atomically.
@@ -507,26 +576,26 @@ class TrustVault:
     # GC hygiene
     # ------------------------------------------------------------------
 
-    def __del__(self) -> None:  # noqa: D401
+    def __del__(self, _warnings=warnings) -> None:  # noqa: D401
         # Only emit a warning. Calling lock() here would touch the asyncio
         # event loop from a finalizer thread → deadlock per
         # rules/patterns.md § Async Resource Cleanup.
+        # `_warnings` is captured as a default argument so this finalizer
+        # survives interpreter shutdown — at shutdown the global `warnings`
+        # module may already be torn down, but the captured reference stays
+        # bound. Per rules/patterns.md § "Use def __del__(self, _warnings=...)
+        # signature (survives interpreter shutdown)".
         # Use getattr so partially-constructed instances (where __init__
         # raised before assigning _master_key) finalize cleanly.
         master_key = getattr(self, "_master_key", None)
         if master_key is not None:
-            try:
-                import warnings
-
-                vault_path = getattr(self, "_vault_path", "<unknown>")
-                warnings.warn(
-                    f"TrustVault({vault_path}) GC'd while unlocked — "
-                    "call await vault.lock() or use `async with vault.unlocked(...)`",
-                    ResourceWarning,
-                    stacklevel=2,
-                )
-            except Exception:  # noqa: BLE001
-                pass
+            vault_path = getattr(self, "_vault_path", "<unknown>")
+            _warnings.warn(
+                f"TrustVault({vault_path}) GC'd while unlocked — "
+                "call await vault.lock() or use `async with vault.unlocked(...)`",
+                ResourceWarning,
+                stacklevel=2,
+            )
 
 
 # ---------------------------------------------------------------------------

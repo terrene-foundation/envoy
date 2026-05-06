@@ -134,6 +134,23 @@ class TestUnlock:
         with pytest.raises(VaultUnlockFailedError, match="passphrase"):
             await v.unlock("")
 
+    async def test_empty_passphrase_rejected_even_when_already_unlocked(
+        self, created: Path
+    ) -> None:
+        """L-03 contract: empty passphrase MUST raise BEFORE the is_unlocked
+        idempotent short-circuit. Defense against zero-cost brute force AND
+        consistent error contract — the rejection happens regardless of vault
+        state."""
+        v = TrustVault(created, idle_ttl_seconds=10)
+        await v.unlock(PASSPHRASE)
+        assert v.is_unlocked
+        with pytest.raises(VaultUnlockFailedError, match="passphrase"):
+            await v.unlock("")
+        # Vault should still be unlocked from the first call (the second call
+        # rejected the bad input but did not undo the prior unlock).
+        assert v.is_unlocked
+        await v.lock()
+
 
 # ---------------------------------------------------------------------------
 # read() / write() — sealed-state guards + round-trip
@@ -240,6 +257,32 @@ class TestIdleLock:
         assert v.is_unlocked
         await v.lock()
 
+    async def test_idle_timer_burst_cancel_recreate_no_premature_lock(
+        self, vault_path: Path
+    ) -> None:
+        """100 rapid activity ticks MUST NOT race with the idle-lock task into
+        a state where the vault auto-locks while the caller is actively using
+        it. Coverage for the cancel-and-recreate race-safety guarantee per
+        the captured-task-identity check in `_idle_lock_after_ttl`.
+        """
+        v = TrustVault(vault_path, idle_ttl_seconds=0.5)
+        await v.create(PAYLOAD, PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        # Burst of 100 read() calls in tight succession — each call invokes
+        # `_touch_activity()` which cancels the prior timer task and schedules
+        # a new one. The captured-task-identity check inside the timer body
+        # guards against the race where a stale timer task finds itself no
+        # longer the owner and silently exits.
+        for _ in range(100):
+            assert (await v.read()) == PAYLOAD
+        # Vault MUST still be unlocked after the burst — none of the 100
+        # cancelled timer tasks should have fired auto-lock.
+        assert v.is_unlocked
+        # Final on-disk state survived (write path is unaffected).
+        await v.write(b"after-burst")
+        assert (await v.read()) == b"after-burst"
+        await v.lock()
+
 
 # ---------------------------------------------------------------------------
 # Context manager
@@ -317,6 +360,66 @@ class TestFileFormatIntegrity:
 # ---------------------------------------------------------------------------
 # Argon2id parameter strict-match
 # ---------------------------------------------------------------------------
+
+
+class TestPayloadLenMemoryDosBound:
+    async def test_inflated_payload_len_rejected(self, vault_path: Path) -> None:
+        """M-3 (gate review): a tampered header that declares a multi-GiB
+        payload_len MUST be rejected at read-time before f.read() allocates.
+        The bound is the Phase 04 padding-bucket ceiling (64 MiB)."""
+        import struct
+
+        from envoy.trust.vault import _HEADER_FMT, _HEADER_LEN
+
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(PAYLOAD, PASSPHRASE)
+        data = bytearray(vault_path.read_bytes())
+        magic, version, payload_len, salt, m, t, p, nonce = struct.unpack(
+            _HEADER_FMT, bytes(data[:_HEADER_LEN])
+        )
+        # Inflate payload_len to 1 GiB — well past the 64 MiB ceiling.
+        new_header = struct.pack(
+            _HEADER_FMT,
+            magic,
+            version,
+            1 << 30,  # 1 GiB
+            salt,
+            m,
+            t,
+            p,
+            nonce,
+        )
+        data[:_HEADER_LEN] = new_header
+        vault_path.write_bytes(bytes(data))
+        v2 = TrustVault(vault_path, idle_ttl_seconds=10)
+        with pytest.raises(VaultMACVerificationFailedError, match="exceeds max"):
+            await v2.unlock(PASSPHRASE)
+
+
+class TestSymlinkRejection:
+    async def test_symlink_redirect_rejected(self, tmp_path: Path) -> None:
+        """M-01 (security review): vault file resolved via O_NOFOLLOW so a
+        symlink redirect (e.g. an attacker pointing the vault path at
+        /etc/shadow) is rejected at open time rather than silently followed."""
+        import os
+        import sys
+
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("O_NOFOLLOW not available on this platform")
+        if sys.platform == "win32":
+            pytest.skip("symlink redirect test runs on POSIX only")
+
+        real_target = tmp_path / "real-vault.dat"
+        v = TrustVault(real_target, idle_ttl_seconds=10)
+        await v.create(PAYLOAD, PASSPHRASE)
+
+        # Create a symlink from a different path pointing at the real vault
+        symlink_path = tmp_path / "symlinked.dat"
+        symlink_path.symlink_to(real_target)
+        # A vault opened via the symlink path MUST be rejected.
+        v2 = TrustVault(symlink_path, idle_ttl_seconds=10)
+        with pytest.raises(VaultMACVerificationFailedError, match="symlink redirect"):
+            await v2.unlock(PASSPHRASE)
 
 
 class TestArgon2ParameterStrictMatch:
