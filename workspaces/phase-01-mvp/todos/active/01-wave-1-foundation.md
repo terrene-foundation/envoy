@@ -363,7 +363,22 @@ Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-
 
 **Test coverage**: `tests/tier1/test_envoy_ledger_facade.py` (23 cases / 6 classes): `TestConstruction` (5 — valid construction, missing key, 1-key algorithm rejection, empty signing_key_id, empty device_id); `TestAppend` (6 — sha256 prefix, sequence increment, parent_hash chain Genesis link, empty entry_type, non-dict content, full-envelope persistence); `TestHeadCommitment` (4 — initial None, updates after each append, canonical timestamp shape, signed); `TestVerifyChain` (4 — empty chain, populated chain, dataclass shape, tamper detection); `TestHaltedState` (2 — halt refuses append, rollback detection halts); `TestOrphanWatchClosure` (2 — 3-key algorithm_id flow, HashChainBuilder pure-path round-trip).
 
-**Verification gate**: pytest tier1+regression `229 passed in 10.16s`; zero collection errors; zero warnings.
+**Verification gate**: pytest tier1+regression `233 passed in 9.90s` (post review-feedback, +4 from rollback + 3 tamper tests); zero collection errors; zero warnings.
+
+**Gate-review fixes applied in same shard** (per `rules/autonomous-execution.md` MUST Rule 4):
+
+- Security H-1 (atomicity, append): refactored `append()` to compute TENTATIVE counter values without mutating chain state; advance `_lamport_time` / `_local_seq` / `_sequence` / `_last_entry_id` / `_head` ONLY after `audit_store.append()` succeeds. Failure leaves baseline unchanged so the next try retries from the same state. New regression test `test_failing_audit_store_append_rolls_back_chain_state` injects a failing audit_store wrapper; asserts no counters / state advanced post-failure AND that the next successful append observes sequence=1 (not 2).
+- Security H-2 (atomicity, head): inverted order — head commitment is minted + signed BEFORE `audit_store.append()` via new pure-function `_mint_head_commitment(entry_id, sequence) -> HeadCommitment` (decoupled from installation). Caller installs the head atomically with the counter advance on success.
+- Security M-2: 3 new tamper-detection tests — `test_verify_detects_tampered_algorithm_identifier`, `test_verify_detects_tampered_lamport_clock`, `test_verify_detects_tampered_signature_hex`. Each mutates a distinct envelope field and asserts `verify_chain` catches it (entry_id mismatch for canonical-bytes-included fields; signature failure for signature_hex).
+- Security L-1: `_envelope_to_audit_event` now propagates `tenant_id` + `agent_id` to AuditEvent via `dataclasses.replace` (AuditEvent is frozen; replace returns a new instance with the patched fields).
+- Gate Note A (Rule 3c kwarg-accepted-but-unused): removed `record_id_model` parameter from public `append()` signature. The kwarg was documented but never read in the function body — same class as `rules/zero-tolerance.md` Rule 3c (silent fallback / fake dispatch). Phase 01 narrow scope: producers that need classified-PK redaction call `format_record_id_for_event` upstream and pass redacted values via `content`. The kwarg re-enters when T-01-21 wires a real ClassificationPolicy consumer.
+
+**Deferred** (out of T-01-18 shard):
+
+- Security M-3 (HeadCommitment.signature_hex never verified): T-01-19 export bundle consumes; flag in code comment.
+- Security M-4 (metadata JSON-roundtrip safety): T-01-21 Tier 2 wiring with SqliteAuditStore exercises the round-trip.
+- Security L-2 (verify try/except wrapper): nice-to-have; defer since current InvalidSignature exception path doesn't escape verify_chain (kailash returns False on bad sig).
+- Important: commit subject 80 chars over 72 — cannot fix via amend (no-amend rule); next commit subject is 65 chars ✓.
 
 **inspect.signature methodology** caught FOUR drifts in shard 6 § 4 sketch (5-of-5 clean methodology runs since journal/0010, but the SKETCH itself had 4 phantom citations):
 

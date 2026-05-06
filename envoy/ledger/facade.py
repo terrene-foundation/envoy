@@ -205,7 +205,6 @@ class EnvoyLedger:
         content: dict[str, Any],
         intent_id: Optional[str] = None,
         content_trust_level: str = "system",
-        record_id_model: Optional[str] = None,
     ) -> str:
         """Sign + append a new entry. Returns the new entry_id.
 
@@ -220,11 +219,16 @@ class EnvoyLedger:
                 None on Phase 01 single-phase records.
             content_trust_level: One of `user-authored | tool-output | channel-message
                 | derived-external | heartbeat | system | sub-agent | llm-authored`.
-            record_id_model: When `content` carries a classified-PK reference, pass
-                the model name here to route through `format_record_id_for_event`.
-                Phase 01 narrow scope: caller-side filter is the producer's
-                responsibility; the facade does not inspect content for classified
-                PKs by default.
+
+        Note: classified-PK record_id filtering via `format_record_id_for_event`
+        per `rules/event-payload-classification.md` Rule 1 is explicitly
+        deferred to T-01-21 Tier 2 wiring (where a real ClassificationPolicy
+        from kailash-dataflow lands). Phase 01 narrow scope: producers that
+        need redaction call `format_record_id_for_event` before constructing
+        `content` and pass the redacted record_id directly. The facade does
+        NOT accept a `record_id_model` kwarg in Phase 01 to avoid the Rule 3c
+        "documented kwarg accepted but unused" anti-pattern; the kwarg
+        re-enters when a real consumer wires it.
 
         Raises:
             LedgerHaltedError: if a prior `HaltedByRollback` halted the chain.
@@ -241,14 +245,18 @@ class EnvoyLedger:
         if not isinstance(content, dict):
             raise ValueError(f"content must be a dict (got {type(content).__name__!r})")
 
-        # Tick the per-device monotonic counters BEFORE building the envelope.
-        self._lamport_time += 1
-        self._local_seq += 1
-        self._sequence += 1
+        # Compute TENTATIVE counter values without mutating chain state.
+        # Atomicity invariant per security review H-1: counters advance ONLY
+        # after audit_store.append() succeeds AND the head commitment is
+        # minted. A failure at any step leaves chain state unchanged so the
+        # next append retries from the same baseline.
+        tentative_lamport_time = self._lamport_time + 1
+        tentative_local_seq = self._local_seq + 1
+        tentative_sequence = self._sequence + 1
         lamport = LamportClock(
-            lamport_time=self._lamport_time,
+            lamport_time=tentative_lamport_time,
             device_id=self._device_id,
-            local_seq=self._local_seq,
+            local_seq=tentative_local_seq,
         )
 
         timestamp = _now_canonical()
@@ -260,7 +268,7 @@ class EnvoyLedger:
 
         canonical_bytes, entry_id = self._builder.build_unsigned(
             prev_entry_id=self._last_entry_id,
-            sequence=self._sequence,
+            sequence=tentative_sequence,
             lamport=lamport,
             timestamp=timestamp,
             type_=entry_type,
@@ -278,7 +286,7 @@ class EnvoyLedger:
             entry_id=entry_id,
             signature_hex=signature_hex,
             prev_entry_id=self._last_entry_id,
-            sequence=self._sequence,
+            sequence=tentative_sequence,
             lamport=lamport,
             timestamp=timestamp,
             type_=entry_type,
@@ -290,6 +298,14 @@ class EnvoyLedger:
             algorithm_identifier=self._algorithm_identifier,
         )
 
+        # Mint + sign the new head commitment BEFORE persisting the entry.
+        # Atomicity invariant per security review H-2: signing the head is
+        # cheap + reversible; if audit_store.append fails we discard the
+        # head locally. If we instead persisted the entry first and then
+        # the head signing failed (e.g., transient key_manager error), the
+        # entry would be persisted with stale head — chain ahead of head.
+        new_head = self._mint_head_commitment(entry_id=entry_id, sequence=tentative_sequence)
+
         # Translate envoy envelope → kailash AuditEvent.
         audit_event = self._envelope_to_audit_event(envelope)
         # AuditStoreProtocol declares append() sync, but the kailash 2.13.4
@@ -298,9 +314,14 @@ class EnvoyLedger:
         # TrustOperations). Discovered via inspect.signature sweep.
         await self._audit_store.append(audit_event)
 
-        # Advance chain state + re-mint head commitment.
+        # SUCCESS — atomically commit the tentative state. Per security
+        # review H-1, only past this point are counters advanced;
+        # audit_store.append failure above leaves chain state unchanged.
+        self._lamport_time = tentative_lamport_time
+        self._local_seq = tentative_local_seq
+        self._sequence = tentative_sequence
         self._last_entry_id = entry_id
-        await self._update_head_commitment(entry_id=entry_id, sequence=self._sequence)
+        self._head = new_head
 
         return entry_id
 
@@ -409,8 +430,10 @@ class EnvoyLedger:
           AuditStoreProtocol per inspect.signature sweep — manual
           construction trips ChainIntegrityError on hash-mismatch.
         """
+        import dataclasses
+
         envelope_dict = envelope.to_dict()
-        return self._audit_store.create_event(
+        event = self._audit_store.create_event(
             actor=envelope.signed_by,
             action=envelope.type,
             resource="ledger.entry",
@@ -419,18 +442,37 @@ class EnvoyLedger:
             event_id=envelope.entry_id,
             timestamp=envelope.timestamp,
         )
+        # Per security review L-1: propagate tenant_id to AuditEvent so a
+        # multi-tenant query (Phase 03) can filter by it. Phase 01 single-
+        # principal: tenant_id is None, the kailash field stays None, the
+        # query returns the same shape — no behavior change.
+        # AuditEvent is frozen; dataclasses.replace() returns a new
+        # instance with the patched fields.
+        return dataclasses.replace(
+            event,
+            tenant_id=self._tenant_id,
+            agent_id=self._device_id,
+        )
 
     # ------------------------------------------------------------------
     # Internal: HeadCommitment monotonic guard + minting
     # ------------------------------------------------------------------
 
-    async def _update_head_commitment(self, *, entry_id: str, sequence: int) -> None:
-        """Mint + sign a new HeadCommitment after each append.
+    def _mint_head_commitment(self, *, entry_id: str, sequence: int) -> HeadCommitment:
+        """Mint + sign a new HeadCommitment WITHOUT installing it.
 
         Per spec § Head commitment, the head_sequence is monotonic
         non-decreasing. A decrease (which Phase 01 single-device flow
         cannot produce, but defensive against future bugs) raises
-        `LedgerRollbackDetectedError` and halts the chain.
+        `LedgerRollbackDetectedError` AND halts the chain BEFORE the raise
+        so the halt persists even if the caller catches the exception.
+
+        Returns the new HeadCommitment for the caller to install on the
+        success path. This decoupling enables the atomicity invariant per
+        security review H-2: head commitment is minted + signed before
+        audit_store.append; if the persistence fails, no head was
+        installed; if the persistence succeeds, the caller installs the
+        head atomically with the counter advance.
         """
         if self._head is not None and sequence < self._head.head_sequence:
             self._halted = True
@@ -449,7 +491,7 @@ class EnvoyLedger:
             }
         )
         signature_hex = self._key_manager.sign_with_key(self._signing_key_id, head_payload)
-        self._head = HeadCommitment(
+        return HeadCommitment(
             head_sequence=sequence,
             head_entry_id=entry_id,
             signed_at=signed_at,

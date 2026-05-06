@@ -296,6 +296,69 @@ class TestVerifyChain:
         assert report.failed_entry_index == 0
         assert report.failure_reason is not None
 
+    async def test_verify_detects_tampered_algorithm_identifier(
+        self, ledger: EnvoyLedger, audit_store: InMemoryAuditStore
+    ) -> None:
+        """M-2 (security review): tamper on algorithm_identifier field MUST
+        be caught — the field is part of the canonical bytes hashed into
+        entry_id, so any mutation breaks the recomputed_id check."""
+        from kailash.trust.audit_store import AuditFilter
+
+        await ledger.append(entry_type="t1", content={"v": 1})
+        events = await audit_store.query(AuditFilter(limit=10))
+        # Replace the 3-key form with a different (still valid-looking) 3-key form.
+        events[0].metadata["_envoy_envelope_v1"]["algorithm_identifier"] = {
+            "sig": "ed448",
+            "hash": "sha512",
+            "shamir": "slip39",
+        }
+        report = await ledger.verify_chain()
+        assert report.success is False
+        assert report.failed_entry_index == 0
+
+    async def test_verify_detects_tampered_lamport_clock(
+        self, ledger: EnvoyLedger, audit_store: InMemoryAuditStore
+    ) -> None:
+        """M-2 (security review): tamper on lamport_clock fields MUST be
+        caught — lamport_time / device_id / local_seq are all in the
+        canonical bytes."""
+        from kailash.trust.audit_store import AuditFilter
+
+        await ledger.append(entry_type="t1", content={"v": 1})
+        events = await audit_store.query(AuditFilter(limit=10))
+        events[0].metadata["_envoy_envelope_v1"]["lamport_clock"]["lamport_time"] = 999
+        report = await ledger.verify_chain()
+        assert report.success is False
+        assert report.failed_entry_index == 0
+
+    async def test_verify_detects_tampered_signature_hex(
+        self, ledger: EnvoyLedger, audit_store: InMemoryAuditStore
+    ) -> None:
+        """M-2 (security review): tamper on signature_hex MUST be caught
+        via verify(payload, signature, public_key) returning False —
+        signature_hex is NOT in canonical bytes (excluded from hash input)
+        but IS verified against the public key on the entry's canonical
+        bytes."""
+        from kailash.trust.audit_store import AuditFilter
+
+        await ledger.append(entry_type="t1", content={"v": 1})
+        events = await audit_store.query(AuditFilter(limit=10))
+        # Flip one byte of the base64-encoded signature.
+        original = events[0].metadata["_envoy_envelope_v1"]["signature_hex"]
+        flipped = ("Z" if original[5] != "Z" else "Y") + original[1:]
+        events[0].metadata["_envoy_envelope_v1"]["signature_hex"] = flipped[0] + flipped[1:]
+        # Actually flip a meaningful byte: replace the 3rd char.
+        char = original[3]
+        new_char = "B" if char != "B" else "C"
+        events[0].metadata["_envoy_envelope_v1"]["signature_hex"] = (
+            original[:3] + new_char + original[4:]
+        )
+        report = await ledger.verify_chain()
+        assert report.success is False
+        assert report.failed_entry_index == 0
+        # Should be signature failure since entry_id derivation excludes signature_hex.
+        assert "signature" in (report.failure_reason or "").lower()
+
 
 # ---------------------------------------------------------------------------
 # LedgerHaltedError — halt-before-refuse contract
@@ -309,6 +372,76 @@ class TestHaltedState:
         with pytest.raises(LedgerHaltedError, match="halted"):
             await ledger.append(entry_type="t1", content={"v": 1})
 
+    async def test_failing_audit_store_append_rolls_back_chain_state(
+        self, audit_store: InMemoryAuditStore, keymgr: InMemoryKeyManager
+    ) -> None:
+        """H-1 (security): audit_store.append() failure MUST NOT leave the
+        ledger with advanced counters or stale last_entry_id. The next
+        successful append MUST resume from the same baseline as before
+        the failed call. Atomicity invariant per shard 6 § 4 step 3."""
+
+        class FailingStore:
+            """Wraps a real audit store; raises on append the first N times."""
+
+            def __init__(self, real, fail_count: int):
+                self._real = real
+                self._fail_count = fail_count
+                self._calls = 0
+                self.last_hash = real.last_hash
+
+            def create_event(self, **kwargs):
+                return self._real.create_event(**kwargs)
+
+            async def append(self, event):
+                self._calls += 1
+                if self._calls <= self._fail_count:
+                    raise RuntimeError(f"injected disk-full failure #{self._calls}")
+                await self._real.append(event)
+                self.last_hash = self._real.last_hash
+
+            async def query(self, f):
+                return await self._real.query(f)
+
+            async def verify_chain(self):
+                return await self._real.verify_chain()
+
+            async def close(self):
+                await self._real.close()
+
+        failing = FailingStore(audit_store, fail_count=1)
+        ledger = EnvoyLedger(
+            audit_store=failing,
+            key_manager=keymgr,
+            signing_key_id=SIGNING_KEY_ID,
+            device_id=DEVICE_ID,
+            algorithm_identifier=VALID_ALGO_ID,
+        )
+        # Snapshot baseline state pre-call.
+        before_seq = ledger._sequence
+        before_lamport = ledger._lamport_time
+        before_local = ledger._local_seq
+        before_last = ledger._last_entry_id
+        before_head = ledger._head
+
+        with pytest.raises(RuntimeError, match="injected"):
+            await ledger.append(entry_type="t1", content={"v": 1})
+
+        # Counters MUST be unchanged after the failed append.
+        assert ledger._sequence == before_seq
+        assert ledger._lamport_time == before_lamport
+        assert ledger._local_seq == before_local
+        assert ledger._last_entry_id == before_last
+        assert ledger._head is before_head  # head_commitment also unchanged
+        assert ledger.is_halted is False
+
+        # Next append MUST succeed using the same baseline (sequence still 1
+        # — nothing leaked from the failed call).
+        eid = await ledger.append(entry_type="t1", content={"v": 1})
+        head = await ledger.head_commitment()
+        assert head is not None
+        assert head.head_sequence == 1  # NOT 2 — failed call didn't advance.
+        assert head.head_entry_id == eid
+
     async def test_rollback_detection_halts_on_decreasing_sequence(
         self, ledger: EnvoyLedger
     ) -> None:
@@ -317,9 +450,9 @@ class TestHaltedState:
         chain state) and halt the ledger via LedgerRollbackDetectedError."""
         await ledger.append(entry_type="t1", content={"v": 1})
         # Inject an artificial backward sequence directly through the
-        # internal _update_head_commitment to exercise the guard.
+        # internal _mint_head_commitment to exercise the guard.
         with pytest.raises(LedgerRollbackDetectedError, match="monotonic guard"):
-            await ledger._update_head_commitment(entry_id="sha256:" + "f" * 64, sequence=0)
+            ledger._mint_head_commitment(entry_id="sha256:" + "f" * 64, sequence=0)
         assert ledger.is_halted is True
         with pytest.raises(LedgerHaltedError):
             await ledger.append(entry_type="t2", content={"v": 2})
