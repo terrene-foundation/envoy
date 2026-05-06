@@ -126,6 +126,37 @@ Per /implement workflow Step 7:
 
 **Estimate:** 1 session.
 
+## Verification — T-01-13
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-foundation-t-01-13`).
+
+- `envoy/trust/vault.py` (~390 LOC) — `TrustVault` class with `create()` / `unlock()` / `lock()` / `read()` / `write()` / `unlocked()` context manager + `__aenter__` / `__aexit__` lifecycle.
+- `envoy/trust/errors.py` adds 5 typed errors: `VaultError` (base), `VaultLockedError`, `VaultUnlockFailedError`, `VaultMACVerificationFailedError`, `Argon2ParameterMismatchError`, `AutoLockIdleTimeoutError`.
+- `pyproject.toml` adds direct deps: `cryptography>=44.0` (AES-256-GCM via `cryptography.hazmat.primitives.ciphers.aead.AESGCM`), `argon2-cffi>=23.0` (Argon2id KDF).
+- File format: 53-byte header (`b"ETVT"` magic + version + payload_len + salt + Argon2id (m, t, p) + nonce) followed by AES-256-GCM ciphertext + tag. Header bytes are AAD — any header tamper fails MAC verification.
+- Argon2id parameters pinned to canonical (m=2^17, t=3, p=1) per `specs/trust-vault.md` § Encryption; non-canonical params raise `Argon2ParameterMismatchError`.
+- Idle-lock timer: cancel-and-recreate on every `read()` / `write()` / `_touch_activity()`; auto-lock fires after `idle_ttl_seconds` (default 15min per spec § Memory hygiene); subsequent access raises `AutoLockIdleTimeoutError`.
+- Master key zeroized on `lock()` via in-place bytearray overwrite (best-effort residency minimization per `rules/trust-plane-security.md` MUST NOT Rule 3 — Phase 02 will add `ctypes.memset` cleansing).
+- Atomic write per `rules/trust-plane-security.md` MUST Rule 7 — temp file + fsync + `os.replace`.
+- Restrictive permissions per Rule 6 — `chmod 0o600` after write (POSIX).
+- `__del__` emits `ResourceWarning` (does NOT call `lock()` — finalizer/event-loop deadlock per `rules/patterns.md` § Async Resource Cleanup).
+
+**Test coverage**: `tests/tier1/test_trust_vault_lifecycle.py` (25 cases, 8 classes): `TestConstructionDefaults` (3 — default TTL = 15min; positive TTL required; sealed initial state); `TestCreate` (3 — write+seal, refuse-overwrite, reject-empty-passphrase); `TestUnlock` (5 — correct passphrase, wrong passphrase, missing file, idempotency, empty passphrase); `TestReadWriteGuards` (3 — sealed-vault read/write raise, round-trip); `TestLock` (3 — seal, idempotency, master-key zeroize); `TestIdleLock` (2 — auto-lock fires, activity resets timer); `TestUnlockedContextManager` (2 — unlock-on-entry/lock-on-exit, lock-on-exception); `TestFileFormatIntegrity` (3 — truncation, magic-byte corruption, ciphertext byte-flip); `TestArgon2ParameterStrictMatch` (1 — non-canonical params rejected).
+
+**Verification gate**: pytest tier1+regression `117 passed in 6.76s`; **zero collection errors; zero warnings**.
+
+**Out of T-01-13 scope** (Phase 02+ shards):
+
+- Secure-Enclave / TPM-bound secret XOR (per spec § Encryption — needs platform-specific work; Phase 02).
+- Per-region HKDF-SHA-256 keys (Phase 02 — Phase 01 ships single-region).
+- Padding buckets {1, 4, 16, 64} MiB indistinguishability (Phase 04).
+- Duress passphrase + honeypot Genesis (Phase 04).
+- Hidden envelope + shadow segment (Phase 04).
+- `envoy vault destroy-keys` CLI for T-042 mitigation (Phase 02).
+- Integration with TrustStoreAdapter (T-01-16 Tier 2 wiring will route SQLite paths through the vault region).
+
+inspect.signature methodology applied — `argon2.low_level.hash_secret_raw` + `cryptography.hazmat.primitives.ciphers.aead.AESGCM.{encrypt,decrypt}` signatures verified against current installed versions before writing code.
+
 ---
 
 ## T-01-14 — Build envoy/trust/cascade + algorithm_id helpers
