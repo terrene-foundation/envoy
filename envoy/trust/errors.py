@@ -42,3 +42,71 @@ class TrustChainNotFoundError(TrustStoreError):
     Wraps `kailash.trust.exceptions.TrustChainNotFoundError` so envoy callers
     catch the envoy-side hierarchy.
     """
+
+
+# ---------------------------------------------------------------------------
+# Trust Vault errors (T-01-13) — mirror specs/trust-vault.md § Error taxonomy.
+# Phase 01 covers a subset; Phase 02+ extends with duress / shadow-segment /
+# key-destruction errors as those features ship.
+# ---------------------------------------------------------------------------
+
+
+class VaultError(TrustStoreError):
+    """Base class for every vault-touching error.
+
+    Per `rules/security.md` § "No secrets in logs", error messages MUST NOT
+    echo passphrases, derived keys, or plaintext region content.
+    """
+
+
+class VaultLockedError(VaultError):
+    """Raised when a vault-touching operation fires while the vault is locked.
+
+    Every TrustStoreAdapter method that reads/writes the vault region MUST
+    check `vault.is_unlocked` and raise this error if the vault is sealed.
+    Callers re-unlock via `await vault.unlock(passphrase)` per
+    `specs/trust-vault.md` § Error taxonomy `AutoLockIdleTimeoutError`.
+    """
+
+
+class VaultUnlockFailedError(VaultError):
+    """Raised when passphrase Argon2id derivation produces a key that fails
+    AES-256-GCM tag verification (i.e., wrong passphrase).
+
+    Per `specs/trust-vault.md` § Error taxonomy: re-enter passphrase; if
+    persistent, run Shamir recovery (T-15 ShamirRitualCoordinator).
+    """
+
+
+class VaultMACVerificationFailedError(VaultError):
+    """Raised when the outer AES-256-GCM tag verification fails on a vault that
+    SHOULD decrypt cleanly (i.e., file-level tamper or container corruption,
+    not wrong passphrase).
+
+    Per `specs/trust-vault.md` § Error taxonomy: refuse unlock; restore from
+    backup or run Shamir recovery. Distinguishes file-level corruption from
+    passphrase-mismatch — the verifier (shard 7) treats this as evidence of
+    targeted tamper.
+    """
+
+
+class Argon2ParameterMismatchError(VaultError):
+    """Raised when stored vault Argon2id parameters (m, t, p) differ from the
+    binary's expected values (m=2^17, t=3, p=1).
+
+    Phase 01 hard-codes the canonical parameters. A vault file with different
+    parameters MUST NOT be silently re-derived — the Foundation publishes
+    parameter migrations explicitly. Per `specs/trust-vault.md` § Error
+    taxonomy: run vault migration; backup before.
+    """
+
+
+class AutoLockIdleTimeoutError(VaultError):
+    """Raised by a vault-touching operation that fires AFTER the idle-lock timer
+    has fired and re-sealed the vault.
+
+    Per `specs/trust-vault.md` § Memory hygiene "Auto-lock after 15min idle";
+    the operation MUST re-unlock before retrying. Distinct from
+    `VaultLockedError` (vault was already locked) — this signals "vault was
+    unlocked, then auto-locked between this operation's start and access".
+    """
