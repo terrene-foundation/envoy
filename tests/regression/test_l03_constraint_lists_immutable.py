@@ -1,26 +1,28 @@
-"""Regression: L-03 shard A — authored/imported constraint fields are
-tuple-typed, preventing in-place mutation of the constraint set.
+"""Regression: L-03 shards A + B — constraint fields are tuple-typed AND
+the 5 dimensions + EnvelopeMetadata are @dataclass(frozen=True, slots=True).
 
-# SHARD_B_TRIGGER: classes named *ShardB* below lock current behavior
-# that shard B must FLIP (e.g., scalar mutation succeeding today must
-# raise FrozenInstanceError once shard B's frozen=True lands). Grep for
-# `ShardBFollowup` to find the lock points.
+L-03 SHARD STATE (post-PR #12, 2026-05-06):
+- Shard A (PR #10): authored_constraints + imported_constraints are
+  tuple-typed; .append on a compiled envelope's constraint list raises
+  AttributeError.
+- Shard B step 1 (PR #11): EnvelopeMetadata @dataclass(frozen=True);
+  metadata field reassignment raises FrozenInstanceError.
+- Shard B step 2 (PR #12, this regression file's current state): 5
+  dimension dataclasses @dataclass(frozen=True); dimension scalar / list /
+  dict field reassignment raises FrozenInstanceError. Compiler mints new
+  instances via dataclasses.replace.
 
-Source: gate-level security review of PR #3 finding L-03 — out-of-shard
-for T-01-15. Original todo at
-`workspaces/phase-01-mvp/todos/active/12-followup-l03-frozen-dimension-dataclasses.md`
-specifies a full freeze of the 5 dimension dataclasses + EnvelopeMetadata
-+ SemanticChecks. Shard A (this PR) ships the lower-risk piece: tuple
-typing on the constraint list fields. Shard B will land the full
-dimension freeze (preventing scalar mutation of e.g.
-`per_call_ceiling_microdollars` post-compile).
+# SHARD_B_TRIGGER: any markers remaining in this file refer to Phase 02
+# deep-freeze (MappingProxyType / tuple-of-tuples) — see workspace todo
+# `13-phase-02-deep-freeze-mappingproxy.md` for the next-phase scope.
 
-Failure mode being guarded: a downstream consumer with a reference to a
-compiled `EnvelopeConfig.financial` could call
-`compiled.financial.authored_constraints.append(...)` to silently widen
-the envelope, breaking content_hash byte-identity. Shard A makes the
-field a tuple; `tuple.append` does not exist; the mutation pattern fails
-with AttributeError.
+Failure modes guarded (all 3 shards together):
+- (Shard A) `compiled.financial.authored_constraints.append(...)` →
+  AttributeError (tuple has no .append).
+- (Shard B step 1) `compiled.metadata.envelope_id = "evil"` →
+  FrozenInstanceError.
+- (Shard B step 2) `compiled.financial.per_call_ceiling_microdollars =
+  larger_value` → FrozenInstanceError; same for the other 4 dimensions.
 
 Per `rules/refactor-invariants.md`: permanent regression marker.
 Per `rules/testing.md` § Test-Skip Triage: deletion / silent skip BLOCKED.
@@ -33,6 +35,7 @@ import pytest
 from envoy.envelope.types import (
     AuthoredConstraint,
     CommunicationDimension,
+    ConfidentialityLevel,
     DataAccessDimension,
     FinancialDimension,
     ImportedConstraint,
@@ -176,6 +179,50 @@ class TestShardBFollowupTracking:
         d2 = dataclasses.replace(d, per_call_ceiling_microdollars=999)
         assert d.per_call_ceiling_microdollars == 100  # original untouched
         assert d2.per_call_ceiling_microdollars == 999
+
+    @pytest.mark.parametrize(
+        "dim_factory,field,new_value",
+        [
+            # Per security review M-1 (same-bug-class fix-immediate per
+            # autonomous-execution.md Rule 4): the FinancialDimension test
+            # above covered only ONE of 5 dimensions. Each sibling dimension's
+            # frozen=True surface is structurally identical and MUST be
+            # locked the same way. Parametric coverage closes the gap.
+            (lambda: OperationalDimension(), "tool_allowlist", ["evil"]),
+            (lambda: OperationalDimension(), "tool_denylist", ["evil"]),
+            (lambda: TemporalDimension(), "allowed_windows", [{"start": "00:00"}]),
+            (lambda: TemporalDimension(), "blackout_windows", [{"start": "00:00"}]),
+            (
+                lambda: DataAccessDimension(),
+                "classification_clearance",
+                ConfidentialityLevel.HIGHLY_CONFIDENTIAL,
+            ),
+            (lambda: DataAccessDimension(), "field_denylist", ["ssn"]),
+            (lambda: CommunicationDimension(), "recipient_allowlist", ["evil@x.com"]),
+            (lambda: CommunicationDimension(), "domain_allowlist", ["evil.com"]),
+            (lambda: CommunicationDimension(), "channel_allowlist", ["evil-channel"]),
+        ],
+    )
+    def test_sibling_dimension_field_reassignment_rejected(
+        self, dim_factory, field, new_value
+    ) -> None:
+        """L-03 shard B step 2 same-bug-class coverage: every scalar/list/dict
+        field on every non-Financial dimension MUST raise FrozenInstanceError
+        on direct reassignment. The compile pipeline mints new dimension
+        instances via `dataclasses.replace`; downstream consumers cannot
+        widen by direct field mutation.
+
+        Origin: PR #12 security review M-1 (2026-05-06) — Rule 4 fix-in-PR.
+        """
+        import dataclasses
+
+        d = dim_factory()
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(d, field, new_value)  # type: ignore[misc]
+
+        # The replace pattern produces a new instance; original is untouched.
+        d2 = dataclasses.replace(d, **{field: new_value})
+        assert getattr(d2, field) == new_value
 
     def test_envelope_metadata_authorship_score_field_reassignment_rejected(
         self,
