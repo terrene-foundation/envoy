@@ -345,6 +345,46 @@ inspect.signature methodology applied — `dataflow.classification.event_payload
 
 **Estimate:** 1 session.
 
+## Verification — T-01-18
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-01-18`).
+
+- `envoy/ledger/facade.py` (~360 LOC): `EnvoyLedger` class + `VerificationReport` frozen dataclass + `_KeyManagerProtocol` typed protocol.
+- `EnvoyLedger.__init__`: takes `audit_store: AuditStoreProtocol`, `key_manager`, `signing_key_id`, `device_id`, `algorithm_identifier` (3-key form per T-01-15 — fail-loud if 1-key form passed), optional `tenant_id` + `classification_policy`. Resolves `signing_pubkey` once at construction (kailash's `verify` takes pubkey directly, NOT key_id — discovered via inspect.signature sweep).
+- `EnvoyLedger.append(*, entry_type, content, intent_id=None, content_trust_level="system")`: ticks lamport clock + sequence + local_seq → builds canonical bytes via `HashChainBuilder.build_unsigned` → signs via `key_manager.sign_with_key` → seals envelope via `HashChainBuilder.seal` → translates to kailash `AuditEvent` via `audit_store.create_event` (delegates chain-shape construction so kailash's `ChainIntegrityError` doesn't fire) → `await audit_store.append(event)` → `_update_head_commitment(entry_id, sequence)`.
+- `EnvoyLedger.head_commitment()` returns the latest signed `HeadCommitment`. Internal `_update_head_commitment` enforces monotonic guard — sequence decrease raises `LedgerRollbackDetectedError` AND sets `_halted = True`.
+- `EnvoyLedger.verify_chain()` walks every event with `_envoy_envelope_v1` metadata key in append-order; verifies parent_hash continuity, recomputed entry_id matches stored, signature verifies via `await key_manager.verify(payload, signature, public_key)`. Returns `VerificationReport(success, entries_verified, failed_entry_index, failure_reason)`.
+- Halt-before-refuse: `_halted` flag set on rollback detection; subsequent `append` raises `LedgerHaltedError` with operator workflow ("envoy ledger audit").
+
+**Closes BOTH orphan-watch grace windows** per `rules/orphan-detection.md` Rule 1:
+
+- T-01-15 `TrustStoreAdapter._with_algorithm_id` orphan-watch — `algorithm_identifier` now flows into every `append()` call via constructor + envelope construction.
+- T-01-17 `EntryEnvelope` + `HashChainBuilder` orphan-watch — invoked at every `append()` on the production hot path.
+
+**Test coverage**: `tests/tier1/test_envoy_ledger_facade.py` (23 cases / 6 classes): `TestConstruction` (5 — valid construction, missing key, 1-key algorithm rejection, empty signing_key_id, empty device_id); `TestAppend` (6 — sha256 prefix, sequence increment, parent_hash chain Genesis link, empty entry_type, non-dict content, full-envelope persistence); `TestHeadCommitment` (4 — initial None, updates after each append, canonical timestamp shape, signed); `TestVerifyChain` (4 — empty chain, populated chain, dataclass shape, tamper detection); `TestHaltedState` (2 — halt refuses append, rollback detection halts); `TestOrphanWatchClosure` (2 — 3-key algorithm_id flow, HashChainBuilder pure-path round-trip).
+
+**Verification gate**: pytest tier1+regression `229 passed in 10.16s`; zero collection errors; zero warnings.
+
+**inspect.signature methodology** caught FOUR drifts in shard 6 § 4 sketch (5-of-5 clean methodology runs since journal/0010, but the SKETCH itself had 4 phantom citations):
+
+1. `kailash.trust.audit.AuditStore` → actual `kailash.trust.audit_store.AuditStoreProtocol`
+2. `kailash.trust.signing.crypto.Ed25519Signer` → actual `key_manager.sign_with_key(key_id, payload) -> str` + free-function `sign(payload, private_key) -> str`
+3. `kailash.dataflow` → not a real package; `dataflow.classification.event_payload` lives at top-level `dataflow.*`
+4. `key_manager.verify(key_id, payload, signature)` → actual `verify(payload, signature, public_key)` (takes pubkey directly, not key_id) — caught at runtime via base64 decode error during smoke test
+5. `audit_store.append(event) -> None` declared sync but actually async — fixed via `await`
+
+The methodology is structurally validated; recommend codifying as a /implement Step 2 mechanical gate per the journal/0010 recommendation.
+
+**Out of T-01-18 scope** (T-01-19 + later shards):
+
+- Two-phase signing (PhaseARecord/PhaseBRecord linked by intent_id) — Wave 3 Grant Moment.
+- Orphan resolution + 30-day TTL sweep at session start — Wave 3.
+- HaltedByRollback ENTRY EMISSION on cross-device sync — Phase 02 (single-device Phase 01 doesn't produce sync rollbacks).
+- Export bundle (T-01-19).
+- 4-key segment-boundary algorithm_identifier serializer (T-01-20).
+- Tier 2 wiring with real SqliteAuditStore + real Ed25519 timing (T-01-21).
+- Multi-principal query filtering — Phase 03.
+
 ---
 
 ## T-01-19 — Build envoy/ledger/export

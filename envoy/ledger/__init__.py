@@ -41,6 +41,7 @@ from envoy.ledger.errors import (
     LedgerVerificationFailedError,
     PhaseAOrphanDetectedError,
 )
+from envoy.ledger.facade import EnvoyLedger, VerificationReport
 from envoy.ledger.hash_chain import EntryEnvelope, HashChainBuilder
 from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment
 from envoy.ledger.lamport import LamportClock
@@ -49,6 +50,7 @@ __all__ = [
     "CanonicalJsonEncoder",
     "EntryEnvelope",
     "EntryKeyDestroyedError",
+    "EnvoyLedger",
     "HaltedByRollbackRecord",
     "HashChainBuilder",
     "HeadCommitment",
@@ -61,5 +63,6 @@ __all__ = [
     "LedgerSyncConflictError",
     "LedgerVerificationFailedError",
     "PhaseAOrphanDetectedError",
+    "VerificationReport",
     "canonical_dumps",
 ]
