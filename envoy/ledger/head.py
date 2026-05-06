@@ -1,9 +1,10 @@
 """HeadCommitment + HaltedByRollbackRecord — Ledger head + rollback halt.
 
-Per `specs/ledger.md` § Head commitment (lines 528-545) — the head
-commitment is the signed (head_sequence, head_entry_id, signed_at) tuple
-that anchors the chain. Monotonic non-decreasing `head_sequence` is the
-primary defense against T-100 (rollback attack).
+Per `specs/ledger.md` § Head commitment (line 525 ff., HaltedByRollback
+record JSON at lines 532-548) — the head commitment is the signed
+(head_sequence, head_entry_id, signed_at) tuple that anchors the chain.
+Monotonic non-decreasing `head_sequence` is the primary defense against
+T-100 (rollback attack).
 
 Phase 01 narrow scope (T-01-17): foundation lands the dataclasses + the
 freshness contract; T-01-18 `EnvoyLedger.head_commitment()` returns these
@@ -17,6 +18,8 @@ head cannot be silently mutated mid-audit.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+
+from envoy.ledger.canonical import is_canonical_timestamp
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +48,14 @@ class HeadCommitment:
             raise ValueError(f"head_sequence must be non-negative int (got {self.head_sequence!r})")
         if not self.head_entry_id.startswith("sha256:"):
             raise ValueError(f"head_entry_id must be 'sha256:<hex>' (got {self.head_entry_id!r})")
-        if not isinstance(self.signed_at, str) or not self.signed_at:
-            raise ValueError(f"signed_at must be non-empty ISO 8601 str (got {self.signed_at!r})")
+        # signed_at MUST match the 27-char #731 microsecond-padded UTC ISO 8601
+        # shape — otherwise a Rust verifier reading the same logical commitment
+        # would compute a different canonical-bytes vector silently.
+        if not is_canonical_timestamp(self.signed_at):
+            raise ValueError(
+                f"signed_at MUST match Phase 01 ISO 8601 microsecond shape "
+                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.signed_at!r})"
+            )
         if not isinstance(self.signature_hex, str) or not self.signature_hex:
             raise ValueError("signature_hex must be non-empty hex str")
 
@@ -113,6 +122,13 @@ class HaltedByRollbackRecord:
             raise ValueError("last_known_good_sequence must be non-negative int")
         if not isinstance(self.detected_sequence, int) or self.detected_sequence < 0:
             raise ValueError("detected_sequence must be non-negative int")
+        # detected_at MUST match the 27-char #731 microsecond-padded UTC ISO 8601
+        # shape — same reason as HeadCommitment.signed_at.
+        if not is_canonical_timestamp(self.detected_at):
+            raise ValueError(
+                f"detected_at MUST match Phase 01 ISO 8601 microsecond shape "
+                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.detected_at!r})"
+            )
 
     def to_dict(self) -> dict:
         return {

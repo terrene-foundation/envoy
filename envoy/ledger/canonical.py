@@ -54,9 +54,28 @@ Phase 02+ (out of T-01-17 scope):
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from datetime import date, datetime, timezone
 from typing import Any
+
+# Phase 01 microsecond-padded ISO 8601 UTC shape per #731 byte pinning.
+# Exactly 27 chars: YYYY-MM-DDTHH:MM:SS.NNNNNNZ.
+_ISO_8601_MICRO_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+
+
+def is_canonical_timestamp(value: str) -> bool:
+    """Return True if `value` matches the Phase 01 27-char microsecond-padded
+    ISO 8601 UTC shape (`YYYY-MM-DDTHH:MM:SS.NNNNNNZ`).
+
+    Public predicate so producer-side validation in
+    `EntryEnvelope.__post_init__`, `HeadCommitment.__post_init__`, and
+    `HaltedByRollbackRecord.__post_init__` all share the same definition.
+    A pre-formatted timestamp string passing `canonical_dumps` unchanged
+    MUST already match this shape — otherwise the canonical bytes silently
+    violate the cross-SDK BET-6 byte-identity contract.
+    """
+    return isinstance(value, str) and bool(_ISO_8601_MICRO_UTC_RE.match(value))
 
 
 def canonical_dumps(obj: Any) -> bytes:
@@ -110,7 +129,27 @@ def _normalize(value: Any) -> Any:
     if isinstance(value, bytes):
         return value.hex()
     if isinstance(value, dict):
-        return {k: _normalize(v) for k, v in value.items()}
+        # NFC-normalize dict KEYS too — without this, a key like `é` (NFC,
+        # U+00E9) and `é` (NFD, U+0065+U+0301) would sort differently under
+        # `json.dumps(sort_keys=True)` (raw codepoint sort), producing
+        # different canonical bytes for the same logical entry. Phase 01
+        # narrow scope: envelope keys are ASCII so the gap doesn't bite
+        # NOW, but Phase 02+ entries whose `content: dict` carries
+        # user-supplied non-ASCII keys would silently violate cross-SDK
+        # byte-identity. Closing the gap structurally per security
+        # review H-1.
+        # Non-str keys are rejected loudly (JSON requires string keys;
+        # silent str() coercion would mask producer bugs).
+        normalized: dict[str, Any] = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"canonical_dumps requires str dict keys (got "
+                    f"{type(k).__name__!r}); JSON does not allow non-string "
+                    "keys."
+                )
+            normalized[unicodedata.normalize("NFC", k)] = _normalize(v)
+        return normalized
     if isinstance(value, (list, tuple)):
         return [_normalize(v) for v in value]
     raise TypeError(
@@ -130,14 +169,22 @@ def _format_timestamp(dt: datetime) -> str:
     `2026-05-03T10:00:00Z` for whole-second instants and
     `2026-05-03T10:00:00.123Z` for 3-digit truncation, producing 3
     different byte vectors for the same logical instant.
+
+    Naive datetimes (no tzinfo) are REJECTED loudly per
+    `rules/zero-tolerance.md` Rule 3 (no silent fallback). Silent UTC
+    coercion would mask producer bugs where the runtime forgot to set
+    tzinfo and inadvertently encodes a local-time value as if it were UTC.
+    Caller MUST pass tzinfo-aware datetime; `datetime.now(tz=timezone.utc)`
+    is the canonical producer pattern.
     """
     if dt.tzinfo is None:
-        # Naive datetime — assume UTC. Per spec § Entry envelope schema all
-        # timestamps are UTC; we treat a naive value as already-UTC to keep
-        # the canonical encoder pure (no implicit timezone resolution).
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
+        raise TypeError(
+            "canonical_dumps does not accept naive datetime (no tzinfo) — "
+            "pass a timezone-aware UTC datetime at the producer boundary "
+            "(e.g., datetime.now(tz=timezone.utc)). Silent local-as-UTC "
+            "coercion would mask producer-side timezone bugs."
+        )
+    dt = dt.astimezone(timezone.utc)
     # `isoformat(timespec="microseconds")` produces 6-digit microsecond
     # padding. We strip the `+00:00` UTC offset and replace with literal `Z`
     # to match the kailash-py / kailash-rs emitter.
@@ -159,11 +206,10 @@ class CanonicalJsonEncoder(json.JSONEncoder):
     (which produces a complete byte vector); the streaming encoder is for
     bulk export bundles (T-01-18 `EnvoyLedger.export()`).
 
-    Does NOT support float (raises like `canonical_dumps`); does NOT do
-    NFC normalization on dict keys (json.JSONEncoder ordering is
-    `sort_keys=True` at the encoder level which uses the raw key bytes —
-    callers MUST pre-normalize keys if non-ASCII keys ever land in entry
-    content, which Phase 01 does not).
+    Symmetric with `canonical_dumps`: float is rejected loudly (the
+    `default()` method raises TypeError); NFC normalization on dict KEYS
+    is applied via the same `_normalize` pre-pass; naive datetime is
+    rejected (via `_format_timestamp`).
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -174,6 +220,13 @@ class CanonicalJsonEncoder(json.JSONEncoder):
         super().__init__(**kwargs)
 
     def default(self, o: Any) -> Any:  # type: ignore[override]
+        # Symmetric with canonical_dumps: float is rejected loudly per
+        # Phase 01 int-only contract.
+        if isinstance(o, float):
+            raise TypeError(
+                "CanonicalJsonEncoder does not accept float values — Phase 01 "
+                "Ledger uses int-only numeric fields per specs/ledger.md."
+            )
         if isinstance(o, datetime):
             return _format_timestamp(o)
         if isinstance(o, date):
@@ -189,4 +242,4 @@ class CanonicalJsonEncoder(json.JSONEncoder):
         return super().encode(_normalize(o))
 
 
-__all__ = ["CanonicalJsonEncoder", "canonical_dumps"]
+__all__ = ["CanonicalJsonEncoder", "canonical_dumps", "is_canonical_timestamp"]

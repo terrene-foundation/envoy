@@ -22,7 +22,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from envoy.ledger.canonical import canonical_dumps
+from envoy.ledger.canonical import canonical_dumps, is_canonical_timestamp
 from envoy.ledger.lamport import LamportClock
 
 
@@ -93,6 +93,17 @@ class EntryEnvelope:
             raise ValueError(
                 "Phase 01 schema_version pinned to 'ledger-entry/1.0' "
                 f"(got {self.schema_version!r})"
+            )
+        # Timestamp shape per #731 byte-pinning — exactly 27 chars
+        # `YYYY-MM-DDTHH:MM:SS.NNNNNNZ`. Producers that pre-format strings
+        # (instead of passing datetime through the encoder) MUST conform
+        # to this shape, otherwise the canonical bytes silently violate
+        # cross-SDK BET-6 byte-identity.
+        if not is_canonical_timestamp(self.timestamp):
+            raise ValueError(
+                f"timestamp MUST match Phase 01 ISO 8601 microsecond shape "
+                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.timestamp!r}); "
+                "see envoy.ledger.canonical._format_timestamp"
             )
         # 3-key algorithm_identifier per T-01-15 R2-H-01 wire form
         expected_keys = {"sig", "hash", "shamir"}

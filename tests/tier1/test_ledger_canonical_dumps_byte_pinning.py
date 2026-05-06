@@ -124,13 +124,15 @@ class TestCanonicalDumpsTimestampMicrosecondPadding:
         out = canonical_dumps({"t": ts})
         assert out == b'{"t":"2026-05-06T14:23:45.123456Z"}'
 
-    def test_naive_datetime_assumed_utc(self) -> None:
-        """Naive (no tzinfo) is treated as already-UTC. The encoder MUST
-        NOT silently convert via local timezone — that would produce
-        machine-dependent bytes."""
+    def test_naive_datetime_rejected_loudly(self) -> None:
+        """Per security review M-3: naive datetime (no tzinfo) is REJECTED
+        rather than silently coerced to UTC. Silent UTC coercion would
+        mask producer-side timezone bugs (a runtime that forgot
+        `tzinfo=timezone.utc` would inadvertently encode local-time as UTC).
+        Producer MUST pass `datetime.now(tz=timezone.utc)`."""
         naive = datetime(2026, 5, 6, 14, 23, 45)
-        out = canonical_dumps({"t": naive})
-        assert out == b'{"t":"2026-05-06T14:23:45.000000Z"}'
+        with pytest.raises(TypeError, match="naive datetime"):
+            canonical_dumps({"t": naive})
 
     def test_non_utc_timezone_converted_to_utc(self) -> None:
         from datetime import timedelta, timezone as tz
@@ -186,6 +188,41 @@ class TestCanonicalDumpsNoMutation:
         # The inner string was NFC-normalized by the encoder, but the
         # original input dict's reference to "café" must be untouched.
         assert nested == {"outer": {"inner": "café"}}
+
+
+class TestCanonicalDumpsDictKeyNFC:
+    """Security review H-1: NFC normalization MUST apply to dict KEYS too —
+    not only values. Without this, an entry whose `content` dict carries a
+    user-supplied key like `é` (NFC) vs `é` (NFD) would silently produce
+    different canonical bytes Python ↔ Rust."""
+
+    def test_nfc_and_nfd_keys_produce_same_bytes(self) -> None:
+        nfc_key = unicodedata.normalize("NFC", "café")
+        nfd_key = unicodedata.normalize("NFD", "café")
+        assert nfc_key.encode("utf-8") != nfd_key.encode("utf-8")
+        out_nfc = canonical_dumps({nfc_key: 1})
+        out_nfd = canonical_dumps({nfd_key: 1})
+        assert out_nfc == out_nfd
+
+    def test_non_str_keys_rejected_loudly(self) -> None:
+        """JSON requires string keys. Silent str() coercion would mask
+        producer bugs — reject loudly per zero-tolerance Rule 3."""
+        with pytest.raises(TypeError, match="str dict keys"):
+            canonical_dumps({1: "value"})  # type: ignore[dict-item]
+        with pytest.raises(TypeError, match="str dict keys"):
+            canonical_dumps({(1, 2): "tuple-key"})  # type: ignore[dict-item]
+
+
+class TestCanonicalJsonEncoderSymmetry:
+    """Security review L-4: CanonicalJsonEncoder MUST reject float symmetric
+    with canonical_dumps; the streaming variant cannot have weaker invariants."""
+
+    def test_encoder_rejects_float(self) -> None:
+        from envoy.ledger import CanonicalJsonEncoder
+
+        enc = CanonicalJsonEncoder()
+        with pytest.raises(TypeError, match="float"):
+            enc.encode({"v": 1.5})
 
 
 class TestCanonicalDumpsExtendedTypes:
@@ -350,6 +387,80 @@ class TestEntryEnvelopeShapeValidation:
         with pytest.raises(ValueError, match="3-key"):
             EntryEnvelope(**base_kwargs)
 
+    @pytest.mark.parametrize(
+        "bad_timestamp",
+        [
+            "2026-05-06T14:23:45Z",  # missing microseconds
+            "2026-05-06T14:23:45.123Z",  # 3-digit truncation
+            "2026-05-06T14:23:45.123000",  # missing Z suffix
+            "2026-05-06T14:23:45.123000+00:00",  # explicit offset, not Z
+            "yesterday",  # nonsense
+            "",  # empty
+        ],
+    )
+    def test_non_canonical_timestamp_rejected(self, base_kwargs: dict, bad_timestamp: str) -> None:
+        """Gate review M-1 + Security M-1: timestamp str shape MUST match
+        the 27-char `YYYY-MM-DDTHH:MM:SS.NNNNNNZ` pin per #731. A producer
+        that pre-formats a non-conformant string would silently violate
+        cross-SDK BET-6 byte-identity."""
+        base_kwargs["timestamp"] = bad_timestamp
+        with pytest.raises(ValueError, match="ISO 8601 microsecond"):
+            EntryEnvelope(**base_kwargs)
+
+
+class TestHaltedByRollbackRecordEnumRejection:
+    """Gate review L-3: HaltedByRollbackRecord.detection_reason has a
+    frozenset allowlist of 3 values; the rejection path MUST be tested
+    directly rather than only the happy path."""
+
+    def test_unknown_detection_reason_rejected(self) -> None:
+        from envoy.ledger import HaltedByRollbackRecord
+
+        with pytest.raises(ValueError, match="detection_reason"):
+            HaltedByRollbackRecord(
+                last_known_good_sequence=10,
+                last_known_good_entry_id="sha256:" + "a" * 64,
+                detected_sequence=8,
+                detected_entry_id="sha256:" + "b" * 64,
+                detection_reason="not_a_real_reason",
+                detected_at="2026-05-06T14:23:45.000000Z",
+            )
+
+    @pytest.mark.parametrize(
+        "valid_reason",
+        [
+            "sequence_decrease",
+            "head_signature_mismatch",
+            "algorithm_identifier_downgrade",
+        ],
+    )
+    def test_valid_detection_reasons_accepted(self, valid_reason: str) -> None:
+        from envoy.ledger import HaltedByRollbackRecord
+
+        rec = HaltedByRollbackRecord(
+            last_known_good_sequence=10,
+            last_known_good_entry_id="sha256:" + "a" * 64,
+            detected_sequence=8,
+            detected_entry_id="sha256:" + "b" * 64,
+            detection_reason=valid_reason,
+            detected_at="2026-05-06T14:23:45.000000Z",
+        )
+        assert rec.detection_reason == valid_reason
+
+    def test_non_canonical_detected_at_rejected(self) -> None:
+        """Security M-1: detected_at MUST match the 27-char timestamp shape."""
+        from envoy.ledger import HaltedByRollbackRecord
+
+        with pytest.raises(ValueError, match="ISO 8601 microsecond"):
+            HaltedByRollbackRecord(
+                last_known_good_sequence=10,
+                last_known_good_entry_id="sha256:" + "a" * 64,
+                detected_sequence=8,
+                detected_entry_id="sha256:" + "b" * 64,
+                detection_reason="sequence_decrease",
+                detected_at="2026-05-06T14:23:45Z",  # missing microseconds
+            )
+
 
 class TestLamportClockShape:
     def test_negative_lamport_time_rejected(self) -> None:
@@ -387,8 +498,18 @@ class TestHeadCommitmentShape:
             HeadCommitment(
                 head_sequence=-1,
                 head_entry_id="sha256:" + "f" * 64,
-                signed_at="t",
+                signed_at="2026-05-06T14:23:45.000000Z",
                 signature_hex="s",
+            )
+
+    def test_non_canonical_signed_at_rejected(self) -> None:
+        """Security M-1: signed_at MUST match the 27-char timestamp shape."""
+        with pytest.raises(ValueError, match="ISO 8601 microsecond"):
+            HeadCommitment(
+                head_sequence=42,
+                head_entry_id="sha256:" + "f" * 64,
+                signed_at="2026-05-06T14:23:45Z",  # missing microseconds
+                signature_hex="deadbeef" * 16,
             )
 
     def test_head_entry_id_must_have_sha256_prefix(self) -> None:
@@ -396,6 +517,6 @@ class TestHeadCommitmentShape:
             HeadCommitment(
                 head_sequence=1,
                 head_entry_id="f" * 64,
-                signed_at="t",
+                signed_at="2026-05-06T14:23:45.000000Z",
                 signature_hex="s",
             )

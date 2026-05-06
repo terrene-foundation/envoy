@@ -290,11 +290,18 @@ Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-
 
 **Test coverage**: `tests/tier1/test_ledger_canonical_dumps_byte_pinning.py` (40 cases / 11 classes) — covers all 7 byte-pinning invariants + EntryEnvelope/LamportClock/HeadCommitment shape validation + HashChainBuilder determinism + 3-key algorithm_identifier enforcement. `tests/tier1/test_format_record_id_for_event.py` (7 cases / 4 classes) — verifies the kailash-py helper symbol is callable + produces stable output for the no-policy path (the Phase 01 narrow surface; T-01-18 wires the policy-aware path).
 
-**Verification gate**: pytest tier1+regression `191 passed in 11.41s`; zero collection errors; zero warnings.
+**Verification gate**: pytest tier1+regression `206 passed in 11.37s` (post review-feedback); zero collection errors; zero warnings.
+
+**Deviation from todo-plan dataclass count (per gate review L-2)**: original todo plan said "35 dataclasses transcribed from specs/ledger.md lines 47-91". Actual shipped: **4 envelope-layer dataclasses** (`EntryEnvelope` + `LamportClock` + `HeadCommitment` + `HaltedByRollbackRecord`). Reason: per `specs/ledger.md` line 45, "Every entry type MUST have a named producer spec that owns its schema" — the 35-row table at L47-91 enumerates entry types whose Content dataclasses are owned by their respective producer specs (e.g., `GenesisRecord` by `specs/trust-lineage.md`, `grant_moment` by `specs/grant-moment.md`). T-01-17 ships the Ledger-layer envelope + clock + commitment + halt-record only; per-type Content dataclasses land with each consumer primitive. Per `specs-authority.md` Rule 6 the deviation is acknowledged here.
+
+**Orphan-watch (T-01-17 + T-01-15)** per `rules/orphan-detection.md` Rule 1 (5-commit grace window):
+
+- `EntryEnvelope` + `HashChainBuilder` are currently unwired facades; T-01-18 (Ledger facade with `append()`) is the documented landing for the production call site within the 5-commit grace window.
+- T-01-15's `_with_algorithm_id` orphan-watch grace window REMAINS OPEN — earlier T-01-17 commit body claimed "Closes T-01-15 orphan-watch grace window" via transitive 3-key validation at `EntryEnvelope.__post_init__`, but the gate review surfaced that no production code path threads `_with_algorithm_id → EntryEnvelope(...)` yet. T-01-18 `EnvoyLedger.append()` IS the load-bearing call site that closes both grace windows simultaneously.
 
 **Out of T-01-17 scope** (T-01-18 + later shards):
 
-- `EnvoyLedger` facade with `append/query/verify_chain/head_commitment/export` (T-01-18).
+- `EnvoyLedger` facade with `append/query/verify_chain/head_commitment/export` (T-01-18). Closes both orphan-watch grace windows.
 - Atomic transaction wrapping (`df.transaction()` boundary around sign + audit_store.append + head.update) (T-01-18).
 - Two-phase signing (PhaseARecord + PhaseBRecord) wired through runtime (Wave 3 Grant Moment).
 - CRDT merge protocol (Wave 2+ via `specs/ledger-merge.md`).
@@ -302,6 +309,23 @@ Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-
 - Per-type Content schema dataclasses for entry types owned at the Ledger layer (lands when each consumer primitive ships).
 
 inspect.signature methodology applied — `dataflow.classification.event_payload.format_record_id_for_event` signature verified against current installed kailash version before writing the test.
+
+**Gate-review fixes applied in same shard** (per `rules/autonomous-execution.md` MUST Rule 4):
+
+- Gate H-1 (claim accuracy): commit body over-claimed "Closes T-01-15 orphan-watch grace window" — corrected via the orphan-watch entry above. T-01-18 actually closes it.
+- Gate H-2 (orphan-watch): explicit orphan-watch entry added above for T-01-17 + T-01-15 grace windows.
+- Gate M-1 + Security M-1 (timestamp shape): regex helper `is_canonical_timestamp` enforces 27-char `YYYY-MM-DDTHH:MM:SS.NNNNNNZ` shape on `EntryEnvelope.timestamp`, `HeadCommitment.signed_at`, `HaltedByRollbackRecord.detected_at`. 6 new regression tests + 1 detected_at test.
+- Gate L-1 (citation): `head.py` docstring corrected to spec line 525 ff. (was 528-545).
+- Gate L-3 (untested enum): `TestHaltedByRollbackRecordEnumRejection` adds 3 valid + 1 invalid + 1 detected_at-shape tests.
+- Security H-1 (NFC keys): `canonical._normalize` now NFC-normalizes dict KEYS in addition to values; non-str keys rejected loudly. `TestCanonicalDumpsDictKeyNFC` covers both invariants.
+- Security M-3 (naive datetime): `_format_timestamp` raises TypeError on naive datetime per zero-tolerance Rule 3 (no silent UTC coercion). Producer MUST pass tzinfo-aware UTC datetime. Existing test updated to assert rejection.
+- Security L-4 (encoder symmetry): `CanonicalJsonEncoder.default()` now raises on float — symmetric with `canonical_dumps()` per security-review symmetry concern.
+
+**Deferred** (out of T-01-17 shard):
+
+- Security M-2 (mutable dict-in-frozen) — content / algorithm_identifier dicts inside frozen `EntryEnvelope`. Same class as the L-03 follow-up todo for envelope dimensions; track jointly. Phase 01 narrow scope: callee-controlled at `append()` time; T-01-18 will deep-copy + freeze via `MappingProxyType` at the seal boundary if exposing back to consumers.
+- Security L-1 (schema-version checks in from_dict) — Phase 01 single-version; Phase 02 multi-version migration adds.
+- Security L-2 (entry_id semantics docstring) — minor documentation polish; deferred to next codify cycle.
 
 ---
 
