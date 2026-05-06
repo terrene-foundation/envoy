@@ -329,6 +329,106 @@ class EnvoyLedger:
         """Return the latest signed HeadCommitment, or None if no entries appended."""
         return self._head
 
+    async def export(self) -> "ExportBundle":
+        """Produce a signed export bundle for the Independent Verifier.
+
+        Per `specs/independent-verifier.md` § Bundle wire format + EC-4
+        Phase 01 acceptance gate. The bundle includes every entry in
+        order + the latest head_commitment + the trust_anchor_key_set
+        (Phase 01 single-device: just the signing key) + a receipt_hash
+        that chains the whole bundle into a single sha256.
+
+        Phase 01 narrow scope:
+        - Single segment covering [0, head_sequence] (no
+          MigrationAnnouncement records to split on).
+        - 4-key segment_boundary algorithm_identifier per
+          specs/independent-verifier.md L35 R3-M-02 (3-key trust-lineage
+          form promoted via SegmentBoundary.from_trust_lineage_3_key).
+        - Empty runtime_attestation + empty attestation_chain (Phase 02).
+        - JSON-only (PDF receipt_hash form lands at Wave 5 CLI).
+
+        Raises:
+            LedgerError: if no entries have been appended yet (empty
+                ledger cannot be exported — would violate verifier
+                invariant 1).
+        """
+        import dataclasses
+        import hashlib
+
+        from kailash.trust.audit_store import AuditFilter
+
+        from envoy.ledger.export import (
+            _BUNDLE_SCHEMA_VERSION,
+            ExportBundle,
+            SegmentBoundary,
+            TrustAnchorKey,
+            compute_receipt_hash,
+        )
+
+        if self._head is None:
+            from envoy.ledger.errors import LedgerError
+
+            raise LedgerError("cannot export an empty ledger — append at least one entry first")
+
+        events = await self._audit_store.query(AuditFilter(limit=1_000_000))
+        envoy_envelopes = [
+            e.metadata[_ENVELOPE_METADATA_KEY]
+            for e in events
+            if _ENVELOPE_METADATA_KEY in (e.metadata or {})
+        ]
+        # Sort ascending by sequence per verifier invariant 1.
+        envoy_envelopes.sort(key=lambda env: env["sequence"])
+
+        # Phase 01: single segment covering [0, head_sequence] with the
+        # 4-key segment-boundary algorithm_identifier.
+        segment = SegmentBoundary.from_trust_lineage_3_key(
+            from_sequence=0,
+            to_sequence=self._head.head_sequence,
+            trust_lineage_form=self._algorithm_identifier,
+        )
+
+        # Phase 01 trust anchor key set: just the signing key. Phase 02
+        # adds the device_attestation_chain. Per security review M-2 +
+        # gate review M-3: hash the signing_key_id to produce the spec-
+        # mandated sha256:<hex> shape (avoids double-prefix hazard if the
+        # caller-supplied key_id already has a prefix).
+        key_id_hash = hashlib.sha256(self._signing_key_id.encode("utf-8")).hexdigest()
+        anchor = TrustAnchorKey(
+            key_id=f"sha256:{key_id_hash}",
+            public_key_hex=self._signing_pubkey,
+            key_class="runtime_device",
+            valid_from=self._head.signed_at,
+            valid_until=None,
+        )
+
+        # Per gate review M-3 + security review M-2: device_id MUST be
+        # sha256:<hex> per spec L29. The producer's logical device_id is
+        # caller-supplied human-readable; the wire form is its sha256.
+        device_id_hash = hashlib.sha256(self._device_id.encode("utf-8")).hexdigest()
+        wire_device_id = f"sha256:{device_id_hash}"
+
+        # SECURITY H-1 fix: build the ExportBundle with a placeholder
+        # receipt_hash, then compute the real receipt_hash from
+        # `bundle.to_dict_minus_receipt()` (the dataclass's own canonical
+        # view), then dataclasses.replace to install the real value.
+        # This eliminates the parallel-dict byte-identity hazard — the
+        # receipt commits to the SAME canonical bytes the verifier
+        # reconstructs from the bundle.
+        placeholder_receipt = "sha256:" + ("0" * 64)
+        interim_bundle = ExportBundle(
+            schema_version=_BUNDLE_SCHEMA_VERSION,
+            exported_at=_now_canonical(),
+            device_id=wire_device_id,
+            tenant_id=self._tenant_id,
+            segment_boundaries=(segment,),
+            entries=tuple(dict(e) for e in envoy_envelopes),
+            head_commitment=self._head,
+            trust_anchor_key_set=(anchor,),
+            receipt_hash=placeholder_receipt,
+        )
+        receipt_hash = compute_receipt_hash(interim_bundle.to_dict_minus_receipt())
+        return dataclasses.replace(interim_bundle, receipt_hash=receipt_hash)
+
     async def verify_chain(self) -> VerificationReport:
         """Walk every entry in the audit store and verify parent_hash chain
         + Ed25519 signature on each entry's canonical bytes.

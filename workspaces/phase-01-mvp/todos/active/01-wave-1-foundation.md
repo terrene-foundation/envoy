@@ -418,9 +418,65 @@ The methodology is structurally validated; recommend codifying as a /implement S
 
 **Estimate:** 0.5 session.
 
+## Verification — T-01-19
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-01-19`).
+
+- `envoy/ledger/export.py` (~225 LOC): 3 frozen dataclasses (`TrustAnchorKey`, `SegmentBoundary`, `ExportBundle`) + pure-function `compute_receipt_hash(bundle_minus_receipt) -> str`.
+- `EnvoyLedger.export()` method on the facade — produces a signed bundle from the persisted entries + head_commitment.
+- **Closes T-01-20** in same shard: `SegmentBoundary` enforces the 4-key segment-boundary algorithm_identifier per `specs/independent-verifier.md` L35 R3-M-02 carry-forward (`{sig, hash, shamir, canonical_json: jcs-rfc8785}`); 3-key trust-lineage form is REJECTED at construction. `from_trust_lineage_3_key()` factory promotes producer-side. Standalone T-01-20 todo subsumed.
+
+Phase 01 narrow scope:
+
+- Single segment per export covering [0, head_sequence] (no MigrationAnnouncement boundaries to split on yet).
+- Minimal trust_anchor_key_set: just the signing key (Phase 02 wires device_attestation_chain).
+- Empty `runtime_attestation` (Phase 02).
+- JSON-only (PDF lands at Wave 5 CLI).
+
+**Test coverage**: `tests/tier1/test_envoy_ledger_export_bundle.py` (27 cases / 9 classes): `TestSegmentBoundary` (7 — 3-key rejection, 4-key acceptance, wrong canonical_json value, promoter, promoter-rejects-4-key-input, negative from_sequence, to<from); `TestTrustAnchorKey` (3 — valid, invalid key_class, sha256 prefix); `TestExportRoundTrip` (2 — returns ExportBundle, empty ledger raises); `TestVerifierInvariant1AscendingSequence` (1); `TestVerifierInvariant3ChainLink` (1 — parent_hash links to prev entry_id); `TestVerifierInvariant4ContentAddressing` (1 — recomputed entry_id matches stored); `TestVerifierInvariant6HeadEqualsLastEntry` (1); `TestVerifierInvariant8ReceiptHash` (3 — matches canonical, determinism, tamper detection); `TestVerifierInvariant9SegmentBoundaryDispatch` (2 — single segment covers entries, segment uses 4-key form); `TestBundleSchemaShape` (6 — 9 top-level field set, runtime_attestation field, trust_anchor includes signing key, canonical_dumps byte-stable round-trip).
+
+**Verification gate**: pytest tier1+regression `272 passed in 9.93s` (post review-feedback +12); zero collection errors; zero warnings.
+
+**Gate-review fixes applied in same shard** (per `rules/autonomous-execution.md` MUST Rule 4):
+
+- Security H-1 (parallel-dict byte-identity hazard): refactored `EnvoyLedger.export()` to use `dataclasses.replace` post-construction. Builds an interim `ExportBundle` with placeholder `receipt_hash`, computes the real hash from the dataclass's own `to_dict_minus_receipt()` (single canonical view), then replaces. Eliminates the divergence risk between the parallel dict that fed `compute_receipt_hash` and the dataclass shape the verifier reconstructs.
+- Gate H-1 (verifier invariant 2 untested): `ExportBundle.__post_init__` now enforces `entries[0].sequence == segment_boundaries[0].from_sequence + 1` (Phase 01 narrow scope; Genesis-type assertion deferred to Wave 3 when Boundary Conversation produces real Genesis records). New `TestVerifierInvariant2GenesisOrStartSequence` (2 tests) covers the invariant + the rejection path.
+- Gate M-2 + Security M-2: `ExportBundle.__post_init__` tightened with 5 new spec-mandated invariants — device_id sha256: prefix, exported_at canonical 27-char ISO 8601, entries ascending+distinct, head_commitment matches last entry (sequence + entry_id), segment window matches head_sequence. New `TestBundlePostInitValidation` (4 rejection-path tests).
+- Gate M-3 + Security M-2: `EnvoyLedger.export()` hashes both the logical `device_id` AND `signing_key_id` to produce spec-compliant `sha256:<hex>` wire shapes for `device_id` + `trust_anchor_key_set[0].key_id`. Eliminates double-prefix hazard if caller supplies pre-prefixed key_id.
+- Security M-1 (mutability docstring): `ExportBundle` class docstring now documents the Phase 01 narrow contract — entries `dict` is mutable inside the frozen tuple; producer ships once; `to_dict_minus_receipt` defensive-copies on read. Phase 02 hardens via `MappingProxyType`.
+- Security L-1 (tamper coverage): 5 new parametric tamper tests covering head_commitment.signature_hex, trust_anchor_key_set.public_key_hex, segment_boundaries.algorithm_identifier.sig, tenant_id, device_id. Each MUST flip `receipt_hash`.
+- Security L-3 (BUNDLE_SCHEMA_VERSION duplication): facade now imports `_BUNDLE_SCHEMA_VERSION` from `envoy.ledger.export` instead of hardcoding the string literal — eliminates silent desync risk on future schema bump.
+- Gate L-3 (T-01-20 subsume banner): T-01-20 todo entry now carries a SUBSUMED banner with cross-reference to T-01-19's verification block.
+
+**Deferred** (out of T-01-19 shard):
+
+- Security M-1 deep freeze (MappingProxyType): Phase 02 hardening alongside per-region HKDF refactor.
+- Security L-2 documentation: `_now_canonical()` non-determinism note in `EnvoyLedger.export` docstring (next codify cycle).
+
+**Out of T-01-19 scope** (later shards):
+
+- PDF receipt_hash form (Wave 5 CLI).
+- Partial exports with `start_after_sequence` declaration (Phase 02).
+- Multi-segment boundaries when MigrationAnnouncement records appear (Phase 02).
+- Full device_attestation_chain in trust_anchor_key_set (Phase 02).
+- Independent Verifier (`envoy-ledger-verify`) — separate Python package + Tier 3 e2e gate (T-01-21+).
+- Tier 2 wiring with real SqliteAuditStore + cross-process verifier round-trip (T-01-21).
+
+inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols cited in this shard — pure envoy-internal).
+
 ---
 
 ## T-01-20 — Build envoy/ledger/segment_boundary 4-key serializer (R3-M-02)
+
+> **SUBSUMED by T-01-19** (see Verification — T-01-19 above). The 4-key
+> segment-boundary algorithm_identifier enforcement landed inside
+> `envoy/ledger/export.py::SegmentBoundary` as part of T-01-19's
+> ExportBundle work. `SegmentBoundary.__post_init__` rejects the 3-key
+> trust-lineage form; `SegmentBoundary.from_trust_lineage_3_key()`
+> promotes producer-side. No standalone shard needed. Kept in this list
+> for traceability (and because future post-Phase-01 segment-boundary
+> work — multi-segment with MigrationAnnouncement records — would
+> resurrect this slot).
 
 **Implements:** R3-M-02 carry-forward; `specs/independent-verifier.md` L35 4-key form.
 
