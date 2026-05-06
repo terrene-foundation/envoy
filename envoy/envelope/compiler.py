@@ -349,20 +349,28 @@ class EnvelopeCompiler:
             # tuple-typed authored_constraints field.
             return tuple(sorted(constraints, key=lambda c: c.constraint_id))
 
-        config_input.financial.authored_constraints = _sort_dim(
-            config_input.financial.authored_constraints
+        # L-03 shard B step 2: dimensions are now frozen; mint new instances
+        # via dataclasses.replace and re-assign to the (still-mutable)
+        # config_input. Five replace calls — one per dimension.
+        config_input.financial = dataclasses.replace(
+            config_input.financial,
+            authored_constraints=_sort_dim(config_input.financial.authored_constraints),
         )
-        config_input.operational.authored_constraints = _sort_dim(
-            config_input.operational.authored_constraints
+        config_input.operational = dataclasses.replace(
+            config_input.operational,
+            authored_constraints=_sort_dim(config_input.operational.authored_constraints),
         )
-        config_input.temporal.authored_constraints = _sort_dim(
-            config_input.temporal.authored_constraints
+        config_input.temporal = dataclasses.replace(
+            config_input.temporal,
+            authored_constraints=_sort_dim(config_input.temporal.authored_constraints),
         )
-        config_input.data_access.authored_constraints = _sort_dim(
-            config_input.data_access.authored_constraints
+        config_input.data_access = dataclasses.replace(
+            config_input.data_access,
+            authored_constraints=_sort_dim(config_input.data_access.authored_constraints),
         )
-        config_input.communication.authored_constraints = _sort_dim(
-            config_input.communication.authored_constraints
+        config_input.communication = dataclasses.replace(
+            config_input.communication,
+            authored_constraints=_sort_dim(config_input.communication.authored_constraints),
         )
         return config_input
 
@@ -380,13 +388,14 @@ class EnvelopeCompiler:
         """
         for tmpl in templates:
             content = tmpl.content
-            for dim_name, dim in (
-                ("financial", config_input.financial),
-                ("operational", config_input.operational),
-                ("temporal", config_input.temporal),
-                ("data_access", config_input.data_access),
-                ("communication", config_input.communication),
+            for dim_name in (
+                "financial",
+                "operational",
+                "temporal",
+                "data_access",
+                "communication",
             ):
+                dim = getattr(config_input, dim_name)
                 tmpl_dim = content.get(dim_name, {})
                 # L-03 shard A: tuple += instead of .append since
                 # imported_constraints is now a tuple. Build a list of new
@@ -407,8 +416,20 @@ class EnvelopeCompiler:
                         )
                     )
                 if new_imported:
-                    dim.imported_constraints = dim.imported_constraints + tuple(new_imported)
-            # Provenance trail in metadata
+                    # L-03 shard B step 2: dimension is frozen; mint a new
+                    # instance via dataclasses.replace and re-assign to the
+                    # (still-mutable) config_input slot.
+                    setattr(
+                        config_input,
+                        dim_name,
+                        dataclasses.replace(
+                            dim,
+                            imported_constraints=dim.imported_constraints + tuple(new_imported),
+                        ),
+                    )
+            # Provenance trail in metadata. L-03 shard B step 1 pinned this
+            # ordering (provenance MUST be appended BEFORE step 7's metadata
+            # replace) — see TestPipelineOrderingInvariant in tier1.
             config_input.metadata.authorship_score.setdefault("template_provenance", []).append(
                 {"uri": tmpl.ref.uri, "hash": tmpl.template_hash}
             )
