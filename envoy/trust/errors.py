@@ -110,3 +110,48 @@ class AutoLockIdleTimeoutError(VaultError):
     `VaultLockedError` (vault was already locked) — this signals "vault was
     unlocked, then auto-locked between this operation's start and access".
     """
+
+
+class MasterKeySizeError(VaultError):
+    """Raised when `import_master_key_from_shamir()` receives bytes that are
+    not exactly the 32-byte AES-256 key shape.
+
+    Per `specs/shamir-recovery.md` § Recovery flow: Shamir reconstruction
+    produces the SAME 32-byte master key the original Argon2id would have
+    derived. Anything else is corruption — refuse the import rather than
+    silently truncate / pad to fit.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Cascade revocation errors (T-01-14) — mirror specs/trust-lineage.md
+# § Cascade revocation contract (BFS walker + snapshot-and-rollback).
+# ---------------------------------------------------------------------------
+
+
+class RevocationError(TrustStoreError):
+    """Base class for cascade-revocation errors emitted by the Envoy adapter."""
+
+
+class RevocationNotFoundError(RevocationError):
+    """Raised when `verify_cascade_complete(revocation_id=...)` is called with
+    a revocation_id that no prior `revoke()` call produced.
+
+    Phase 01 caches the latest RevocationResult per principal_id keyed by
+    revocation_id; lookup miss = the caller is asking about a revocation
+    this adapter never executed (test artifact, off-by-one principal,
+    forged revocation_id).
+    """
+
+
+class CascadeIncompleteError(RevocationError):
+    """Raised when `verify_cascade_complete()` finds a descendant in the
+    Trust Lineage's chain_parent_id graph that is NOT in the
+    `RevocationResult.revoked_agents` set.
+
+    This is the EC-8 cross-channel-cascade defense per shard 5 § 3.3 — a
+    malformed delegation_registry that under-reports descendants would
+    silently leave a Day-6 child grant alive after the Day-1 root was
+    revoked. The verifier reports the gap so the caller can re-revoke
+    explicitly.
+    """

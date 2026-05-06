@@ -176,6 +176,27 @@ inspect.signature methodology applied — `argon2.low_level.hash_secret_raw` + `
 
 **Estimate:** 0.5 session.
 
+## Verification — T-01-14
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-01-14`).
+
+- `envoy/trust/store.py` adds `revoke(*, agent_id, reason, revoked_by)` (cascade revocation wrapper around `kailash.trust.revocation.cascade.cascade_revoke`) + `verify_cascade_complete(*, agent_id)` (EC-8 cross-channel cascade defense; raises `CascadeIncompleteError` on gap, `RevocationNotFoundError` on cache miss). Phase 01 caches `RevocationResult` per `agent_id` in `_last_revocations: dict[str, RevocationResult]`; T-01-17 (Ledger persistence) replaces with persisted `RevocationRecord` rows.
+- Algorithm-identifier helper (`_with_algorithm_id` + `_to_spec_wire_form`) was already shipped in T-01-15 (R2-H-01 wire-form translator); T-01-14 step 5 was a no-op for that sub-step.
+- `envoy/trust/vault.py` adds Shamir hooks per shard 5 § 4 step 6: `await vault.export_master_key_for_shamir() -> bytes` (returns 32-byte master key copy; vault MUST be unlocked) + `await vault.import_master_key_from_shamir(reconstructed: bytes) -> None` (installs reconstructed 32-byte key; vault MUST be sealed; AES-GCM tag check on decrypt — wrong key bytes raise `VaultUnlockFailedError`, vault stays sealed).
+- New typed errors in `envoy/trust/errors.py`: `RevocationError` (base), `RevocationNotFoundError`, `CascadeIncompleteError`, `MasterKeySizeError`. Backwards-compatible — existing error hierarchy unchanged.
+- inspect.signature sweep clean on `kailash.trust.revocation.cascade.cascade_revoke` (verified 6-arg signature with broadcaster + delegation_registry as `Optional` defaults — Phase 01 narrow scope passes None for both, kailash uses internal defaults).
+
+**Test coverage**: `tests/tier1/test_trust_cascade_and_shamir.py` (20 cases / 5 classes): `TestRevokeWrapper` (4 unsafe-shape parametric + 1 unsafe-revoked_by + 3 contract — idempotent no-op, cache, re-revoke); `TestVerifyCascadeComplete` (4 — return-True on cached, RevocationNotFoundError on unknown, unsafe-id rejection, per-agent_id cache lookup); `TestShamirExport` (3 — 32-byte size, independent copy semantics, unlocked-vault precondition); `TestShamirImport` (5 — round-trip, wrong-size rejection, wrong-bytes rejection, sealed-vault precondition, missing-file FileNotFoundError).
+
+**Verification gate**: pytest tier1+regression `141 passed in 9.71s`; zero collection errors; zero warnings.
+
+**Out of T-01-14 scope** (later shards):
+
+- Tier 2 wiring with real Genesis chain + real cascade BFS verification (T-01-16).
+- Persisted RevocationRecord rows + Ledger entry per cascade (T-01-17).
+- Shamir m-of-n splitting + recovery ritual (T-15 ShamirRitualCoordinator, Wave 2).
+- Cross-SDK BFS/DFS parity test (kailash-py BFS vs kailash-rs DFS) is a Tier 3 e2e gate, not T-01-14 scope.
+
 ---
 
 ## T-01-15 — Build envoy/trust/algorithm_id wire-form translator (R2-H-01 LOAD-BEARING)

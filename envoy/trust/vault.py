@@ -63,6 +63,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from envoy.trust.errors import (
     Argon2ParameterMismatchError,
     AutoLockIdleTimeoutError,
+    MasterKeySizeError,
     VaultLockedError,
     VaultMACVerificationFailedError,
     VaultUnlockFailedError,
@@ -535,6 +536,90 @@ class TrustVault:
             # Windows / non-POSIX may refuse chmod — Phase 02 platform
             # abstraction handles per-OS permission models.
             pass
+
+    # ------------------------------------------------------------------
+    # Shamir export / import hooks (T-01-14)
+    # ------------------------------------------------------------------
+
+    async def export_master_key_for_shamir(self) -> bytes:
+        """Return a copy of the in-memory master key for Shamir splitting.
+
+        Per `specs/shamir-recovery.md` § Algorithm: SLIP-0039 Shamir splits
+        the 32-byte master key (AES-256 key) — NOT the passphrase. The
+        ShamirRitualCoordinator (T-15, Wave 2) calls this hook to obtain
+        the master key bytes to split into m-of-n shards.
+
+        Vault MUST be unlocked. Returns a fresh `bytes` copy — caller is
+        responsible for zeroizing after Shamir split completes.
+        """
+        self._require_unlocked()
+        self._touch_activity()
+        assert self._master_key is not None  # type checker
+        # Return a fresh bytes copy. Caller-side responsibility to zeroize.
+        # Phase 02 will wrap the export in a `Sensitive[bytes]` typed handle
+        # that auto-zeroes on context exit.
+        return bytes(self._master_key)
+
+    async def import_master_key_from_shamir(self, reconstructed: bytes) -> None:
+        """Install a Shamir-reconstructed 32-byte master key as the vault key.
+
+        Per `specs/shamir-recovery.md` § Recovery flow: Shamir reconstruction
+        produces the SAME 32-byte master key the original Argon2id would
+        have derived from the passphrase. The on-disk salt + Argon2id params
+        are preserved; this hook simply installs the reconstructed key as
+        the vault's in-memory master key and decrypts the on-disk payload
+        under it. If the reconstructed key is wrong, AES-GCM tag verification
+        fails and `VaultUnlockFailedError` is raised — the vault stays sealed.
+
+        The vault MUST exist on disk. The vault MUST be sealed at the start
+        of the call (we install a NEW master key rather than rotating an
+        existing one). Phase 02 adds an explicit `rotate_master_key`
+        operation for the post-recovery passphrase change.
+        """
+        if self.is_unlocked:
+            raise VaultLockedError(
+                "import_master_key_from_shamir requires sealed vault — "
+                "call lock() first OR construct a fresh adapter"
+            )
+        if not isinstance(reconstructed, (bytes, bytearray, memoryview)):
+            raise MasterKeySizeError(
+                f"reconstructed master key must be bytes-like; "
+                f"got {type(reconstructed).__name__}"
+            )
+        if len(reconstructed) != _ARGON2_KEY_LEN:
+            raise MasterKeySizeError(
+                f"reconstructed master key must be exactly {_ARGON2_KEY_LEN} bytes "
+                f"(AES-256); got {len(reconstructed)} bytes — refusing import"
+            )
+        if not self.exists_on_disk:
+            raise FileNotFoundError(f"no vault at {self._vault_path}")
+
+        # Read the existing container's salt + nonce + ciphertext so we can
+        # decrypt with the reconstructed key. If the key is wrong, AES-GCM
+        # tag verification raises InvalidTag → VaultUnlockFailedError.
+        header_bytes, salt, argon2_params, nonce, ciphertext = self._read_container()
+        self._verify_argon2_params(argon2_params)
+
+        master_key = bytearray(reconstructed)  # mutable copy so we can zero it
+        try:
+            aesgcm = AESGCM(bytes(master_key))
+            try:
+                payload = aesgcm.decrypt(nonce, ciphertext, header_bytes)
+            except InvalidTag as exc:
+                raise VaultUnlockFailedError(
+                    "Shamir-reconstructed master key failed AES-256-GCM tag "
+                    "verification — reconstructed key does NOT decrypt this "
+                    "vault. Likely causes: wrong vault file; corrupted shards; "
+                    "shards from a different ritual."
+                ) from exc
+
+            self._master_key = master_key
+            self._payload = payload
+            self._idle_locked = False
+            self._touch_activity()
+        except Exception:
+            _zeroize(master_key)
+            raise
 
     # ------------------------------------------------------------------
     # KDF + parameter checks
