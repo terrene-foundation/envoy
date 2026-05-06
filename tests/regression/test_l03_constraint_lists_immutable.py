@@ -132,38 +132,50 @@ class TestCompilerTupleConstructionPattern:
         assert len(combined) == 3
         assert [c.constraint_id for c in combined] == ["c1", "c2", "c3"]
 
-    def test_dimension_assignment_accepts_tuple(self) -> None:
-        """The dimension's tuple-typed field accepts a tuple value."""
-        d = FinancialDimension()
+    def test_dimension_construction_accepts_tuple(self) -> None:
+        """The dimension's tuple-typed field accepts a tuple value AT
+        CONSTRUCTION. L-03 shard B step 2: dimension is frozen, so
+        direct reassignment is rejected — `dataclasses.replace` is the
+        canonical compiler-side mutation pattern."""
+        import dataclasses
+
         new = (
             AuthoredConstraint(constraint_id="c1", rule_ast={}),
             AuthoredConstraint(constraint_id="c2", rule_ast={}),
         )
-        d.authored_constraints = new
+        d = FinancialDimension(authored_constraints=new)
         assert d.authored_constraints == new
         assert isinstance(d.authored_constraints, tuple)
+        # L-03 shard B step 2: direct reassignment rejected.
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            d.authored_constraints = new  # type: ignore[misc]
+        # The canonical replace pattern works.
+        d2 = dataclasses.replace(d, authored_constraints=new[:1])
+        assert d2.authored_constraints == new[:1]
 
 
 class TestShardBFollowupTracking:
-    """Shard B (full dimension freeze) defers — verify the SCALAR fields
-    are still mutable today (locking the current behavior so shard B's
-    flip is detectable).
-
-    # SHARD_B_TRIGGER: when shard B lands, EVERY test in this class MUST
-    # flip from `assert mutation succeeded` to `with pytest.raises(
-    # FrozenInstanceError): mutation`. Failure to flip = shard B forgot
-    # to close one of the locked vectors.
+    """L-03 shard B step 2 LANDED — dimension dataclasses are now frozen.
+    Every assertion in this class verifies that scalar / metadata fields
+    raise FrozenInstanceError on direct reassignment. Compiler primitives
+    use `dataclasses.replace` to mint new dimension instances.
     """
 
-    def test_financial_per_call_ceiling_still_mutable_pre_shard_b(self) -> None:
-        """Once shard B lands, this MUST flip to assert FrozenInstanceError.
-        Today: scalar mutation succeeds; the L-03 vector remains open
-        for the dimension's scalar fields. Shard B closes it."""
+    def test_financial_per_call_ceiling_field_reassignment_rejected(self) -> None:
+        """L-03 shard B step 2 LANDED — FinancialDimension scalar fields
+        are now frozen. Direct reassignment raises FrozenInstanceError."""
+        import dataclasses
+
         d = FinancialDimension(per_call_ceiling_microdollars=100)
-        # CURRENT BEHAVIOR — pre-shard-B. Shard B converts this to a
-        # pytest.raises(FrozenInstanceError).
-        d.per_call_ceiling_microdollars = 999
-        assert d.per_call_ceiling_microdollars == 999
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            d.per_call_ceiling_microdollars = 999  # type: ignore[misc]
+        # The stored value is unchanged.
+        assert d.per_call_ceiling_microdollars == 100
+
+        # The canonical replace pattern still works.
+        d2 = dataclasses.replace(d, per_call_ceiling_microdollars=999)
+        assert d.per_call_ceiling_microdollars == 100  # original untouched
+        assert d2.per_call_ceiling_microdollars == 999
 
     def test_envelope_metadata_authorship_score_field_reassignment_rejected(
         self,
@@ -306,23 +318,27 @@ class TestFullMutationSurfaceForeclosed:
                 constraint_id="injected", rule_ast={}
             )
 
-    def test_iadd_replaces_field_but_does_not_mutate_tuple(self) -> None:
-        """`d.authored_constraints += [c]` is allowed today (Python's `+=`
-        on a tuple field reassigns the field; the tuple itself is not
-        mutated). Shard B's full freeze closes this; lock the current
-        behavior so shard B's flip is detectable.
-
-        # SHARD_B_TRIGGER: shard B converts this to FrozenInstanceError
-        # via @dataclass(frozen=True) at the dimension class.
+    def test_iadd_now_rejected_on_frozen_dimension(self) -> None:
+        """L-03 shard B step 2 LANDED — dimension is frozen.
+        `d.authored_constraints += (...)` desugars to
+        `d.authored_constraints = d.authored_constraints + (...)`,
+        which is field reassignment on a frozen dataclass and raises
+        FrozenInstanceError. The tuple object itself was never mutable,
+        so the original reference is unchanged.
         """
+        import dataclasses
+
         d = FinancialDimension(
             authored_constraints=(AuthoredConstraint(constraint_id="c1", rule_ast={}),)
         )
         original_tuple = d.authored_constraints
-        # `+=` reassigns field; tuple object itself untouched.
-        d.authored_constraints += (AuthoredConstraint(constraint_id="c2", rule_ast={}),)
-        assert len(d.authored_constraints) == 2
-        assert original_tuple == (AuthoredConstraint(constraint_id="c1", rule_ast={}),)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            d.authored_constraints += (  # type: ignore[misc]
+                AuthoredConstraint(constraint_id="c2", rule_ast={}),
+            )
+        # Original tuple is untouched (it was never mutable).
+        assert d.authored_constraints == original_tuple
+        assert len(d.authored_constraints) == 1
 
 
 class TestEmptyTemplateFoldPath:

@@ -89,7 +89,7 @@ class ImportedConstraint:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class FinancialDimension:
     """Per `specs/envelope-model.md` § Schema § financial.
 
@@ -99,6 +99,14 @@ class FinancialDimension:
 
     All ceiling values are integer microdollars (per spec § Algorithms §
     "Canonical JSON" — integer microdollars + lexicographic ordering).
+
+    L-03 shard B step 2: now `frozen=True`. Compiler mints new dimension
+    instances via `dataclasses.replace`. `__post_init__` uses
+    `object.__setattr__` for the C1 list→tuple coercion (the only
+    field-write a frozen __post_init__ is allowed to perform).
+    Mutable container fields (rate_limits, sub_agent_spawn_limit, etc.)
+    on sibling dimensions still permit IN-PLACE mutation of their
+    contents — Phase 02 deep-freeze closes that vector.
     """
 
     per_call_ceiling_microdollars: int = 0
@@ -106,11 +114,6 @@ class FinancialDimension:
     per_hour_velocity_microdollars: int = 0
     per_day_ceiling_microdollars: int = 0
     per_month_ceiling_microdollars: int = 0
-    # L-03 shard A: tuple-typed so the constraint list cannot be mutated
-    # post-compile. A downstream consumer cannot widen the envelope by
-    # `dim.authored_constraints.append(...)`. Compiler uses tuple += pattern
-    # for re-assignment. Full dimension freeze (preventing scalar mutation
-    # of e.g. per_call_ceiling_microdollars) lands in L-03 shard B.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
@@ -135,89 +138,102 @@ class FinancialDimension:
         # dataclasses don't enforce the tuple annotation), defeating the
         # immutability invariant for that instance. Coerce defensively at
         # construction so the invariant holds regardless of input shape.
+        # L-03 shard B step 2: frozen=True requires object.__setattr__.
         if not isinstance(self.authored_constraints, tuple):
-            self.authored_constraints = tuple(self.authored_constraints)
+            object.__setattr__(self, "authored_constraints", tuple(self.authored_constraints))
         if not isinstance(self.imported_constraints, tuple):
-            self.imported_constraints = tuple(self.imported_constraints)
+            object.__setattr__(self, "imported_constraints", tuple(self.imported_constraints))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class OperationalDimension:
-    """Per spec § Schema § operational."""
+    """Per spec § Schema § operational.
+
+    L-03 shard B step 2: see FinancialDimension docstring.
+    """
 
     tool_allowlist: list[str] = field(default_factory=list)
     tool_denylist: list[str] = field(default_factory=list)
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     sub_agent_spawn_limit: dict[str, int] = field(default_factory=dict)
-    # L-03 shard A: see FinancialDimension docstring above.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        # L-03 shard B step 2: frozen=True requires object.__setattr__.
         if not isinstance(self.authored_constraints, tuple):
-            self.authored_constraints = tuple(self.authored_constraints)
+            object.__setattr__(self, "authored_constraints", tuple(self.authored_constraints))
         if not isinstance(self.imported_constraints, tuple):
-            self.imported_constraints = tuple(self.imported_constraints)
+            object.__setattr__(self, "imported_constraints", tuple(self.imported_constraints))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class TemporalDimension:
-    """Per spec § Schema § temporal."""
+    """Per spec § Schema § temporal.
+
+    L-03 shard B step 2: see FinancialDimension docstring.
+    """
 
     allowed_windows: list[dict[str, Any]] = field(default_factory=list)
     blackout_windows: list[dict[str, Any]] = field(default_factory=list)
-    # L-03 shard A: tuple-typed constraint lists.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        # L-03 shard B step 2: frozen=True requires object.__setattr__.
         if not isinstance(self.authored_constraints, tuple):
-            self.authored_constraints = tuple(self.authored_constraints)
+            object.__setattr__(self, "authored_constraints", tuple(self.authored_constraints))
         if not isinstance(self.imported_constraints, tuple):
-            self.imported_constraints = tuple(self.imported_constraints)
+            object.__setattr__(self, "imported_constraints", tuple(self.imported_constraints))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class DataAccessDimension:
-    """Per spec § Schema § data_access. Classification clearance per V-06 fix."""
+    """Per spec § Schema § data_access. Classification clearance per V-06 fix.
+
+    L-03 shard B step 2: see FinancialDimension docstring.
+    """
 
     classification_clearance: ConfidentialityLevel = ConfidentialityLevel.PUBLIC
     field_allowlist_per_model: dict[str, list[str]] = field(default_factory=dict)
     field_denylist: list[str] = field(default_factory=list)
     semantic_rules: list[dict[str, Any]] = field(default_factory=list)
-    # L-03 shard A: tuple-typed constraint lists.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        # L-03 shard B step 2: frozen=True requires object.__setattr__.
         if not isinstance(self.authored_constraints, tuple):
-            self.authored_constraints = tuple(self.authored_constraints)
+            object.__setattr__(self, "authored_constraints", tuple(self.authored_constraints))
         if not isinstance(self.imported_constraints, tuple):
-            self.imported_constraints = tuple(self.imported_constraints)
+            object.__setattr__(self, "imported_constraints", tuple(self.imported_constraints))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class CommunicationDimension:
-    """Per spec § Schema § communication."""
+    """Per spec § Schema § communication.
+
+    L-03 shard B step 2: see FinancialDimension docstring.
+    """
 
     recipient_allowlist: list[str] = field(default_factory=list)
     recipient_denylist: list[str] = field(default_factory=list)
     domain_allowlist: list[str] = field(default_factory=list)
     channel_allowlist: list[str] = field(default_factory=list)
     content_rules: list[dict[str, Any]] = field(default_factory=list)
-    # L-03 shard A: tuple-typed constraint lists.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        # L-03 shard B step 2: frozen=True requires object.__setattr__.
         if not isinstance(self.authored_constraints, tuple):
-            self.authored_constraints = tuple(self.authored_constraints)
+            object.__setattr__(self, "authored_constraints", tuple(self.authored_constraints))
         if not isinstance(self.imported_constraints, tuple):
-            self.imported_constraints = tuple(self.imported_constraints)
+            object.__setattr__(self, "imported_constraints", tuple(self.imported_constraints))
 
 
 # ---------------------------------------------------------------------------
