@@ -1,4 +1,6 @@
 ---
+priority: 10
+scope: path-scoped
 paths:
   - "tests/**"
   - "**/*test*"
@@ -10,7 +12,12 @@ paths:
   - "**/04-validate/**"
 ---
 
-# Testing Rules (Python bindings to kailash-rs)
+# Testing Rules
+
+See `.claude/guides/rule-extracts/testing.md` for full evidence, the kailash-ml W33b post-mortem, the test-skip triage decision tree, the test-resource-cleanup post-mortems (PR #466 63-warning sweep, 11,917-test block, env-var race), and protocol blocks.
+
+<!-- slot:neutral-body -->
+
 
 This variant serves the kailash-coc-claude-rs USE template — for **Python and Ruby developers writing applications that consume kailash-rs through bindings**. You write Python (or Ruby), not Rust. The bindings give you a Pythonic API that maps to the Rust runtime under the hood, but your code, tests, and tools are all Python.
 
@@ -61,6 +68,45 @@ For every § Security Threats subsection in any spec, grep for a corresponding `
 **Why:** Documented threats with no test become "we said we'd handle it" claims that nothing actually verifies. Threats without tests are unmitigated.
 
 See `skills/spec-compliance/SKILL.md` for the full spec compliance verification protocol.
+
+### MUST: `__all__` / Re-export Symbol Counts Use Structural Enumeration, Not Grep
+
+Counts of `__all__` entries (Python binding) or `pub use` re-exports (Rust crate) used in spec authority, docstrings, audit findings, or CHANGELOG claims MUST be produced by structural enumeration of the language's parser AST — NOT `grep -c '"'` / `wc -l` on the assignment block. Grep counts comments, blank lines, and line continuations as elements; structural parsers count list items.
+
+```python
+# DO — Python binding: AST-derived count
+import ast, pathlib
+tree = ast.parse(pathlib.Path("bindings/kailash-python/python/kailash/__init__.py").read_text())
+for n in ast.walk(tree):
+    if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in n.targets):
+        if isinstance(n.value, ast.List):
+            print(len(n.value.elts))  # canonical count
+```
+
+```rust
+// DO — Rust crate: structural enumeration via syn::parse_file
+let src = std::fs::read_to_string("crates/kailash/src/lib.rs")?;
+let file = syn::parse_file(&src)?;
+let pub_use_count = file.items.iter().filter(|i| matches!(i, syn::Item::Use(u)
+    if matches!(u.vis, syn::Visibility::Public(_)))).count();
+println!("{}", pub_use_count);
+
+// Alternative: cargo doc --document-private-items JSON output
+// $ cargo doc --no-deps --document-private-items --output-format=json 2>/dev/null
+// Then parse target/doc/*.json for re-export entries.
+```
+
+```bash
+# DO NOT — grep-based count (counts comments + blank lines + continuations)
+grep -c '^\s*"' bindings/kailash-python/python/kailash/__init__.py
+grep -c '^pub use' crates/kailash/src/lib.rs   # misses items inside pub mod blocks
+```
+
+**BLOCKED rationalizations:** "Grep is faster" / "I'll subtract the comment lines manually" / "The count is approximate anyway" / "AST is overkill for a docstring number".
+
+**Why:** Grep cannot distinguish `# Group N — comment` from `"Group_N",` when both contain quotes; for Rust, grep cannot follow `pub use module::*` glob expansions or items nested inside `pub mod { ... }` blocks. Structural parsing is canonical because it parses the language, not text. See guide for Wave 6 evidence (Python: three incompatible counts — docstring 41, grep 48, AST 49) and the cross-SDK applicability via `syn::parse_file` for Rust binding consumers who audit the underlying crate.
+
+Origin: kailash-py W6 /redteam Round 3 (2026-04-27) — `kailash_ml/__init__.py:627` docstring claimed 41, grep reported 48, AST said 49. Cross-language port: Rust uses `syn::parse_file` or `cargo doc --document-private-items`; the structural-enumeration principle is language-neutral.
 
 ## Regression Testing
 
@@ -167,6 +213,62 @@ def test_reads_max_connections_from_env(monkeypatch):
 **Why:** Env vars are the textbook example of shared process state. `monkeypatch.setenv` restores at fixture teardown — which is AFTER the test body runs — so the sibling test can observe either the mutated value or the original depending on xdist worker scheduling. The flakiness surfaces intermittently on CI where test scheduling depends on runner load, producing a class of "passes locally, fails on CI" bugs that waste a full CI cycle per iteration. For binding consumer projects, env-var-driven config feeds through to the underlying Rust runtime via PyO3/Magnus — a flaky env race in the Python test suite produces non-deterministic binding behavior that looks like an FFI bug.
 
 Origin: Cross-SDK from kailash-rs PR #435 (2026-04-20) — `DATAFLOW_MAX_CONNECTIONS` env-var race produced a flaky CI failure (expected=7, actual=99). Python variant uses `monkeypatch` + `threading.Lock`; Rust variant uses `tokio::sync::Mutex` (see kailash-rs BUILD-repo testing.md).
+
+### Shared-Resource Test Isolation (Rust SDK)
+
+The env-var race above is one instance of a broader failure pattern: two tests mutating the same process-level shared resource race on parallel scheduling. The rule generalizes to any shared external state that Rust integration tests touch — a Docker Postgres container, a Redis instance, a shared cache, a file-system lockfile. Same contract: serialize across the read-then-mutate window via a test-module-scope Mutex.
+
+### MUST: Use `tokio::sync::Mutex` For Async Guards That Cross `.await`
+
+Any two integration tests that mutate the SAME shared external resource (real-PG container, real-Redis, shared cache, lockfile) MUST serialize through a `tokio::sync::Mutex` at test-module scope. The `std::sync::Mutex` form is BLOCKED when the guard crosses an `.await` point — it trips `clippy::await_holding_lock` AND risks deadlock if the tokio runtime moves the task to a different thread mid-await.
+
+```rust
+// DO — tokio::sync::Mutex, guard survives .await safely
+use tokio::sync::Mutex;
+use once_cell::sync::Lazy;
+
+static PG_INTEGRATION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+#[tokio::test]
+async fn test_real_pg_round_trip() {
+    let _guard = PG_INTEGRATION_LOCK.lock().await;
+    let pool = connect_real_pg().await;       // .await under tokio::sync guard — OK
+    let rows = pool.fetch_all("...").await;
+    assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
+async fn test_real_pg_migration_applies_idempotently() {
+    let _guard = PG_INTEGRATION_LOCK.lock().await;
+    let pool = connect_real_pg().await;
+    migrate(&pool).await.unwrap();
+    migrate(&pool).await.unwrap();             // second apply MUST be a no-op
+}
+
+// DO NOT — std::sync::Mutex across .await
+static PG_INTEGRATION_LOCK: Lazy<std::sync::Mutex<()>> =
+    Lazy::new(|| std::sync::Mutex::new(()));
+
+#[tokio::test]
+async fn test_real_pg_round_trip() {
+    let _guard = PG_INTEGRATION_LOCK.lock().unwrap();   // BLOCKED
+    let pool = connect_real_pg().await;                  // held across .await
+    // clippy::await_holding_lock + deadlock risk if the task re-schedules
+}
+```
+
+**BLOCKED rationalizations:**
+
+- "The tests pass in isolation, CI scheduling is the bug"
+- "Docker is slow enough that the tests don't actually overlap"
+- "`cargo nextest` already isolates per-test processes" (only when configured with `test-threads = 1` OR per-test process isolation; not the default)
+- "std::sync::Mutex is faster and the guard is brief"
+- "`#[serial]` from the `serial_test` crate is simpler"
+- "We'll migrate to tokio::sync::Mutex later"
+
+**Why:** `cargo nextest` and `cargo test` default to thread-level parallelism. Two `#[tokio::test]` functions that both `connect_real_pg().await` against the SAME Docker container race on startup: the first test's `migrate()` may see the second test's schema state, the first test's `fetch_all` may see the second test's inserted rows. The flakiness is intermittent and scales with runner load — exactly the "passes locally, fails on CI under Mac-runner load" failure mode that wastes a full CI cycle per iteration. `tokio::sync::Mutex` is the only async-safe primitive; `std::sync::Mutex` deadlocks when the tokio runtime re-schedules the task mid-await; `#[serial]` works but has worse error messages on lock poisoning and doesn't compose with nested serialization domains (e.g. PG-lock + Redis-lock in the same test). The test-module-scope Lazy guarantees one Mutex instance per resource per test-module — adding a second shared resource adds a second lock, not a second test-module.
+
+Origin: kailash-rs commit b4ed4cb5 (2026-04-22) — serialize real-PG integration tests via `tokio::sync::Mutex`, fixing a 75% flake rate on Mac runners caused by Docker Postgres container startup race (per `specs/ci-infrastructure.md §5.4`). Generalizes the Env-Var pattern above from "shared env var" to any "shared external state" — the Mutex is the same structural defense either way.
 
 ## MUST: Pytest Plugin + Marker Declaration Pair
 
@@ -305,7 +407,7 @@ def test_service_client_get_works(client):
 # because the binding test never exercises that PyO3/Magnus boundary.
 ```
 
-**Why:** Binding-layer paired variants cross the FFI boundary independently — a refactor that changes the typed variant's PyO3 conversion while leaving the raw variant alone ships a silent FFI regression. Tests that only exercise one variant cannot catch this because the failure mode is *across* the binding boundary, not in the shared Rust core.
+**Why:** Binding-layer paired variants cross the FFI boundary independently — a refactor that changes the typed variant's PyO3 conversion while leaving the raw variant alone ships a silent FFI regression. Tests that only exercise one variant cannot catch this because the failure mode is _across_ the binding boundary, not in the shared Rust core.
 
 **BLOCKED rationalizations:**
 
@@ -343,3 +445,5 @@ Origin: BP-046 (kailash-rs ServiceClient binding test coverage, 2026-04-14, comm
 - Tests MUST NOT affect other tests (clean setup/teardown, isolated DBs)
   **Why:** Shared state between tests creates order-dependent results that pass locally but fail in CI where execution order differs.
 - Naming: `test_[feature]_[scenario]_[expected_result].py`
+
+<!-- /slot:neutral-body -->

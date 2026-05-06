@@ -1,31 +1,42 @@
-last_synced: "2026-05-01T10:36:00Z"
-loom_version: "2.11.2"
-template_version: "2.11.2"
-template_full_caught_up: false
-sync_direction: "PARTIAL surgical adoption from kailash-coc-claude-rs 2.11.2. NOT a full sync — template still ahead by 50 modified rules + 53 modified skills (mostly slot-marker frontmatter for multi-CLI emission). Three artifacts adopted on user request and project relevance: /sweep + /autonomize commands, upstream-issue-hygiene rule. Rest deferred."
-scope: "Surgical adoption — envoy is a docs-only Phase-00 alignment project with no Python/Rust source, so most upstream skill churn is irrelevant. Multi-CLI emission infrastructure (cli-audit, cli-orchestrator, codex-architect, gemini-architect, cross-cli-parity, variant-authoring, build-repo-release-discipline) is BUILD/loom-only and intentionally skipped. claude-code-architect → cc-architect rename deferred (cosmetic, 6 reference files)."
+last_synced: "2026-05-06T00:00:00Z"
+loom_version: "2.19.0"
+template_version: "2.19.0"
+template_full_caught_up: true
+sync_direction: "FULL sync from kailash-coc-claude-rs 2.19.0 (loom 2.19.0). Envoy is now an active Phase-01 implementation project (no longer docs-only Phase-00), so the full template is now relevant. Adopted the new trust-posture system (rules/trust-posture.md, skills/32-trust-posture/, agents/management/posture-auditor.md, hooks/posture-gate.js + detect-violations.js + libs), the cap-headroom remediation rule promotions/demotions (worktree-isolation path-scoped), the new BUILD-side discipline rules (coc-sync-landing.md path-scoped — only loads in workspaces/ contexts), the cumulative 2.12.0–2.19.0 rule additions (verify-resource-existence, sweep-completeness, repo-scope-discipline, spec-accuracy + the codebase-hygiene-markers skill), and the modern .claude/hooks/ canonical layout (replacing the obsoleted scripts/hooks/ per rules/cross-repo.md Rule 3)."
+scope: "Full sync minus 7 BUILD/loom-only artifacts (cross-cli-parity.md, variant-authoring.md, build-repo-release-discipline.md rules; cli-orchestrator.md, codex-architect.md, gemini-architect.md agents; cli-audit.md command). These remain BUILD/loom-only per the prior surgical adoption rationale: envoy is a downstream USE consumer, not a multi-CLI emission BUILD repo."
 files_adopted:
-  - .claude/commands/sweep.md            # NEW (5908 B) — repo-wide outstanding-work audit; pre-/wrapup gate
-  - .claude/commands/autonomize.md       # NEW (5752 B) — autonomous-execution posture directive
-  - .claude/rules/upstream-issue-hygiene.md  # NEW (9740 B) — human-gated SDK issue filing + downstream-context redaction
+  - .claude/hooks/  # NEW canonical hooks dir (18 scripts + 11 shared libs)
+  - .claude/settings.json  # UPDATED: hook paths now .claude/hooks/, posture-gate + detect-violations wirings, permissions.deny block for posture state files
+  - .claude/rules/  # ALL modified files updated; new files added (trust-posture.md, coc-sync-landing.md, sweep-completeness.md, verify-resource-existence.md, repo-scope-discipline.md, spec-accuracy.md)
+  - .claude/agents/  # ALL modified files updated; new agents/management/posture-auditor.md + agents/cc-architect.md (replaces obsoleted claude-code-architect.md)
+  - .claude/commands/  # ALL modified files updated; new commands/posture.md
+  - .claude/skills/  # ALL modified files updated; new skills/32-trust-posture/ (7 files); new sub-files in skills/16-validation-patterns/
+  - .claude/guides/  # ALL modified rule-extracts updated
+  - .claude/.coc-obsoleted  # UPDATED manifest reflecting current obsoletion list
 files_intentionally_skipped:
-  - .claude/commands/cli-audit.md                     # multi-CLI emission, requires bin/emit.mjs (BUILD-only)
-  - .claude/agents/cli-orchestrator.md                # multi-CLI orchestration (BUILD-only)
-  - .claude/agents/codex-architect.md                 # multi-CLI emission target (BUILD-only)
-  - .claude/agents/gemini-architect.md                # multi-CLI emission target (BUILD-only)
-  - .claude/rules/build-repo-release-discipline.md    # BUILD-only release discipline
-  - .claude/rules/cross-cli-parity.md                 # multi-CLI parity contract (BUILD/loom-only)
-  - .claude/rules/variant-authoring.md                # variant authoring lives at loom (loom-only)
-  - 50 modified rules + 53 modified skills            # slot-marker frontmatter and minor compaction; substance unchanged
-  - claude-code-architect → cc-architect rename       # cosmetic; touches 6 reference files; defer
+  - .claude/rules/cross-cli-parity.md       # multi-CLI parity contract (BUILD/loom-only)
+  - .claude/rules/variant-authoring.md      # variant authoring (loom-only)
+  - .claude/rules/build-repo-release-discipline.md  # BUILD-only release discipline
+  - .claude/agents/cli-orchestrator.md      # multi-CLI orchestration (BUILD-only)
+  - .claude/agents/codex-architect.md       # multi-CLI emission target (BUILD-only)
+  - .claude/agents/gemini-architect.md      # multi-CLI emission target (BUILD-only)
+  - .claude/commands/cli-audit.md           # multi-CLI emission, requires bin/emit.mjs (BUILD-only)
 not_applied: []
+purged_per_obsoleted_manifest:
+  - scripts/hooks/                          # legacy hook location (pre-v2.8.31 layout)
+  - scripts/resolve-template.js             # legacy template resolver
+  - .claude/agents/claude-code-architect.md # renamed to cc-architect.md
+  - .claude/scheduled_tasks.lock            # legacy scheduled-tasks state
 unchanged_skipped:
-  - .claude/VERSION                                   # NOT updated — partial sync, would falsely imply caught up
-  - CLAUDE.md (NEVER overwritten — preserved)
-  - .claude/settings.local.json (NEVER overwritten — preserved)
+  - CLAUDE.md (NEVER overwritten — preserved per /sync rules)
+  - .claude/settings.local.json (NEVER overwritten — preserved per /sync rules)
+  - .claude/learning/ (per-repo state — preserved)
+  - workspaces/ (project-specific — preserved)
 sdk_pins:
-  kailash-enterprise: ">=3.20.0"             # unchanged from prior cycle
+  kailash-rs (workspace): "3.25.0"
+  kailash-enterprise: ">=3.25.0"
 hooks_verified:
-  count: NOT_RUN
-  note: "Surgical adoption — no hooks added or removed."
+  count: 18
+  libs: 11
+  note: "Full hooks/ dir installed before settings.json update so next-tool-call hook resolution works. Verify integrity manually — every hook in settings.json must exist in .claude/hooks/."
 build_repo_changes: []

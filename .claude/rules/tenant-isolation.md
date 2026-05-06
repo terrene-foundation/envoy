@@ -1,4 +1,18 @@
+---
+priority: 10
+scope: path-scoped
+paths:
+  - "**/tenant*"
+  - "**/multi_tenant*"
+  - "**/dataflow/**"
+  - "**/cache/**"
+  - "**/audit/**"
+---
+
 # Tenant Isolation Rules
+
+
+<!-- slot:neutral-body -->
 
 In a multi-tenant SaaS, tenant isolation is the difference between an API that scales to a thousand customers and a P0 incident that destroys the company's reputation. Cross-tenant data leaks happen because some piece of state — a cache key, a query filter, a metric label, an audit row — was constructed without a tenant dimension. The leak doesn't surface until two tenants happen to share a primary key, at which point one of them sees the other's data.
 
@@ -84,7 +98,7 @@ async def invalidate_model(self, model: str) -> int:
 
 ### 3a. Keyspace Version Bumps Require Invalidation-Path Sweep
 
-When the default keyspace version emitted by `CacheKeyGenerator` (or equivalent key-constructor) is bumped — e.g. `v1 → v2` for a cross-SDK parity change or a classification-hash format change — EVERY invalidation entry point in the codebase MUST be audited and updated in the same PR. The safest disposition is to match the version segment as a wildcard (`dataflow:v*:*`) so legacy keys AND current keys are swept in one call.
+When the default keyspace version emitted by `CacheKeyGenerator` (or equivalent key-constructor) is bumped — e.g. `v1 → v2` for a classification-hash format change — EVERY invalidation entry point in the codebase MUST be audited and updated in the same PR. The safest disposition is to match the version segment as a wildcard (`dataflow:v*:*`) so legacy keys AND current keys are swept in one call.
 
 ```python
 # DO — version-wildcard sweep, future-proof
@@ -108,7 +122,7 @@ query_pattern = f"dataflow:{model_name}:v1:*"
 
 **Why:** A cache keyspace bump is a producer-side change that silently breaks every consumer-side invalidator pinned to the old version. Write-then-invalidate leaves stale entries on the shared backend (Redis, Memcached, etc.) indefinitely; TTL-based eventual-expiry is not a substitute because TTLs are often multi-hour and users observe the stale reads in the meantime. Version-wildcard sweeps are the structural defense — the only invalidation code that survives the next keyspace bump unchanged.
 
-Origin: kailash-py PR #522 / PR #529 (2026-04-19) — BP-049 keyspace bump `v1→v2`; Redis invalidator missed in the producer-side update, caught by post-release reviewer, fast-patched in dataflow 2.0.12.
+Origin: 2026-04-19 — keyspace bump `v1→v2`; Redis invalidator missed in the producer-side update, caught by post-release reviewer, fast-patched.
 
 ### 4. Metric Labels Carry Tenant_id (Bounded)
 
@@ -174,3 +188,5 @@ rg 'audit_store\.append|record_query_success|record_query_failure' .
 ```
 
 Any match that fails the contract above is a HIGH finding.
+
+<!-- /slot:neutral-body -->

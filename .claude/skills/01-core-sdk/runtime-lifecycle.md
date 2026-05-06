@@ -11,7 +11,6 @@ Runtime lifecycle management with reference-counted sharing, context managers, a
 > Category: `core-sdk`
 > Priority: `CRITICAL`
 > SDK Version: `2.1.0+`
-> Issue: terrene-foundation/kailash-py#71
 
 ## The Problem
 
@@ -134,5 +133,5 @@ Safe against double-close:
 ## Cross-References
 
 - `rules/dataflow-pool.md` Rule 6 — No orphan runtimes
-- `scripts/hooks/validate-workflow.js` — Lint detection for unmanaged runtimes
+- `.claude/hooks/validate-workflow.js` — Lint detection for unmanaged runtimes
 - `tests/integration/runtime/test_runtime_connection_budget.py` — 15 integration tests

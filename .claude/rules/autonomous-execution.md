@@ -1,4 +1,11 @@
+---
+priority: 0
+scope: baseline
+---
+
 # Autonomous Execution Model
+
+<!-- slot:neutral-body -->
 
 COC executes through **autonomous AI agent systems**, not human teams. All deliberation, analysis, recommendations, and effort estimates MUST assume autonomous execution unless the user explicitly states otherwise.
 
@@ -105,6 +112,7 @@ When a code review or self-verification surfaces a latent gap in the SAME BUG CL
 
 ```markdown
 # DO — review surfaces 40+ sibling sites with the same bug, remaining
+
 # capacity covers one shard, fix immediately
 
 - PR A fixes null-bind on one code path (say, the SQL-cast parser)
@@ -114,6 +122,7 @@ When a code review or self-verification surfaces a latent gap in the SAME BUG CL
   ship as PR B before session end
 
 # DO NOT — file a follow-up issue when the gap is same-bug-class and
+
 # fits the shard budget
 
 - PR A fixes one path
@@ -131,11 +140,11 @@ When a code review or self-verification surfaces a latent gap in the SAME BUG CL
 - "Budget allows it but the blast radius is higher if something breaks"
 - "Splitting into two PRs is the conservative approach"
 
-**Why:** Same-bug-class gaps surfaced during review cost the least to fix while the context is loaded — the invariants, call graph, and domain model are all warm in attention. Filing a follow-up issue requires the next session to reload the entire context from scratch, typically 2–5× the marginal cost of continuing. Evidence: kailash-rs 2026-04-20 — PR #435 reviewer flagged 40+ model-aware `bind_value` sites with the same `None::<String>` hardcode. The agent filed #436 instead of fixing; the user pushed back ("why aren't you resolving it"); the fix shipped as #437 in the same session. Filing #436 wasted one user-turn of friction and one session-handoff context-reload that was unnecessary.
+**Why:** Same-bug-class gaps surfaced during review cost the least to fix while the context is loaded — the invariants, call graph, and domain model are all warm in attention. Filing a follow-up issue requires the next session to reload the entire context from scratch, typically 2–5× the marginal cost of continuing. Evidence: 2026-04-20 — a reviewer flagged 40+ sibling sites with the same hardcode pattern as the just-fixed PR. The agent filed a follow-up issue instead of fixing; the user pushed back ("why aren't you resolving it"); the fix shipped same session. Filing the follow-up wasted one user-turn of friction and one session-handoff context-reload that was unnecessary.
 
 **Bounded by the shard budget.** This rule does NOT override MUST Rule 1 (shard threshold). If the surfaced gap exceeds ≤500 LOC load-bearing / ≤5–10 invariants / ≤3–4 call-graph hops, filing the follow-up issue IS the correct disposition — the gap is a new shard, not a continuation of the current one.
 
-Origin: kailash-rs 2026-04-20 — #424 null-bind fix shipped as PR #435 (SQL-cast path); review surfaced the FieldType path gap (same bug class, ~300 LOC, one shard); initial disposition was "file #436"; user corrected; fix shipped as #437 same session.
+Origin: 2026-04-20 — a null-bind fix shipped on one path; review surfaced a sibling path gap (same bug class, ~300 LOC, one shard); initial disposition was "file follow-up issue"; user corrected; fix shipped same session. Additional cross-class evidence — kailash-rs 2026-05-01 session: (a) bedrock register_bedrock_region rustdoc broken-intra-doc-link on a feature-gated symbol, fixed in same shard via plain-backticks (PR #735 commit 01c18ece); (b) PyOAuth2Client `#[pymethods]` rustdoc private_intra_doc_links because PyO3 methods are private-by-default, fixed in same shard via plain-backticks (PR #736 commit 729630cd); (c) PyNexus EventBus #679 Wave-2 implementation following Wave-1's premature deferral — the deferred-shard-was-actually-fittable signal that triggered same-shard fix-immediately. Three evidence points across two distinct rule-violation classes (rustdoc broken-link feature-gated, rustdoc private_intra_doc_links on PyO3) confirm Rule 4 generalizes beyond null-bind sibling sweeps.
 
 ## MUST NOT (Sharding)
 
@@ -159,3 +168,5 @@ Origin: kailash-rs 2026-04-20 — #424 null-bind fix shipped as PR #435 (SQL-cas
 **Why:** Context window is not attention. Model capability claims are not evidence for a specific task. "One conceptual change" is exactly how Phase 5.11 shipped 2,407 LOC of orphaned code.
 
 Origin: Session 2026-04-13 — capacity bands discussion (~500 LOC load-bearing, ~5–10 invariants, ~3–4 call-graph hops, "describe in 3 sentences" heuristic), grounded in the Phase 5.11 orphan failure mode documented in `rules/orphan-detection.md`.
+
+<!-- /slot:neutral-body -->
