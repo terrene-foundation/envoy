@@ -106,8 +106,13 @@ class FinancialDimension:
     per_hour_velocity_microdollars: int = 0
     per_day_ceiling_microdollars: int = 0
     per_month_ceiling_microdollars: int = 0
-    authored_constraints: list[AuthoredConstraint] = field(default_factory=list)
-    imported_constraints: list[ImportedConstraint] = field(default_factory=list)
+    # L-03 shard A: tuple-typed so the constraint list cannot be mutated
+    # post-compile. A downstream consumer cannot widen the envelope by
+    # `dim.authored_constraints.append(...)`. Compiler uses tuple += pattern
+    # for re-assignment. Full dimension freeze (preventing scalar mutation
+    # of e.g. per_call_ceiling_microdollars) lands in L-03 shard B.
+    authored_constraints: tuple[AuthoredConstraint, ...] = ()
+    imported_constraints: tuple[ImportedConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         # NaN/Inf guard per pact-governance.md § "_validate_finite()"
@@ -134,8 +139,9 @@ class OperationalDimension:
     tool_denylist: list[str] = field(default_factory=list)
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     sub_agent_spawn_limit: dict[str, int] = field(default_factory=dict)
-    authored_constraints: list[AuthoredConstraint] = field(default_factory=list)
-    imported_constraints: list[ImportedConstraint] = field(default_factory=list)
+    # L-03 shard A: see FinancialDimension docstring above.
+    authored_constraints: tuple[AuthoredConstraint, ...] = ()
+    imported_constraints: tuple[ImportedConstraint, ...] = ()
 
 
 @dataclass(slots=True)
@@ -144,8 +150,9 @@ class TemporalDimension:
 
     allowed_windows: list[dict[str, Any]] = field(default_factory=list)
     blackout_windows: list[dict[str, Any]] = field(default_factory=list)
-    authored_constraints: list[AuthoredConstraint] = field(default_factory=list)
-    imported_constraints: list[ImportedConstraint] = field(default_factory=list)
+    # L-03 shard A: tuple-typed constraint lists.
+    authored_constraints: tuple[AuthoredConstraint, ...] = ()
+    imported_constraints: tuple[ImportedConstraint, ...] = ()
 
 
 @dataclass(slots=True)
@@ -156,8 +163,9 @@ class DataAccessDimension:
     field_allowlist_per_model: dict[str, list[str]] = field(default_factory=dict)
     field_denylist: list[str] = field(default_factory=list)
     semantic_rules: list[dict[str, Any]] = field(default_factory=list)
-    authored_constraints: list[AuthoredConstraint] = field(default_factory=list)
-    imported_constraints: list[ImportedConstraint] = field(default_factory=list)
+    # L-03 shard A: tuple-typed constraint lists.
+    authored_constraints: tuple[AuthoredConstraint, ...] = ()
+    imported_constraints: tuple[ImportedConstraint, ...] = ()
 
 
 @dataclass(slots=True)
@@ -169,8 +177,9 @@ class CommunicationDimension:
     domain_allowlist: list[str] = field(default_factory=list)
     channel_allowlist: list[str] = field(default_factory=list)
     content_rules: list[dict[str, Any]] = field(default_factory=list)
-    authored_constraints: list[AuthoredConstraint] = field(default_factory=list)
-    imported_constraints: list[ImportedConstraint] = field(default_factory=list)
+    # L-03 shard A: tuple-typed constraint lists.
+    authored_constraints: tuple[AuthoredConstraint, ...] = ()
+    imported_constraints: tuple[ImportedConstraint, ...] = ()
 
 
 # ---------------------------------------------------------------------------
