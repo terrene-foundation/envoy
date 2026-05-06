@@ -170,12 +170,25 @@ Per /implement workflow Step 7:
 
 Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-foundation`).
 
-- `envoy/trust/store.py` adds `_to_spec_wire_form(algorithm_dict) -> dict` (pure translator, splits upstream's `<sig>+<hash>` compound on `+`, pins shamir to `slip39`) + `_with_algorithm_id(record_dict) -> dict` (single bottleneck — every record-construction path will route through this helper at T-01-17 ledger-persistence wiring time).
+- `envoy/trust/store.py` adds `_to_spec_wire_form(algorithm_dict) -> dict` (pure translator, splits upstream's `<sig>+<hash>` compound on `+`, pins shamir to `slip39`) + `_with_algorithm_id(record_dict) -> dict` (single bottleneck, returns NEW dict per gate-review M-01 immutability contract). Helper is current-orphan with 5-commit grace until T-01-17 wires production consumers.
 - `kailash.trust.signing.algorithm_id.AlgorithmIdentifier()` import added; `inspect.signature` sweep confirms upstream signatures match shard 5 § 4 step 5a citations exactly (no async deviation, no constructor-arg drift). See `journal/0010`.
-- `tests/regression/test_r2_h_01_algorithm_id_wire_form.py` (13 cases, 3 classes): `TestToSpecWireForm` (6 — canonical translation, exact 3-key shape, slip39 pin, default fallback, compound parsing, no-mutation discipline); `TestWithAlgorithmId` (4 — embed-on-empty, preserve-existing-fields, overwrite-pre-existing, idempotency); `TestProducerVerifierRoundTrip` (3 — exact wire form, dict-not-string, no-legacy-leak). All green: `13 passed in 0.19s`.
-- Shard-budget actual: ~50 LOC translator + ~150 LOC test; within ≤500 LOC + ≤5 invariants + ≤3 call-graph hops.
+- `tests/regression/test_r2_h_01_algorithm_id_wire_form.py` (14 cases, 3 classes): `TestToSpecWireForm` (6); `TestWithAlgorithmId` (5 — including new immutability test added per gate-review M-01); `TestProducerVerifierRoundTrip` (3).
+- `tests/regression/test_h01_principal_id_path_traversal_safety.py` (19 cases, 2 classes): added per security-review H-01 — covers 11 unsafe-shape rejections + 7 safe-shape acceptances (Phase 01 pseudonyms with `@`, `.`, `+`) + 2 length-cap boundary tests. Backed by envoy-side `_validate_id_safety` helper that allows real-world principal_pseudonyms while blocking `..` / `/` / `\\x00` / control chars / leading `.` / over-length.
+- Shard-budget actual: ~120 LOC translator+validator+helpers + ~300 LOC tests; within ≤500 LOC + ≤5 invariants + ≤3 call-graph hops.
 
-**Verification gate**: pytest tier1+regression `75 passed, 1 error` (1 error is pre-existing collection error in `tests/sdk/test_sdk_patterns.py` from the inherited COC scaffold — disposition follows in a separate fix commit per zero-tolerance Rule 1; see commit log).
+**Verification gate**: pytest tier1+regression `90 passed in 0.22s`; zero collection errors; zero warnings.
+
+**Gate-review fixes applied in same shard** (per `rules/autonomous-execution.md` MUST Rule 4):
+
+- H-01 (security HIGH): path-traversal validation on every public boundary — `__init__`, `seed_genesis`, `record_delegation`, `get_chain` — using envoy-side `_validate_id_safety` that allows Phase 01 pseudonyms (`alice@example`, `agent.42+ci`) while rejecting `../`, `/`, `\\x00`, control chars, and over-length shapes.
+- M-01 (security MEDIUM): `_with_algorithm_id` is non-mutating; returns a new dict; immutability regression test added.
+- M-02 (security MEDIUM): `close()` zeroizes `_keys` dict on the InMemoryKeyManager (defensive — minimizes private-key residency window pre-T-01-13 vault container).
+- M-03 (security MEDIUM): `_register_phase01` renamed via name-mangling to `__register_phase01_only` (private to `_InMemoryAuthorityRegistry`); call site uses the mangled attribute access; runtime check verifies the registry type before dispatch.
+- HIGH-1 (review): spec citation drift corrected — `independent-verifier.md L35` documents the 4-key segment-boundary form; `trust-lineage.md L24` is the sole authority for the 3-key trust-lineage on-wire form. Citations updated in store.py docstring + regression test docstrings.
+- MEDIUM-2 (review): `chain.py:523` line citation fixed to `chain.py::GenesisRecord (line 148)` (file:symbol form).
+- L-02 (security LOW): `__import__` runtime resolution in `compiler.py::_fold_templates` replaced with module-scope `from envoy.envelope.types import ImportedConstraint`.
+
+**Out-of-shard, follow-up todo filed**: L-03 frozen-dataclass invariants on the 5 dimension dataclasses + `EnvelopeMetadata` + `SemanticChecks`. Significant refactor (changes EnvelopeCompiler.compile() flow + requires `object.__setattr__` in `__post_init__` for dimension dimensions); deserves its own shard budget. Tracked in `12-followup-l03-frozen-dimension-dataclasses.md`.
 
 ---
 

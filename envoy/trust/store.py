@@ -42,6 +42,54 @@ from kailash.trust.operations import CapabilityRequest
 from kailash.trust.posture.posture_store import SQLitePostureStore
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
 
+
+# ---------------------------------------------------------------------------
+# Envoy-side identifier safety guard
+# ---------------------------------------------------------------------------
+
+
+_MAX_ID_LEN = 256
+
+
+def _validate_id_safety(identifier: str, *, field: str) -> None:
+    """Reject identifiers that could enable path-traversal or null-byte attacks.
+
+    Phase 01 envoy principal_ids follow `specs/trust-lineage.md` § Genesis
+    `principal_pseudonym: <str>` — pseudonyms can legitimately contain `@`,
+    `.`, `+`, `-`, `_` (e.g. `alice@example`, `agent.42+ci`). We do NOT
+    constrain to slug-only — the security goal is blocking path-traversal,
+    not narrowing the namespace.
+
+    Raises ValueError on:
+    - empty / non-str
+    - length > 256 (DoS guard for filesystem path use)
+    - null byte (`\\x00`) or any C0/C1 control character
+    - `..`, `./`, `/`, `\\` (path components)
+    - leading `.` (hidden-file shape)
+
+    Per `rules/trust-plane-security.md` MUST Rule 2 — every record ID flowing
+    into kailash-py SQLite primary keys + (post-T-01-13) Trust Vault container
+    paths MUST be rejected at the envoy boundary if it carries any of these
+    shapes.
+    """
+    if not isinstance(identifier, str):
+        raise ValueError(f"{field} must be str (got {type(identifier).__name__})")
+    if not identifier:
+        raise ValueError(f"{field} must not be empty")
+    if len(identifier) > _MAX_ID_LEN:
+        raise ValueError(f"{field} length {len(identifier)} exceeds max {_MAX_ID_LEN}")
+    if identifier.startswith("."):
+        raise ValueError(f"{field} must not start with '.' (hidden-file shape)")
+    if any(ch == "\x00" for ch in identifier):
+        raise ValueError(f"{field} contains null byte")
+    if any(ord(ch) < 0x20 or 0x7F <= ord(ch) < 0xA0 for ch in identifier):
+        raise ValueError(f"{field} contains control character")
+    if "/" in identifier or "\\" in identifier:
+        raise ValueError(f"{field} contains path separator")
+    if ".." in identifier:
+        raise ValueError(f"{field} contains '..' (path traversal)")
+
+
 from envoy.trust.errors import (
     GenesisAlreadySeededError,
     PrincipalRequiredError,
@@ -95,8 +143,13 @@ class _InMemoryAuthorityRegistry:
         self._authorities[authority.id] = authority
 
     # Phase 01 utility — auto-register a degenerate authority so Genesis can land.
-    # Public-facing callers should NOT use this; it's a TrustStoreAdapter helper.
-    async def _register_phase01(
+    # Double-underscore name-mangled per rules/trust-plane-security.md MUST NOT
+    # Rule (no authority-creation backdoor reachable from arbitrary callers).
+    # Only TrustStoreAdapter (in this module) consumes this via the mangled
+    # attribute access `_InMemoryAuthorityRegistry__register_phase01_only`.
+    # Phase 02 swap to Foundation registry replaces this entire class — the
+    # mangled helper has no surface to leak.
+    async def __register_phase01_only(
         self, *, authority_id: str, name: str, public_key: str, signing_key_id: str
     ) -> None:
         if authority_id in self._authorities:
@@ -163,6 +216,16 @@ class TrustStoreAdapter:
                 "principal_id is required (per rules/tenant-isolation.md Rule 2); "
                 "no defaults — silent merging across principals is BLOCKED",
             )
+        # Path-traversal + null-byte rejection per rules/trust-plane-security.md
+        # MUST Rule 2 — principal_id flows into kailash-py's SQLite primary key
+        # and (post-T-01-13) into the vault container's filesystem path. Reject
+        # `..`, `/`, `\x00`, leading `.`, control chars, and over-length shapes.
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
 
         self._principal_id: PrincipalId = principal_id
         self._vault_path = Path(vault_path)
@@ -204,13 +267,31 @@ class TrustStoreAdapter:
         self._initialized = True
 
     async def close(self) -> None:
-        """Release SQLite handles. Caller responsibility (no `__del__` cleanup
-        per `rules/patterns.md` § Async Resource Cleanup).
+        """Release SQLite handles + zeroize in-memory key material.
+
+        Caller responsibility (no `__del__` cleanup per
+        `rules/patterns.md` § Async Resource Cleanup).
+
+        Per `rules/trust-plane-security.md` MUST NOT Rule 3 (no private key
+        material in memory longer than necessary): the InMemoryKeyManager's
+        backing store is cleared on close. Wave 1 ships against unencrypted
+        SQLite + InMemoryKeyManager; T-01-13 (Trust Vault container) wraps
+        these into AES-256-GCM file encryption — `close()` minimizes the
+        residence window in the meantime.
         """
         await self._chain_store.close()
         # SQLitePostureStore.close is sync per kailash 2.13.4
         if hasattr(self._posture_store, "close"):
             self._posture_store.close()
+        # Best-effort zeroize of the key manager's in-memory store. The
+        # InMemoryKeyManager exposes a private `_keys` dict in kailash-py
+        # 2.13.4; `clear()` reduces the residency window for the eventual
+        # T-01-13 vault-container migration. Defensive `getattr` so future
+        # kailash versions that rename or refactor the field do not break
+        # the close path.
+        keys_dict = getattr(self._key_manager, "_keys", None)
+        if isinstance(keys_dict, dict):
+            keys_dict.clear()
         self._initialized = False
 
     # ------------------------------------------------------------------
@@ -237,6 +318,15 @@ class TrustStoreAdapter:
         """
         if not self._initialized:
             await self.initialize()
+        # Path-traversal guard on every external identifier per
+        # rules/trust-plane-security.md MUST Rule 2.
+        try:
+            _validate_id_safety(seed.principal_id, field="seed.principal_id")
+            _validate_id_safety(seed.authority_id, field="seed.authority_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"GenesisSeed identifier failed safety validation: {exc}",
+            ) from exc
         if seed.principal_id != self._principal_id:
             raise PrincipalRequiredError(
                 "GenesisSeed.principal_id does not match adapter's principal_id "
@@ -275,8 +365,17 @@ class TrustStoreAdapter:
             await self._key_manager.generate_keypair(agent_key_id)
 
         # Phase 01 in-memory registry registration (Phase 02 swaps to Foundation
-        # registry once the endpoint ships).
-        await self._authority_registry._register_phase01(  # noqa: SLF001 — Phase 01 helper
+        # registry once the endpoint ships). Name-mangling guards against
+        # arbitrary callers reaching the SYSTEM-tier authority creation backdoor
+        # via `adapter._authority_registry._register_phase01(...)`. Only this
+        # module can dispatch through the mangled name.
+        if not isinstance(self._authority_registry, _InMemoryAuthorityRegistry):
+            raise PrincipalRequiredError(
+                "Phase 01 authority registry is required for seed_genesis; "
+                "Phase 02 Foundation-registry swap MUST replace seed_genesis "
+                "before the in-memory registry is removed.",
+            )
+        await self._authority_registry._InMemoryAuthorityRegistry__register_phase01_only(  # type: ignore[attr-defined]  # noqa: SLF001 — name-mangled Phase 01 helper
             authority_id=seed.authority_id,
             name=seed.metadata.get("authority_name", seed.authority_id),
             public_key=authority_public_key,
@@ -321,6 +420,15 @@ class TrustStoreAdapter:
         """
         if not self._initialized:
             await self.initialize()
+        # Path-traversal guard per rules/trust-plane-security.md MUST Rule 2.
+        try:
+            _validate_id_safety(request.delegator_id, field="request.delegator_id")
+            _validate_id_safety(request.delegatee_id, field="request.delegatee_id")
+            _validate_id_safety(request.task_id, field="request.task_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"DelegationRequest identifier failed safety validation: {exc}",
+            ) from exc
         if request.delegator_id != self._principal_id:
             raise PrincipalRequiredError(
                 "delegation request delegator_id does not match adapter's principal_id "
@@ -359,6 +467,13 @@ class TrustStoreAdapter:
             raise PrincipalRequiredError(
                 "principal_id required for get_chain; no default lookup",
             )
+        # Path-traversal guard per rules/trust-plane-security.md MUST Rule 2.
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
         if not self._initialized:
             await self.initialize()
         try:
@@ -397,11 +512,15 @@ class TrustStoreAdapter:
         Upstream `kailash.trust.signing.algorithm_id.AlgorithmIdentifier.to_dict()`
         emits `{"algorithm": "ed25519+sha256"}` (kailash-py 2.13.4 algorithm_id.py
         line 105 — post-#604 scaffold awaiting mint ISS-31). The Phase 00
-        frozen specs `specs/trust-lineage.md` line 24 + `specs/independent-verifier.md`
-        line 35 mandate the 3-key form
+        frozen spec `specs/trust-lineage.md` line 24 mandates the 3-key form
         `{"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}` on every
-        on-disk DelegationRecord / GenesisRecord / RevocationRecord that the
-        Independent Verifier (shard 7) consumes.
+        on-disk DelegationRecord / GenesisRecord / RevocationRecord. The
+        Independent Verifier (shard 7) consumes the 3-key form on the
+        trust-lineage path; `specs/independent-verifier.md` line 35 documents
+        a strict-superset 4-key segment-boundary form (R3-M-02 carry-forward,
+        adds `canonical_json` key) used at Ledger-export segment boundaries
+        only — that 4-key form is wired by a separate serializer extension at
+        T-03-50 ledger export, NOT by this helper.
 
         Single point of producer-side translation per `rules/specs-authority.md`
         Rule 6 (deviations from upstream are explicitly acknowledged at one
@@ -419,7 +538,12 @@ class TrustStoreAdapter:
         }
 
     def _with_algorithm_id(self, record_dict: dict) -> dict:
-        """Embed canonical 3-key algorithm_identifier on every signed-record dict.
+        """Embed canonical 3-key algorithm_identifier on a signed-record dict.
+
+        Returns a NEW dict — never mutates the caller's input. A Ledger producer
+        that constructs a record dict and reuses it for both audit log + persistence
+        relies on this immutability so the algorithm_identifier doesn't bleed
+        across record contexts.
 
         Single point of enforcement — no record-construction path bypasses this
         helper. Forward-path-safe per kailash-py#604 / mint ISS-31: when the
@@ -429,14 +553,15 @@ class TrustStoreAdapter:
         This is the structural defense per shard 5 § 4 step 5a + Phase 00
         survey item 19 — `rules/zero-tolerance.md` Rule 4 BLOCKS re-introducing
         hardcoded `"Ed25519"` strings anywhere in Envoy code, even though
-        kailash-py's own legacy `chain.py::GenesisRecord` (line 523) still has
+        kailash-py's own legacy `chain.py::GenesisRecord` (line 148) still has
         `signature_algorithm: str = "Ed25519"` at the dataclass level. The
         adapter wraps that legacy field but writes the canonical 3-key
         algorithm_identifier dict alongside.
         """
+        out = dict(record_dict)
         upstream_form = AlgorithmIdentifier().to_dict()
-        record_dict["algorithm_identifier"] = self._to_spec_wire_form(upstream_form)
-        return record_dict
+        out["algorithm_identifier"] = self._to_spec_wire_form(upstream_form)
+        return out
 
 
 __all__ = ["TrustStoreAdapter"]

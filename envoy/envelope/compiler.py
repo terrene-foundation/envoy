@@ -50,6 +50,7 @@ from envoy.envelope.types import (
     AuthoredConstraint,
     EnvelopeConfig,
     EnvelopeConfigInput,
+    ImportedConstraint,
 )
 
 SUPPORTED_SCHEMA_VERSION = "envelope/1.0"
@@ -363,14 +364,12 @@ class EnvelopeCompiler:
             ):
                 tmpl_dim = content.get(dim_name, {})
                 for raw in tmpl_dim.get("authored_constraints", []):
+                    # Imported constraints carry over the template's authored
+                    # rule but flip `authored=False` so Authorship Score doesn't
+                    # credit them per `specs/authorship-score.md` § Field
+                    # semantics for late-added fields.
                     dim.imported_constraints.append(
-                        # Imported constraints carry over the template's authored
-                        # rule but flip `authored=False` so Authorship Score
-                        # doesn't credit them per `specs/authorship-score.md`.
-                        # See spec § Field semantics for late-added fields.
-                        __import__(
-                            "envoy.envelope.types", fromlist=["ImportedConstraint"]
-                        ).ImportedConstraint(
+                        ImportedConstraint(
                             constraint_id=raw["constraint_id"],
                             rule_ast=raw.get("rule_ast", {}),
                             template_origin=tmpl.template_origin,

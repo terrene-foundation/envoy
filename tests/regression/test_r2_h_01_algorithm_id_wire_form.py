@@ -4,15 +4,22 @@ Source: `04-validate/round-2-implementation-comprehensive.md` § R2-H-01 +
 `workspaces/phase-01-mvp/journal/0004-DECISION-r2-h-01-disposition.md` Pattern 3.
 
 Failure mode being guarded: every persisted DelegationRecord / GenesisRecord /
-RevocationRecord that the Independent Verifier (shard 7) consumes MUST carry the
-3-key `{sig, hash, shamir}` form per `specs/trust-lineage.md` line 24 +
-`specs/independent-verifier.md` line 35. Upstream `kailash.trust.signing.algorithm_id`
-(post-#604, pre-mint-ISS-31) emits the 1-key scaffold form
-`{"algorithm": "ed25519+sha256"}`. Without producer-side translation, every
-on-disk record carries the wrong wire form and the verifier rejects every entry.
+RevocationRecord on the trust-lineage path MUST carry the 3-key `{sig, hash,
+shamir}` form per `specs/trust-lineage.md` line 24. Upstream
+`kailash.trust.signing.algorithm_id` (post-#604, pre-mint-ISS-31) emits the
+1-key scaffold form `{"algorithm": "ed25519+sha256"}`. Without producer-side
+translation, every on-disk record carries the wrong wire form and the
+Independent Verifier (shard 7) rejects every entry.
+
+Note: `specs/independent-verifier.md` line 35 documents a strict-superset
+4-key segment-boundary form (R3-M-02 carry-forward, adds `canonical_json`)
+used at Ledger-export segment boundaries only. The 3-key trust-lineage form
+verified here is NOT the segment-boundary form — that 4-key form lands via a
+separate serializer extension at T-03-50 ledger export.
 
 Defense: the SINGLE bottleneck `TrustStoreAdapter._with_algorithm_id` routes
-every record-dict construction through `_to_spec_wire_form` before write. This
+every record-dict construction through `_to_spec_wire_form` before write,
+returning a NEW dict (immutability contract — input is not mutated). This
 test asserts the bottleneck behaves as the spec mandates, including the
 forward-path safety property (when upstream's value space changes, only the
 translator updates — every caller stays unchanged).
@@ -165,6 +172,24 @@ class TestWithAlgorithmId:
         assert result["delegation_id"] == "sha256:abc123"
         assert result["nonce"] == "deadbeef"
 
+    def test_helper_does_not_mutate_caller_record(self, adapter: TrustStoreAdapter) -> None:
+        """Immutability contract — input dict MUST NOT be mutated. A Ledger
+        producer that constructs a record dict and reuses it for both audit
+        log + persistence relies on this so the algorithm_identifier doesn't
+        bleed across record contexts. Mirrors `_to_spec_wire_form`'s purity
+        contract at the wrapper layer."""
+        before = {"type": "DelegationRecord", "delegation_id": "sha256:abc123"}
+        snapshot = dict(before)
+
+        result = adapter._with_algorithm_id(before)
+
+        assert before == snapshot, (
+            "_with_algorithm_id mutated caller's input dict; "
+            "Ledger producer's audit-log surface would carry leaked algorithm_identifier"
+        )
+        assert result is not before
+        assert "algorithm_identifier" not in before
+
     def test_overwrites_pre_existing_algorithm_identifier(self, adapter: TrustStoreAdapter) -> None:
         """Helper is the SINGLE point of truth — even if a caller pre-populates
         `algorithm_identifier`, the helper MUST overwrite with the canonical
@@ -202,7 +227,10 @@ class TestProducerVerifierRoundTrip:
     and consumer (Independent Verifier, shard 7). The round-trip property is
     that what the producer writes matches exactly what the verifier expects."""
 
-    # Spec-mandated form per specs/independent-verifier.md L35 + specs/trust-lineage.md L24
+    # Spec-mandated form per specs/trust-lineage.md L24 (3-key trust-lineage on-wire form).
+    # specs/independent-verifier.md L35 documents a strict-superset 4-key segment-boundary
+    # form (R3-M-02 carry-forward); that form is wired by a separate serializer extension
+    # at T-03-50 ledger export, NOT by this helper.
     SPEC_WIRE_FORM = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 
     def test_producer_emits_exact_spec_wire_form(self, adapter: TrustStoreAdapter) -> None:
