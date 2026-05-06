@@ -40,6 +40,7 @@ from kailash.trust.exceptions import TrustChainNotFoundError as _UpstreamTrustCh
 from kailash.trust.key_manager import InMemoryKeyManager
 from kailash.trust.operations import CapabilityRequest
 from kailash.trust.posture.posture_store import SQLitePostureStore
+from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
 
 from envoy.trust.errors import (
     GenesisAlreadySeededError,
@@ -385,6 +386,57 @@ class TrustStoreAdapter:
             await self.initialize()
         chains = await self._chain_store.list_chains()
         return [c.genesis.agent_id for c in chains]
+
+    # ------------------------------------------------------------------
+    # R2-H-01 algorithm_id wire-form translator (T-01-15, LOAD-BEARING)
+    # ------------------------------------------------------------------
+
+    def _to_spec_wire_form(self, algorithm_dict: dict) -> dict:
+        """Translate upstream's 1-key form into the spec-mandated 3-key wire form.
+
+        Upstream `kailash.trust.signing.algorithm_id.AlgorithmIdentifier.to_dict()`
+        emits `{"algorithm": "ed25519+sha256"}` (kailash-py 2.13.4 algorithm_id.py
+        line 105 — post-#604 scaffold awaiting mint ISS-31). The Phase 00
+        frozen specs `specs/trust-lineage.md` line 24 + `specs/independent-verifier.md`
+        line 35 mandate the 3-key form
+        `{"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}` on every
+        on-disk DelegationRecord / GenesisRecord / RevocationRecord that the
+        Independent Verifier (shard 7) consumes.
+
+        Single point of producer-side translation per `rules/specs-authority.md`
+        Rule 6 (deviations from upstream are explicitly acknowledged at one
+        bottleneck, never spread across call sites). Every record-construction
+        path routes through `_with_algorithm_id()` which routes through this
+        helper before write — Ledger persistence (T-01-17 + T-01-18) wires the
+        producer side; the verifier (shard 7) consumes the 3-key form.
+        """
+        compound = algorithm_dict.get("algorithm", "")
+        sig, _, hash_alg = compound.partition("+")
+        return {
+            "sig": sig or "ed25519",
+            "hash": hash_alg or "sha256",
+            "shamir": "slip39",
+        }
+
+    def _with_algorithm_id(self, record_dict: dict) -> dict:
+        """Embed canonical 3-key algorithm_identifier on every signed-record dict.
+
+        Single point of enforcement — no record-construction path bypasses this
+        helper. Forward-path-safe per kailash-py#604 / mint ISS-31: when the
+        upstream value space changes (mint ISS-31 lands new sig/hash combos),
+        only `_to_spec_wire_form` updates; every caller stays unchanged.
+
+        This is the structural defense per shard 5 § 4 step 5a + Phase 00
+        survey item 19 — `rules/zero-tolerance.md` Rule 4 BLOCKS re-introducing
+        hardcoded `"Ed25519"` strings anywhere in Envoy code, even though
+        kailash-py's own legacy `chain.py::GenesisRecord` (line 523) still has
+        `signature_algorithm: str = "Ed25519"` at the dataclass level. The
+        adapter wraps that legacy field but writes the canonical 3-key
+        algorithm_identifier dict alongside.
+        """
+        upstream_form = AlgorithmIdentifier().to_dict()
+        record_dict["algorithm_identifier"] = self._to_spec_wire_form(upstream_form)
+        return record_dict
 
 
 __all__ = ["TrustStoreAdapter"]

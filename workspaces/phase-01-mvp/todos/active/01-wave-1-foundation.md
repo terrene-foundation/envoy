@@ -166,6 +166,17 @@ Per /implement workflow Step 7:
 
 **Estimate:** 0.25 session.
 
+## Verification — T-01-15
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-foundation`).
+
+- `envoy/trust/store.py` adds `_to_spec_wire_form(algorithm_dict) -> dict` (pure translator, splits upstream's `<sig>+<hash>` compound on `+`, pins shamir to `slip39`) + `_with_algorithm_id(record_dict) -> dict` (single bottleneck — every record-construction path will route through this helper at T-01-17 ledger-persistence wiring time).
+- `kailash.trust.signing.algorithm_id.AlgorithmIdentifier()` import added; `inspect.signature` sweep confirms upstream signatures match shard 5 § 4 step 5a citations exactly (no async deviation, no constructor-arg drift). See `journal/0010`.
+- `tests/regression/test_r2_h_01_algorithm_id_wire_form.py` (13 cases, 3 classes): `TestToSpecWireForm` (6 — canonical translation, exact 3-key shape, slip39 pin, default fallback, compound parsing, no-mutation discipline); `TestWithAlgorithmId` (4 — embed-on-empty, preserve-existing-fields, overwrite-pre-existing, idempotency); `TestProducerVerifierRoundTrip` (3 — exact wire form, dict-not-string, no-legacy-leak). All green: `13 passed in 0.19s`.
+- Shard-budget actual: ~50 LOC translator + ~150 LOC test; within ≤500 LOC + ≤5 invariants + ≤3 call-graph hops.
+
+**Verification gate**: pytest tier1+regression `75 passed, 1 error` (1 error is pre-existing collection error in `tests/sdk/test_sdk_patterns.py` from the inherited COC scaffold — disposition follows in a separate fix commit per zero-tolerance Rule 1; see commit log).
+
 ---
 
 ## T-01-16 — Wire envoy/trust/ (Tier 2)
