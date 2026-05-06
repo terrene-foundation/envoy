@@ -277,6 +277,32 @@ Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-fo
 
 **Estimate:** 1 session.
 
+## Verification — T-01-17
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-01-17`).
+
+- `envoy/ledger/__init__.py` exports the public surface (15 symbols: 9 errors + 6 dataclasses/builders + 2 canonical-JSON entry points).
+- `envoy/ledger/lamport.py` (~75 LOC): `LamportClock` frozen dataclass with `__post_init__` shape validation + `to_dict`/`from_dict` for canonical-JSON round-trip.
+- `envoy/ledger/canonical.py` (~170 LOC): `canonical_dumps(obj) -> bytes` pure function applying all 7 byte-pinning invariants + `CanonicalJsonEncoder` streaming variant. Recursive `_normalize` transform (str→NFC, datetime→microsecond-padded UTC ISO 8601, date→isoformat, bytes→hex, dict/list→recurse, float→TypeError per spec int-only). `_format_timestamp` enforces 27-char `YYYY-MM-DDTHH:MM:SS.NNNNNNZ` shape per #731.
+- `envoy/ledger/hash_chain.py` (~210 LOC): `EntryEnvelope` frozen dataclass with 14-field schema + `__post_init__` shape validation (sha256: prefix, sequence ≥ 0, schema_version pin, **3-key algorithm_identifier enforcement** per T-01-15 R2-H-01 inheritance) + `HashChainBuilder` with `build_unsigned()` (pure-function entry_id derivation via `sha256(canonical_dumps(envelope_without_signature))`) + `seal()` (assembles final envelope post-signing).
+- `envoy/ledger/head.py` (~135 LOC): `HeadCommitment` (head_sequence + head_entry_id + signed_at + signature_hex; defends T-100 rollback) + `HaltedByRollbackRecord` (forensic record for the 3 detection reasons: sequence_decrease / head_signature_mismatch / algorithm_identifier_downgrade).
+- `envoy/ledger/errors.py` (~120 LOC): `LedgerError` base + 8 typed errors per spec § Error taxonomy (LedgerHaltedError, LedgerRollbackDetectedError, LedgerVerificationFailedError, LedgerSyncConflictError, LedgerConflictFloodError, EntryKeyDestroyedError, PhaseAOrphanDetectedError, LedgerAlgorithmMismatchError).
+
+**Test coverage**: `tests/tier1/test_ledger_canonical_dumps_byte_pinning.py` (40 cases / 11 classes) — covers all 7 byte-pinning invariants + EntryEnvelope/LamportClock/HeadCommitment shape validation + HashChainBuilder determinism + 3-key algorithm_identifier enforcement. `tests/tier1/test_format_record_id_for_event.py` (7 cases / 4 classes) — verifies the kailash-py helper symbol is callable + produces stable output for the no-policy path (the Phase 01 narrow surface; T-01-18 wires the policy-aware path).
+
+**Verification gate**: pytest tier1+regression `191 passed in 11.41s`; zero collection errors; zero warnings.
+
+**Out of T-01-17 scope** (T-01-18 + later shards):
+
+- `EnvoyLedger` facade with `append/query/verify_chain/head_commitment/export` (T-01-18).
+- Atomic transaction wrapping (`df.transaction()` boundary around sign + audit_store.append + head.update) (T-01-18).
+- Two-phase signing (PhaseARecord + PhaseBRecord) wired through runtime (Wave 3 Grant Moment).
+- CRDT merge protocol (Wave 2+ via `specs/ledger-merge.md`).
+- Per-region HKDF-derived per-entry encryption keys + tombstones (Phase 02).
+- Per-type Content schema dataclasses for entry types owned at the Ledger layer (lands when each consumer primitive ships).
+
+inspect.signature methodology applied — `dataflow.classification.event_payload.format_record_id_for_event` signature verified against current installed kailash version before writing the test.
+
 ---
 
 ## T-01-18 — Build envoy/ledger/facade + atomic transaction + head_commitment + two_phase
