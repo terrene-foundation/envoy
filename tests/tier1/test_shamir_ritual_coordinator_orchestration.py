@@ -22,6 +22,7 @@ Asserts the 4 T-02-34 invariants:
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import datetime
 from typing import Any
 
@@ -30,13 +31,25 @@ import pytest
 from envoy.shamir import (
     DEFAULT_THRESHOLD,
     DEFAULT_TOTAL_SHARDS,
+    ChecklistPersister,
+    CommitmentBinder,
     DistributionChecklist,
+    MasterKeySource,
     MasterKeyZeroizationError,
+    PaperRenderer,
     RitualPreconditionError,
     RitualResult,
+    ShamirGenerator,
     ShamirRitualCoordinator,
     ShamirRitualError,
 )
+
+
+# Cryptographically random default test secret per L-1 reviewer finding —
+# avoids `b"\x42" * 32` recognizable byte patterns that produce false
+# positives in heap-dump forensics or grep audits looking for known-test
+# byte sequences.
+_TEST_SECRET = secrets.token_bytes(32)
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +60,10 @@ from envoy.shamir import (
 class _MasterKeyFake:
     """Yields a fixed 32-byte test secret. Records calls + observes residency."""
 
-    def __init__(self, secret: bytes = b"\x42" * 32) -> None:
-        self.secret = secret
+    def __init__(self, secret: bytes | None = None) -> None:
+        # Per L-1 reviewer finding: default to cryptographically random
+        # bytes rather than a recognizable pattern.
+        self.secret = secret if secret is not None else _TEST_SECRET
         # Reference to the bytes object the coordinator received. Lets us
         # assert the immutable bytes were dropped (CPython does not let us
         # observe its memory directly, so the test relies on the
@@ -356,24 +371,37 @@ class TestMasterKeyZeroization:
         # try/finally placement, asserted by the next test.
 
     @pytest.mark.asyncio
-    async def test_zeroize_failure_raises_master_key_zeroization_error(
+    async def test_random_overwrite_failure_raises_master_key_zeroization_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Force `secrets.token_bytes` to raise inside the zeroize
-        block; assert the typed error fires.
+        """Force `secrets.token_bytes` to raise during the
+        random-overwrite phase (post-zero-fill); assert the typed
+        error fires AND user_message names "securely zeroed" so the
+        operator knows the master key IS already gone (per H-2 fix:
+        deterministic zero-fill ran first; random overwrite is
+        best-effort hardening only).
+
+        Targeted monkeypatch: fails only for `n == _MASTER_KEY_LEN`
+        (32) so `_make_ritual_id`'s salt call (n == 8) still succeeds.
         """
         from envoy.shamir import ritual as ritual_module
 
-        def _boom(_n: int) -> bytes:
-            raise OSError("simulated entropy failure")
+        original = ritual_module.secrets.token_bytes
 
-        monkeypatch.setattr(ritual_module.secrets, "token_bytes", _boom)
+        def _boom_for_master_key_len(n: int) -> bytes:
+            if n == 32:
+                raise OSError("simulated entropy failure")
+            return original(n)
+
+        monkeypatch.setattr(ritual_module.secrets, "token_bytes", _boom_for_master_key_len)
 
         coord, _, _, _, _, _ = _make_coordinator()
         with pytest.raises(MasterKeyZeroizationError) as exc:
             await coord.run_first_time_ritual()
         assert exc.value.user_message  # plain-language form is set
-        assert "memory-hygiene" in exc.value.user_message
+        # Per H-2 fix: master key is already zero-filled; user_message
+        # MUST communicate that the residency contract is satisfied.
+        assert "securely zeroed" in exc.value.user_message
 
 
 # ---------------------------------------------------------------------------
@@ -528,3 +556,125 @@ class TestErrorHierarchy:
         err = RitualPreconditionError("internal", user_message="user-facing")
         assert err.user_message == "user-facing"
         assert str(err) == "internal"
+
+
+# ---------------------------------------------------------------------------
+# Protocol structural conformance — rev-2 + rev-3 reviewer findings
+# ---------------------------------------------------------------------------
+
+
+class TestProtocolConformance:
+    """Lock the contract between the coordinator and its 5 collaborators.
+
+    `runtime_checkable` Protocols only check attribute presence — not
+    signature. These assertions catch a fake whose method shape drifts
+    from the Protocol BEFORE the orchestration tests run their full
+    matrix and produce a confusing AttributeError deep inside the
+    ritual. Per `rules/cross-sdk-inspection.md` Rule 3a (structural
+    invariant test) — locks the Protocol surface so a future refactor
+    that drops a method fails loudly here rather than silently in the
+    integration path.
+    """
+
+    def test_master_key_fake_implements_protocol(self) -> None:
+        assert isinstance(_MasterKeyFake(), MasterKeySource)
+
+    def test_shamir_generator_fake_implements_protocol(self) -> None:
+        assert isinstance(_ShamirGeneratorFake(), ShamirGenerator)
+
+    def test_commitment_binder_fake_implements_protocol(self) -> None:
+        assert isinstance(_CommitmentBinderFake(), CommitmentBinder)
+
+    def test_paper_renderer_fake_implements_protocol(self) -> None:
+        assert isinstance(_PaperRendererFake(), PaperRenderer)
+
+    def test_checklist_persister_fake_implements_protocol(self) -> None:
+        assert isinstance(_ChecklistPersisterFake(), ChecklistPersister)
+
+    def test_real_trust_store_adapter_implements_master_key_source(self) -> None:
+        """Locks the cross-module contract per rev-2 reviewer finding —
+        the production-time `MasterKeySource` is `TrustStoreAdapter`'s
+        `export_master_key_for_shamir` method. If the method is renamed
+        in `envoy/trust/vault.py`, this test fails BEFORE T-02-37 wires
+        the Tier 2 round-trip.
+        """
+        from envoy.trust.vault import TrustVault
+
+        # `MasterKeySource` is a structural Protocol (runtime_checkable):
+        # any class with an `export_master_key_for_shamir` callable
+        # satisfies it. We assert the production class has the method
+        # at the right attribute name — a refactor that renames it
+        # WILL break this test (intentional drift detector).
+        assert hasattr(TrustVault, "export_master_key_for_shamir")
+        method = TrustVault.export_master_key_for_shamir
+        # Sanity: the method is async per envoy/trust/vault.py:549.
+        import inspect
+
+        assert inspect.iscoroutinefunction(method)
+
+
+# ---------------------------------------------------------------------------
+# Edge case: threshold == total_shards — rev-5 reviewer finding
+# ---------------------------------------------------------------------------
+
+
+class TestThresholdEqualsTotalShards:
+    """5-of-5 (or any threshold == total_shards) is accepted by
+    `_validate_parameters` per spec line 19 (range 2-of-3 to 5-of-9
+    permits threshold == total). Verify the generator path exercises
+    correctly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_5_of_5_ritual_succeeds(self) -> None:
+        coord, _, gen, _, _, _ = _make_coordinator()
+        result = await coord.run_first_time_ritual(threshold=5, total_shards=5)
+        assert gen.calls[0]["threshold"] == 5
+        assert gen.calls[0]["total_shards"] == 5
+        assert len(result.shards) == 5
+
+    @pytest.mark.asyncio
+    async def test_2_of_2_ritual_succeeds(self) -> None:
+        # Lower-bound edge: threshold == total == minimum permitted.
+        coord, _, gen, _, _, _ = _make_coordinator()
+        result = await coord.run_first_time_ritual(threshold=2, total_shards=2)
+        assert gen.calls[0]["threshold"] == 2
+        assert gen.calls[0]["total_shards"] == 2
+        assert len(result.shards) == 2
+
+
+# ---------------------------------------------------------------------------
+# Logging discipline — H-3 reviewer finding (principal_id at INFO must be hashed)
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingDiscipline:
+    @pytest.mark.asyncio
+    async def test_principal_id_does_not_appear_in_info_logs(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Per H-3 fix + `rules/observability.md` Rule 4 + Rule 8:
+        `principal_id` MUST NOT appear at INFO level. The hashed
+        prefix `principal_hash` (8 hex chars) substitutes; raw value
+        flows at DEBUG only.
+        """
+        import logging
+
+        coord, _, _, _, _, _ = _make_coordinator(principal_id="alice@example.com")
+        with caplog.at_level(logging.INFO, logger="envoy.shamir.ritual"):
+            await coord.run_first_time_ritual()
+
+        for record in caplog.records:
+            if record.levelno == logging.INFO:
+                # Raw principal_id MUST NOT appear in INFO record extras.
+                assert getattr(record, "principal_id", None) is None
+                # Hashed form MUST be present.
+                assert hasattr(record, "principal_hash")
+                principal_hash = record.principal_hash
+                assert isinstance(principal_hash, str)
+                assert len(principal_hash) == 8
+                assert re.fullmatch(r"[0-9a-f]{8}", principal_hash)
+                # And the raw value is NOT hex-prefixed in the hash
+                # (sanity check — `alice@example.com` does not start
+                # with the hash).
+                assert "alice" not in principal_hash

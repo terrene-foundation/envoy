@@ -92,8 +92,18 @@ def _default_shamir_generator() -> ShamirGenerator:
 def _make_ritual_id(threshold: int, total_shards: int, created_at: datetime) -> str:
     """Per `specs/shamir-recovery.md` § Schema DistributionChecklist:
     "ritual_id = sha256 of the (threshold, total, created_at) tuple".
+
+    Mixes 8 bytes of `secrets.token_bytes` salt to defeat collision under
+    same-microsecond ritual construction (rev-4): `threshold ∈ {2..5}`
+    and `total_shards ∈ {2..16}` make the (threshold, total, created_at)
+    tuple's entropy bottleneck `created_at` resolution. With ISO-format
+    isoformat at microsecond precision, two rituals constructed in the
+    same microsecond would collide; the salt eliminates that window
+    without losing the spec-mandated deterministic prefix shape (sha256
+    hex output preserves the wire form).
     """
-    seed = f"{threshold}:{total_shards}:{created_at.isoformat()}".encode("utf-8")
+    salt = secrets.token_bytes(8)
+    seed = f"{threshold}:{total_shards}:{created_at.isoformat()}".encode("utf-8") + salt
     return hashlib.sha256(seed).hexdigest()
 
 
@@ -179,14 +189,28 @@ class ShamirRitualCoordinator:
         ritual_id = _make_ritual_id(threshold, total_shards, created_at)
         slot_labels = _opaque_slot_labels(total_shards)
 
+        # principal_id may be a pseudonym (low risk) OR an email-shaped
+        # / DID-shaped identifier (PII-adjacent). Per
+        # `rules/observability.md` Rule 8 (Schema-Revealing Field Names
+        # MUST Be DEBUG Or Hashed) + Rule 4 (Never Log PII), default-deny
+        # at INFO via an 8-char sha256 prefix. Raw value flows at DEBUG
+        # only for incident triage. The hash is non-reversible and the
+        # 8-char window keeps logs readable while preserving cross-event
+        # correlation within a single principal.
+        principal_hash = hashlib.sha256(self._principal_id.encode("utf-8")).hexdigest()[:8]
+
         logger.info(
             "shamir.ritual.start",
             extra={
                 "ritual_id": ritual_id,
-                "principal_id": self._principal_id,
+                "principal_hash": principal_hash,
                 "threshold": threshold,
                 "total_shards": total_shards,
             },
+        )
+        logger.debug(
+            "shamir.ritual.principal",
+            extra={"ritual_id": ritual_id, "principal_id": self._principal_id},
         )
 
         # Step 1 + 2 + 6: master-key fetch, generate, zeroize.
@@ -222,7 +246,7 @@ class ShamirRitualCoordinator:
             "shamir.ritual.ok",
             extra={
                 "ritual_id": ritual_id,
-                "principal_id": self._principal_id,
+                "principal_hash": principal_hash,
                 "shard_count": len(shards),
             },
         )
@@ -275,10 +299,48 @@ class ShamirRitualCoordinator:
 
         Step 6 (zeroize) is the structural defense per
         `rules/trust-plane-security.md` MUST NOT Rule 3: master-key bytes
-        MUST NOT outlive the call site that needed them. The local
-        `bytearray` IS overwritten via `secrets.token_bytes` rather than
-        zeros to make the post-zeroize state distinguishable from
-        uninitialized memory in heap dumps.
+        MUST NOT outlive the call site that needed them. The runtime
+        sequence is:
+
+        1. **Two-phase zeroize.** First, deterministic zero-fill
+           (`master_key_buf[:] = bytes(N)`) — guaranteed even if entropy
+           sources are unavailable. THEN best-effort random overwrite
+           via `secrets.token_bytes(N)` to distinguish post-zeroize
+           state from uninitialized memory in heap-dump forensics. If
+           the random overwrite raises (e.g. entropy failure), the
+           master key is ALREADY gone (zero-fill ran first) — H-2 fix.
+        2. **Atomic slice assignment.** Both overwrites use slice
+           assignment (`buf[:] = src`) which is one CPython opcode for
+           bytearrays — atomic w.r.t. signal handlers, async
+           cancellation, and `KeyboardInterrupt` (H-1 fix). The
+           previous byte-by-byte loop allowed partial overwrite if
+           cancelled mid-loop.
+
+        **Master-key residency window (honest accounting):** The
+        coordinator zeroizes ONLY the local `master_key_buf`. Once the
+        bytearray is passed to `kailash.trust.vault.shamir.generate(...)`
+        (verified at PR-time to accept bytearray directly per its
+        `isinstance(secret, (bytes, bytearray))` guard at
+        `kailash/trust/vault/shamir.py`), the kailash wrapper's frame
+        locals AND the underlying `shamir-mnemonic` library's internal
+        buffers may retain references until Python GC reclaims them —
+        out of envoy's structural reach. Passing the bytearray DIRECTLY
+        (rather than `bytes(master_key_buf)`) eliminates ONE intermediate
+        immutable copy at the boundary; remaining residency is bounded
+        by the `generate(...)` frame's lifetime. The `del` of the
+        original bytes from `MasterKeySource` and the slice-assignment
+        zeroize of the bytearray are the two structural defenses envoy
+        controls (C-1 fix).
+
+        **Trust boundary on `MasterKeySource`** (H-4 — architectural,
+        deferred): the Protocol-injected source is fully trusted to
+        return the correct master key for `principal_id`. A malicious
+        source could inject bytes from a different vault and have them
+        bound to this principal's Genesis Record (committed-but-wrong-
+        secret). Phase 01 trust boundary IS the locally-installed
+        envoy package; T-02-43 (Boundary Conversation S8 wiring) and
+        Phase 02 hardening will add `master_key_fingerprint` verification
+        against Genesis Record at fetch time.
         """
         from kailash.trust.vault.shamir import ShamirRitual
 
@@ -304,37 +366,55 @@ class ShamirRitualCoordinator:
             )
 
         # Copy into a mutable bytearray so step 6 can overwrite it
-        # in-place. The original `bytes` object is immutable in CPython
-        # (no in-place overwrite API); dropping the reference is the
-        # best caller-side defense per the TrustStoreAdapter docstring
-        # (`envoy/trust/vault.py:561`).
+        # in-place. CPython `bytes` is immutable (no in-place overwrite
+        # API); dropping the reference is the best caller-side defense.
+        # `del master_key_bytes` rebinds this frame's local — `MasterKeySource`
+        # is responsible for its own zeroization upstream per the
+        # TrustStoreAdapter docstring (`envoy/trust/vault.py:561`).
         master_key_buf = bytearray(master_key_bytes)
-        del master_key_bytes  # drop the immutable copy ASAP
+        del master_key_bytes
 
         try:
             # Step 2.
             ritual_spec = ShamirRitual(threshold=threshold, total_shards=total_shards)
+            # Pass the bytearray DIRECTLY — verified at PR-time that
+            # kailash.trust.vault.shamir.generate accepts both bytes
+            # AND bytearray per its `isinstance(secret, (bytes, bytearray))`
+            # guard. Passing `bytes(master_key_buf)` here would create
+            # an additional immutable copy that survives in the kailash
+            # frame locals beyond envoy's reach (C-1 fix).
             shards = self._shamir_generator(
-                bytes(master_key_buf),
+                master_key_buf,
                 ritual_spec,
                 passphrase=passphrase,
             )
         finally:
-            # Step 6 — zeroize. Overwrite with random bytes (rather
-            # than zeros) so post-zeroize residency is distinguishable
-            # from uninitialized memory in heap-dump forensics.
+            # Step 6 — two-phase zeroize. Deterministic zero-fill FIRST
+            # so the master key is gone even if entropy is unavailable
+            # (H-2 fix). Slice assignment is one CPython opcode —
+            # atomic w.r.t. cancellation/signals (H-1 fix). The optional
+            # random overwrite then distinguishes post-zeroize state from
+            # uninitialized memory in heap-dump forensics.
+            buf_len = len(master_key_buf)
+            master_key_buf[:] = bytes(buf_len)  # deterministic zero-fill
             try:
-                random_overwrite = secrets.token_bytes(len(master_key_buf))
-                for i in range(len(master_key_buf)):
-                    master_key_buf[i] = random_overwrite[i]
+                master_key_buf[:] = secrets.token_bytes(buf_len)
             except Exception as zeroize_err:  # pragma: no cover — defensive
+                # The master key is ALREADY zeroed at this point; the
+                # random-overwrite step is best-effort hardening only.
+                # Surface the failure loudly so operators can treat the
+                # entropy outage as a system-health concern, but the
+                # caller-side memory-residency contract IS already
+                # satisfied by the deterministic zero-fill above.
                 raise MasterKeyZeroizationError(
-                    f"failed to zeroize master-key bytearray: {zeroize_err!r}",
+                    f"failed to apply random overwrite after zero-fill: {zeroize_err!r}",
                     user_message=(
-                        "Backup ritual completed share generation, but a "
-                        "memory-hygiene step failed afterward. Please lock "
-                        "your vault, restart Envoy, and verify this Envoy "
-                        "process is no longer running before continuing."
+                        "Backup ritual completed share generation. The master "
+                        "key has been securely zeroed in memory, but a final "
+                        "best-effort hardening step failed (likely an entropy-"
+                        "source outage). Your shards are valid; consider "
+                        "investigating system entropy availability before "
+                        "running another ritual."
                     ),
                 ) from zeroize_err
 
