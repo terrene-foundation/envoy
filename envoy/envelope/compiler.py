@@ -321,8 +321,12 @@ class EnvelopeCompiler:
         canonical ordering.
         """
 
-        def _sort_dim(constraints: list[AuthoredConstraint]) -> list[AuthoredConstraint]:
-            return sorted(constraints, key=lambda c: c.constraint_id)
+        def _sort_dim(
+            constraints: tuple[AuthoredConstraint, ...],
+        ) -> tuple[AuthoredConstraint, ...]:
+            # L-03 shard A: returns tuple to match the dimension's
+            # tuple-typed authored_constraints field.
+            return tuple(sorted(constraints, key=lambda c: c.constraint_id))
 
         config_input.financial.authored_constraints = _sort_dim(
             config_input.financial.authored_constraints
@@ -363,12 +367,17 @@ class EnvelopeCompiler:
                 ("communication", config_input.communication),
             ):
                 tmpl_dim = content.get(dim_name, {})
+                # L-03 shard A: tuple += instead of .append since
+                # imported_constraints is now a tuple. Build a list of new
+                # constraints, then assign as a tuple-extension of the
+                # existing field.
+                new_imported: list[ImportedConstraint] = []
                 for raw in tmpl_dim.get("authored_constraints", []):
                     # Imported constraints carry over the template's authored
                     # rule but flip `authored=False` so Authorship Score doesn't
                     # credit them per `specs/authorship-score.md` § Field
                     # semantics for late-added fields.
-                    dim.imported_constraints.append(
+                    new_imported.append(
                         ImportedConstraint(
                             constraint_id=raw["constraint_id"],
                             rule_ast=raw.get("rule_ast", {}),
@@ -376,6 +385,8 @@ class EnvelopeCompiler:
                             template_hash=tmpl.template_hash,
                         )
                     )
+                if new_imported:
+                    dim.imported_constraints = dim.imported_constraints + tuple(new_imported)
             # Provenance trail in metadata
             config_input.metadata.authorship_score.setdefault("template_provenance", []).append(
                 {"uri": tmpl.ref.uri, "hash": tmpl.template_hash}
