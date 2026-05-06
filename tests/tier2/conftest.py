@@ -14,6 +14,7 @@ wiring once the kailash db pool fixture lands.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
@@ -31,11 +32,21 @@ VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 
 
 @pytest.fixture
-async def signing_keymgr() -> InMemoryKeyManager:
-    """Real kailash InMemoryKeyManager with one Ed25519 keypair generated."""
+async def signing_keymgr() -> AsyncGenerator[InMemoryKeyManager, None]:
+    """Real kailash InMemoryKeyManager with one Ed25519 keypair generated.
+
+    Per security review L-1 (T-01-16/21): the keymgr's `_keys` dict is
+    cleared on teardown via the close() path that T-01-15 wired —
+    minimizes private-key residency across test boundaries.
+    """
     mgr = InMemoryKeyManager()
     await mgr.generate_keypair(SIGNING_KEY_ID)
-    return mgr
+    yield mgr
+    # Best-effort zeroize on teardown; mgr.close is sync per kailash 2.13.4
+    # but the close path may evolve in future versions — defensive call.
+    keys_dict = getattr(mgr, "_keys", None)
+    if isinstance(keys_dict, dict):
+        keys_dict.clear()
 
 
 @pytest.fixture
@@ -44,14 +55,21 @@ def vault_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def unlocked_vault(vault_path: Path) -> TrustVault:
-    """Real TrustVault: create + unlock + ready to read/write payload."""
+async def unlocked_vault(vault_path: Path) -> AsyncGenerator[TrustVault, None]:
+    """Real TrustVault: create + unlock + ready to read/write payload.
+
+    Per security review M-3 (T-01-16/21): try/finally around yield so
+    the vault locks cleanly on every exit path, including when create
+    succeeds but unlock raises mid-fixture.
+    """
     v = TrustVault(vault_path, idle_ttl_seconds=60)
-    await v.create(b"tier2-initial-payload", PASSPHRASE)
-    await v.unlock(PASSPHRASE)
-    yield v
-    if v.is_unlocked:
-        await v.lock()
+    try:
+        await v.create(b"tier2-initial-payload", PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        yield v
+    finally:
+        if v.is_unlocked:
+            await v.lock()
 
 
 @pytest.fixture
