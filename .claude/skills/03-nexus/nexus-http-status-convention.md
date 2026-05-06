@@ -9,7 +9,7 @@ Every 4xx and 5xx response carries a JSON body of exactly this shape, produced b
 ```json
 {
   "error": "<human-readable message, one sentence>",
-  "code": "<SCREAMING_SNAKE_CASE error classifier>"
+  "code":  "<SCREAMING_SNAKE_CASE error classifier>"
 }
 ```
 
@@ -20,20 +20,20 @@ For the MUST clauses (handler return primitives, upstream-vs-internal status dis
 
 ## Status Code Catalog
 
-| Status | `code` (example)       | Meaning                                                  | Example `error` message                                   |
-| ------ | ---------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
-| 400    | `INVALID_INPUT`        | Validation error — payload parsed but values invalid     | `"policy.type must be one of ['rbac', 'abac', 'custom']"` |
-| 401    | `UNAUTHENTICATED`      | Authentication required or failed                        | `"missing bearer token"`                                  |
-| 403    | `FORBIDDEN`            | Authenticated but not authorized                         | `"clearance=Public cannot read SECRET"`                   |
-| 404    | `NOT_FOUND`            | Resource does not exist                                  | `"model 'User' not found"`                                |
-| 409    | `CONFLICT`             | Conflict — write would violate an invariant              | `"tenant_id 'acme' already has a default policy"`         |
-| 413    | `PAYLOAD_TOO_LARGE`    | Payload too large                                        | `"request body exceeds 1 MiB limit"`                      |
-| 422    | `UNPROCESSABLE_ENTITY` | Semantic validation passed parse but failed domain rules | `"migration 0043 requires force_drop=True"`               |
-| 429    | `RATE_LIMIT_EXCEEDED`  | Rate limited                                             | `"too many requests; retry after 5s"`                     |
-| 500    | `INTERNAL_ERROR`       | Internal error — handler crashed                         | `"internal server error"` (no stack leak)                 |
-| 502    | `UPSTREAM_FAILED`      | Upstream service returned bad data                       | `"upstream kaizen service unavailable"`                   |
-| 503    | `SERVICE_UNAVAILABLE`  | Service temporarily unavailable                          | `"database pool exhausted; retry"`                        |
-| 504    | `UPSTREAM_TIMEOUT`     | Upstream timed out                                       | `"llm upstream timed out"`                                |
+| Status | `code` (example)         | Meaning                                                  | Example `error` message                                   |
+| ------ | ------------------------ | -------------------------------------------------------- | --------------------------------------------------------- |
+| 400    | `INVALID_INPUT`          | Validation error — payload parsed but values invalid     | `"policy.type must be one of ['rbac', 'abac', 'custom']"` |
+| 401    | `UNAUTHENTICATED`        | Authentication required or failed                        | `"missing bearer token"`                                  |
+| 403    | `FORBIDDEN`              | Authenticated but not authorized                         | `"clearance=Public cannot read SECRET"`                   |
+| 404    | `NOT_FOUND`              | Resource does not exist                                  | `"model 'User' not found"`                                |
+| 409    | `CONFLICT`               | Conflict — write would violate an invariant              | `"tenant_id 'acme' already has a default policy"`         |
+| 413    | `PAYLOAD_TOO_LARGE`      | Payload too large                                        | `"request body exceeds 1 MiB limit"`                      |
+| 422    | `UNPROCESSABLE_ENTITY`   | Semantic validation passed parse but failed domain rules | `"migration 0043 requires force_drop=True"`               |
+| 429    | `RATE_LIMIT_EXCEEDED`    | Rate limited                                             | `"too many requests; retry after 5s"`                     |
+| 500    | `INTERNAL_ERROR`         | Internal error — handler crashed                         | `"internal server error"` (no stack leak)                 |
+| 502    | `UPSTREAM_FAILED`        | Upstream service returned bad data                       | `"upstream kaizen service unavailable"`                   |
+| 503    | `SERVICE_UNAVAILABLE`    | Service temporarily unavailable                          | `"database pool exhausted; retry"`                        |
+| 504    | `UPSTREAM_TIMEOUT`       | Upstream timed out                                       | `"llm upstream timed out"`                                |
 
 The exact `code` strings come from the SDK's `NexusError.error_code()` method — when adding a new variant in the SDK, update `status_code()` and `error_code()` in the same commit (per the rule's MUST NOT list). Some `code` strings used in production source: `INTERNAL_ERROR`, `INVALID_INPUT`, `UNAUTHENTICATED`, `FORBIDDEN`, `RATE_LIMIT_EXCEEDED`, `CSRF_REJECTED`, `UPSTREAM_FAILED`, `UPSTREAM_TIMEOUT`.
 
@@ -70,7 +70,7 @@ Response:
 ```json
 {
   "error": "policy.type must be one of ['rbac', 'abac', 'custom']",
-  "code": "INVALID_INPUT"
+  "code":  "INVALID_INPUT"
 }
 ```
 
@@ -97,10 +97,7 @@ Response:
 ### 413 — Payload Too Large
 
 ```json
-{
-  "error": "request body exceeds 1048576 byte limit",
-  "code": "PAYLOAD_TOO_LARGE"
-}
+{ "error": "request body exceeds 1048576 byte limit", "code": "PAYLOAD_TOO_LARGE" }
 ```
 
 ### 429 — Rate Limited
@@ -179,4 +176,4 @@ A repo-wide byte-diff test on this body shape is the cheap structural defense ag
 - `rules/security.md` § No Secrets in Logs — applies to error messages: never echo credentials, tokens, or internal paths.
 - `rules/communication.md` — the `error` message should be human-readable for frontend display, not developer-only shorthand.
 
-Origin: gh-coc-claude-rs#51 item 3a (2026-04-17) authored the original `{error, status}` body shape as a speculative convention. Superseded at loom 2.8.18 by the actual SDK contract from kailash-rs#404 S8 (loom 2.8.17 rule), verified by red-team grep against 8 production references in `crates/kailash-nexus/src/` — every shipping `NexusError.into_response()` call uses `{"error": "...", "code": "..."}`. Skill rewritten to match SDK truth + cross-link to the contract rule.
+Origin: 2026-04-17 — original `{error, status}` body shape was a speculative convention. Superseded by the actual SDK contract verified by red-team grep against 8 production references — every shipping `NexusError.into_response()` call uses `{"error": "...", "code": "..."}`. Skill rewritten to match SDK truth + cross-link to the contract rule.

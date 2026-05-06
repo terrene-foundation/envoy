@@ -1,4 +1,6 @@
 ---
+priority: 10
+scope: path-scoped
 paths:
   - ".github/workflows/**"
   - "**/ci/**"
@@ -6,6 +8,9 @@ paths:
 ---
 
 # CI Runner Rules
+
+<!-- slot:neutral-body -->
+
 
 Self-hosted CI runner hygiene for kailash-rs (macOS self-hosted runners, `esperie-enterprise/kailash-rs` repo). Language-agnostic MUSTs apply to every project using GitHub Actions self-hosted runners; §6 and §7 below capture kailash-rs-specific dispatcher-state remediation with concrete runner hostnames and `launchctl` invocations.
 
@@ -217,6 +222,212 @@ gh pr view <PR-NUM> --json statusCheckRollup \
 
 Origin: kailash-rs 2026-04-20 v3.20.1 release — a runner idled with `busy:false, status:online` while 5 matrix jobs sat queued for 27 minutes; de-registration via `gh api -X DELETE` unblocked redistribution within 3 minutes as the remaining runners absorbed the matrix.
 
+### 8. Tag-Gated Release Jobs Require A Non-Tag `workflow_dispatch` Dry-Run Proxy
+
+Every job inside `release.yml` (or any workflow) whose trigger is `on: push: tags:` MUST have a sibling `workflow_dispatch:` input path that exercises the same build + upload steps on a non-tag ref. Relying on release tags as the first integration test is BLOCKED — tag-time is too late for the error to be cheap to fix.
+
+```yaml
+# DO — workflow_dispatch dry-run proxy exercises the same steps
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + upload but skip cargo/gem/pypi publish"
+        type: boolean
+        default: true
+      target:
+        description: "publish-ruby-gem | publish-pypi-wheels | publish-crates"
+        type: choice
+        options:
+          - publish-ruby-gem
+          - publish-pypi-wheels
+          - publish-crates
+
+permissions:
+  contents: write        # needed for gh release upload (§5)
+
+jobs:
+  publish-ruby-gem:
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.target == 'publish-ruby-gem')
+    runs-on: esperie-linux-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Docker (runner base image is minimal)
+        run: ...
+      - name: Install gh CLI (runner base image is minimal)
+        run: ...
+      - name: Build gem
+        run: bundle exec rake build
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "${{ github.ref_name }}" pkg/*.gem
+      - name: Dry-run verify (no upload)
+        if: github.event.inputs.dry_run == 'true'
+        run: ls -la pkg/*.gem && echo "Build OK; skipping publish"
+
+# DO NOT — tag-only trigger with no dispatch proxy
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish-ruby-gem:
+    runs-on: esperie-linux-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: bundle exec rake build
+      - run: gh release upload "${{ github.ref_name }}" pkg/*.gem
+# First integration test of the runner + Docker + gh install sequence
+# happens at tag time, blocking the release on whatever was missing.
+```
+
+**BLOCKED rationalizations:**
+
+- "Release.yml is only exercised at release, that's the point"
+- "A dispatch input duplicates the tag trigger"
+- "We'll fire a manual dry-run when we think something changed"
+- "CI already builds on every PR, that's the dry-run"
+- "The rescue-workflow pattern covers this"
+
+**Why:** Tag-gated jobs on a self-hosted or GitHub-hosted-larger runner interact with the runner's image, PATH, installed Docker state, `gh` CLI availability, and `contents: write` permission. None of these are exercised on PR CI (which runs on different workflows, different runners, different permissions). The v3.20.3 / v3.20.4 / v3.20.5 release chain shipped three distinct tag-time bugs in succession — missing Docker on `esperie-linux-arm`, missing `gh` CLI on the same runner, missing `contents: write` on the rescue workflow — because the `release.yml` tag-push path was the first time each surface was exercised. A `workflow_dispatch` dry-run path that builds + conditionally uploads to a release on a non-tag ref turns tag-time into a re-run of a known-green dispatch run. The dispatch proxy IS the Layer 2 prevention plan; the rescue-workflow pattern (commits 2026-04-22, PRs #551 / #552) is Layer 3 recovery, not Layer 2 prevention.
+
+**Enforcement grep:** For every workflow with a `tags:` trigger, assert a `workflow_dispatch:` trigger is declared in the same `on:` block, AND every job gated by `startsWith(github.ref, 'refs/tags/v')` has a sibling `github.event_name == 'workflow_dispatch'` branch that exercises the build steps. Mechanical — the rule is grep-auditable per release-cycle codify pass.
+
+Origin: kailash-rs 2026-04-22 — PR #543 (v3.20.4, rustls-webpki + Docker install-if-missing on `esperie-linux-arm`), PR #545 (v3.20.5, `gh` install-if-missing), PR #551 + #552 (rescue workflow + contents:write follow-up). Three tag-time bugs in three consecutive releases; dispatch-proxy rule codifies Layer 2 of the prevention plan per the session notes' "still unbuilt" observation. Applies to every tag-gated job: `publish-ruby-gem`, `publish-pypi-wheels`, `publish-crates`, and any future release surface.
+
+### 9. Binding-CI `paths-ignore` Covers ALL Doc-Only Surfaces
+
+Every binding-channel CI workflow (`python.yml`, `nodejs.yml`, `ruby.yml`) MUST include a `paths-ignore` filter that excludes ALL doc-only surfaces — not just `**/*.md`. The current `paths-ignore: ['**/*.md']` is necessary but NOT sufficient: edits to `.claude/skills/`, `.claude/agents/`, `.claude/rules/`, `docs/`, `specs/` (all CC artifacts and project docs) still trigger the full binding matrix even though they cannot affect compiled wheels.
+
+```yaml
+# DO — comprehensive doc-only exclusion
+on:
+  pull_request:
+    paths:
+      - "bindings/kailash-python/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python.yml"
+    paths-ignore:
+      - "**/*.md"
+      - ".claude/**"
+      - "docs/**"
+      - "specs/**"
+      - "workspaces/**"
+      - "memory/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+
+# DO NOT — partial paths-ignore that still fires on .claude/ edits
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+```
+
+**BLOCKED rationalizations:**
+
+- "`**/*.md` already covers most doc files"
+- "Catch-all paths-ignore might mask real changes"
+- "Adding more excludes is over-optimization"
+- "The cost is small per PR"
+- "Each doc-only PR only burns 1 minute per workflow"
+
+**Why:** Bindings ship compiled wheels — none of the listed doc-only surfaces can affect what's built. Each non-excluded doc-only PR triggers ALL binding workflows, each billed at 1-minute minimum on `ubuntu-latest` even when they short-circuit. Compounded over 30-50 doc/codify PRs per month, this is ~150-200 min/month of pure overhead. Excluding `.claude/**`, `docs/**`, `specs/**`, `workspaces/**`, `memory/**` recovers all of that for zero correctness cost.
+
+Origin: 2026-04-25 gh-manager CI burn audit — 66 of 580 GHA-billable minutes were doc-only PR triggers on binding workflows. Closing this gap eliminates that recurring class of waste.
+
+### 10. Workflow Crons MUST Have Explicit Cost Footer
+
+Every `.github/workflows/*.yml` with `schedule: cron:` MUST include a comment block at the top of the file stating: (a) the cron cadence in plain English, (b) the worst-case monthly billing footprint at `ubuntu-latest` rates, (c) the failure-mode behavior. Workflows with cadence ≥ once-per-hour AND no fast-exit short-circuit are BLOCKED.
+
+```yaml
+# DO — cost-footer documents budget impact upfront
+name: CI Queue Monitor
+# ─────────────────────────────────────────────────────────────────
+# COST FOOTPRINT
+#   Cadence:        every 30 minutes (cron: "*/30 * * * *")
+#   Monthly worst:  48 runs/day × 30 days × 1 min = 1,440 min/month
+#   Fast-exit:      YES — `gh api` no-op returns in <10s.
+# ─────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+
+# DO NOT — uncosted high-frequency cron
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # silently consumes ~8,640 min/month
+```
+
+**BLOCKED rationalizations:**
+
+- "Cron is cheap, the workflow exits in seconds"
+- "GitHub bills exact runtime, not minimum" (FALSE — billing is per-job, 1-min minimum)
+- "We can audit cost later when usage pattern stabilizes"
+- "The monitor is critical — frequency reflects priority"
+- "Higher cadence catches issues faster"
+
+**Why:** GitHub Actions bills a 1-minute minimum per job invocation regardless of actual runtime. A workflow on `*/5 * * * *` consumes a minimum of 8,640 min/month even if every run exits in under 10 seconds. On a 3,000-min/month free tier, a single mis-cadenced cron consumes 280%+ of the budget BEFORE any productive CI runs. The cost footer makes the trade-off explicit at author time and forces an active decision about cadence vs cost.
+
+Origin: 2026-04-25 kailash-rs gh-manager audit — `ci-queue-monitor.yml` configured at `cron: "*/5 * * * *"` consumed 288 min/day. Cadence MUST drop to `*/30` minimum.
+
+### 11. Release PRs MUST Skip The PR-Gate Suite
+
+Pull requests from a `release/v*` branch contain ONLY version anchors + CHANGELOG updates — zero code surface. Running the full PR-gate suite on them re-exercises code that was already tested on the source-change PRs that the release bundles. Every PR-gate job in every workflow MUST gate its `if:` to also exclude `release/*` head refs.
+
+```yaml
+# DO — PR-gate jobs exclude release branches
+jobs:
+  fmt:
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/')
+    ...
+
+  build:
+    if: ${{ !startsWith(github.head_ref, 'release/') }}
+    ...
+
+# DO NOT — PR-gate jobs fire on release/v* PRs
+jobs:
+  fmt:
+    if: github.event_name == 'pull_request'
+    # No head_ref exclusion — release/v3.23.0 re-runs the whole suite
+    # against a diff that is ONLY Cargo.toml/Cargo.lock/CHANGELOG.md/version anchors.
+    ...
+```
+
+**BLOCKED rationalizations:**
+
+- "The version bump might have broken something; defense-in-depth"
+- "Running CI on release PRs is the standard release gate"
+- "We want to verify the Cargo.lock regeneration didn't break compile"
+- "Admin-merge with bypass is safer than baking skip into the workflow"
+- "Next contributor might add real code changes to a release branch"
+- "release.yml's source-protection-audit is a different gate; we still need PR CI"
+
+**Why:** Release PRs under the `release/v*` branch convention (see `git.md` § "Release-Prep PRs MUST Use `release/v*` Branch Convention") are by contract metadata-only. The source changes they bundle were each individually verified on their own PR — re-running the full suite a third time against a pure-metadata diff adds no coverage and wastes ~45 min of runner wall-clock per release cycle. The tag-triggered `release.yml` has its own `source-protection-audit` gate that validates the actual published artifacts — THAT is the release gate, not PR CI. If a contributor smuggles a code change into a `release/v*` branch, the merge-commit push event will still fire integration jobs on main post-merge.
+
+**Contract:** `release/v*` branches are reserved for release-cut commits — version bumps in `Cargo.toml` / `bindings/kailash-python/pyproject.toml`, version-anchor updates in `specs/_index.md` + `specs/release-pipeline.md`, CHANGELOG entries, and Cargo.lock regeneration side effects. Anything else on a `release/v*` branch is a process error.
+
+**Enforcement:** `/redteam` MUST verify every PR-gate job in every workflow includes `!startsWith(github.head_ref, 'release/')` in its `if:` clause:
+
+```bash
+for f in .github/workflows/rust.yml .github/workflows/python.yml \
+         .github/workflows/ruby.yml .github/workflows/nodejs.yml; do
+  pr_gated=$(grep -c "if:.*pull_request\|if:.*!startsWith.*release" "$f")
+  jobs_count=$(grep -c "^  [a-z][a-z_-]*:$" "$f")
+  real_jobs=$((jobs_count - 1))
+  echo "$f: $real_jobs jobs, $pr_gated have release-skip clause"
+done
+```
+
+Origin: 2026-04-22 kailash-rs session — release PR #531 (pure version bump, 6 files touched, zero code surface) running the full PR-gate suite for the third time on the same code. Codified as a MUST gate; savings are per-release cycle (~45 min Mac Studio + bindings).
+
 ## MUST NOT Rules
 
 ### 1. Never Commit Registration Tokens
@@ -256,3 +467,5 @@ Every `actions/upload-artifact@v*` step across ALL workflows MUST include `conti
 **Why:** The failure mode re-surfaces every ~12h on PR CI until someone re-discovers the fix. Codify once, apply everywhere.
 
 Origin: kailash-rs CI cascade waves 6-18 (commits `ecc50c4e..5429928c`, 2026-04-16/17). 12 consecutive waves fixed pre-existing failures hidden by fmt short-circuit. Wave 17 fixup to a shared crate didn't trigger Python/Node/Ruby binding CI because their paths filters excluded the shared-crates tree. Runner auto-update at a trivial commit orphaned one run and required a service restart. Recovery protocols for each MUST rule live in `skills/10-deployment-git/ci-runner-troubleshooting.md`.
+
+<!-- /slot:neutral-body -->

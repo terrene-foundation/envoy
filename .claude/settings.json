@@ -1,10 +1,28 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "description": "Kailash COC Claude (Rust-backed bindings) - Claude Code hooks configuration",
+  "description": "Kailash COC Claude (Python) - Claude Code hooks configuration",
   "effortLevel": "high",
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1"
+  },
+  "permissions": {
+    "deny": [
+      "Edit(.claude/learning/posture.json)",
+      "Edit(.claude/learning/posture.json.bak)",
+      "Edit(.claude/learning/violations.jsonl)",
+      "Edit(.claude/learning/violations.jsonl.*)",
+      "Edit(.claude/learning/.initialized)",
+      "Write(.claude/learning/posture.json)",
+      "Write(.claude/learning/posture.json.bak)",
+      "Write(.claude/learning/violations.jsonl)",
+      "Write(.claude/learning/violations.jsonl.*)",
+      "Write(.claude/learning/.initialized)",
+      "Bash(rm:.claude/learning/posture*)",
+      "Bash(rm:.claude/learning/violations*)",
+      "Bash(mv:.claude/learning/posture*)",
+      "Bash(mv:.claude/learning/violations*)"
+    ]
   },
   "hooks": {
     "PreToolUse": [
@@ -13,39 +31,84 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/validate-bash-command.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-bash-command.js\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/posture-gate.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gitignored-claude-warn.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/posture-gate.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-violations.js\"",
+            "timeout": 5
           }
         ]
       }
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-violations.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/validate-workflow.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-workflow.js\"",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/validate-deployment.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-deployment.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/integration-hygiene.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/integration-hygiene.js\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-format.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/auto-format.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/enforce-framework-first.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-framework-first.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-violations.js\"",
             "timeout": 5
           }
         ]
@@ -56,7 +119,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-start.js\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.js\""
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/posture-gate.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/coc-drift-warn.js\"",
+            "timeout": 5
           }
         ]
       }
@@ -66,7 +139,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-end.js\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-end.js\""
           }
         ]
       }
@@ -76,7 +149,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/pre-compact.js\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-compact.js\""
           }
         ]
       }
@@ -86,7 +159,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/user-prompt-rules-reminder.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/user-prompt-rules-reminder.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-violations.js\"",
             "timeout": 5
           }
         ]
@@ -97,13 +175,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/stop.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.js\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/log-triage-gate.js\"",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/log-triage-gate.js\"",
             "timeout": 7
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/detect-violations.js\"",
+            "timeout": 5
           }
         ]
       }

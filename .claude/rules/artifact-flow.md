@@ -1,4 +1,6 @@
 ---
+priority: 10
+scope: path-scoped
 paths:
   - ".claude/**"
   - "sync-manifest.yaml"
@@ -7,6 +9,9 @@ paths:
 ---
 
 # Artifact Flow Rules
+
+
+<!-- slot:neutral-body -->
 
 ## Authority Chain
 
@@ -73,7 +78,7 @@ When creating a fresh proposal (status was `distributed` or file was missing), `
 
 ### Applies to Both Directions
 
-- **BUILD → loom**: kailash-py and kailash-rs proposals (`/codify` Step 7)
+- **BUILD → loom**: SDK BUILD-repo proposals (`/codify` Step 7)
 - **loom → atelier**: loom's CC/CO proposals (`/codify` Step 8)
 
 ## /sync Is the Only Outbound Path
@@ -102,9 +107,9 @@ Automated suggestions permitted; automated placement is not.
 
 ## MUST NOT
 
-- Sync directly between BUILD repos (kailash-py ↔ kailash-rs) — all paths through loom/
+- Sync directly between BUILD repos — all paths through loom/
 
-**Why:** Direct BUILD-to-BUILD sync bypasses classification and variant overlay, silently introducing Python-specific artifacts into Rust repos or vice versa.
+**Why:** Direct BUILD-to-BUILD sync bypasses classification and variant overlay, silently introducing language-specific artifacts into the wrong repo.
 
 - Edit template repos directly — rebuilt entirely by `/sync`
 
@@ -113,3 +118,5 @@ Automated suggestions permitted; automated placement is not.
 - Auto-classify global vs variant without human approval
 
 **Why:** Automated classification lacks the domain judgment to distinguish a language-specific pattern from a universal one, risking silent overwrites across all targets.
+
+<!-- /slot:neutral-body -->
