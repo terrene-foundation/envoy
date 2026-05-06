@@ -40,6 +40,7 @@ from kailash.trust.exceptions import TrustChainNotFoundError as _UpstreamTrustCh
 from kailash.trust.key_manager import InMemoryKeyManager
 from kailash.trust.operations import CapabilityRequest
 from kailash.trust.posture.posture_store import SQLitePostureStore
+from kailash.trust.revocation.cascade import RevocationResult, cascade_revoke
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
 
 
@@ -91,8 +92,10 @@ def _validate_id_safety(identifier: str, *, field: str) -> None:
 
 
 from envoy.trust.errors import (
+    CascadeIncompleteError,
     GenesisAlreadySeededError,
     PrincipalRequiredError,
+    RevocationNotFoundError,
     TrustChainNotFoundError,
 )
 from envoy.trust.types import (
@@ -253,6 +256,18 @@ class TrustStoreAdapter:
             max_delegation_depth=max_delegation_depth,
         )
         self._initialized = False
+        # Phase 01: cache the latest RevocationResult AND the pre-revoke
+        # descendant snapshot per `agent_id` so `verify_cascade_complete()`
+        # can check the cascade-completeness invariant against the GROUND
+        # TRUTH delegation graph at revoke-time (not the post-revoke
+        # soft-deleted chains, which would be structurally empty per the
+        # zero-tolerance Rule 2 fake-classification gap that gate-review
+        # H-01 surfaced).
+        # Bounded LRU per `rules/trust-plane-security.md` MUST Rule 4
+        # (bounded collections, maxlen=10000) — local-DoS defense.
+        from collections import OrderedDict as _OD
+
+        self._last_revocations: _OD[str, tuple[RevocationResult, frozenset[str]]] = _OD()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -501,6 +516,164 @@ class TrustStoreAdapter:
             await self.initialize()
         chains = await self._chain_store.list_chains()
         return [c.genesis.agent_id for c in chains]
+
+    # ------------------------------------------------------------------
+    # Cascade revocation (T-01-14 — EC-2 + EC-8)
+    # ------------------------------------------------------------------
+
+    # Bounded LRU cache size per `rules/trust-plane-security.md` MUST Rule 4
+    # (bounded collections, maxlen=10000) — local-DoS defense.
+    _REVOCATION_CACHE_MAXLEN = 10_000
+
+    async def revoke(
+        self,
+        *,
+        agent_id: str,
+        reason: str,
+        revoked_by: str,
+    ) -> RevocationResult:
+        """Cascade-revoke `agent_id` and every descendant via kailash-py BFS.
+
+        Delegates to `kailash.trust.revocation.cascade.cascade_revoke` per
+        shard 5 § 3.3 — provides idempotency check (already-revoked = no-op),
+        BFS via `CascadeRevocationManager`, snapshot-and-rollback on
+        partial failure, and the cross-SDK BFS/DFS set-equality contract
+        (specs/trust-lineage.md § Cascade revocation).
+
+        Phase 01 PRE-revoke snapshots the descendant set rooted at `agent_id`
+        before delegating to kailash, then caches `(result, snapshot_set)`
+        keyed by `agent_id`. The snapshot is the GROUND TRUTH delegation
+        graph at revoke-time — `verify_cascade_complete()` compares it
+        against `result.revoked_agents` to catch the EC-8 gap (a malformed
+        delegation_registry that under-reports descendants). Without the
+        pre-revoke snapshot, post-revoke chains are soft-deleted and drop
+        out of `list_chains()`, leaving the verifier structurally unable
+        to detect the gap (zero-tolerance Rule 2 fake-classification).
+
+        Cache is a bounded LRU (maxlen `_REVOCATION_CACHE_MAXLEN` = 10000)
+        per `rules/trust-plane-security.md` MUST Rule 4. T-01-17 (Ledger
+        persistence) replaces the in-memory cache with persisted
+        RevocationRecord rows.
+
+        Per `rules/trust-plane-security.md` MUST Rule 2 — every external ID
+        flows through `_validate_id_safety` before reaching kailash-py /
+        SQLite.
+
+        Re-revoke semantics: the latest call wins (kailash idempotency
+        means the second cascade is a no-op no-op, but the snapshot at the
+        second call may be smaller than the first if intermediate edits
+        changed the chain). Phase 02 will preserve the original snapshot
+        via persisted Ledger rows.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(agent_id, field="agent_id")
+            _validate_id_safety(revoked_by, field="revoked_by")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"revoke() identifier failed safety validation: {exc}",
+            ) from exc
+
+        # PRE-revoke snapshot: enumerate the GROUND-TRUTH descendants of
+        # agent_id in the active delegation graph. The cascade_revoke call
+        # below soft-deletes chains; a post-revoke walk would miss them.
+        snapshot = await self._snapshot_descendants(agent_id)
+
+        result = await cascade_revoke(
+            agent_id=agent_id,
+            store=self._chain_store,
+            reason=reason,
+            revoked_by=revoked_by,
+        )
+        # Bounded LRU update: pop oldest if at capacity, then insert/refresh.
+        if agent_id in self._last_revocations:
+            self._last_revocations.move_to_end(agent_id)
+        elif len(self._last_revocations) >= self._REVOCATION_CACHE_MAXLEN:
+            self._last_revocations.popitem(last=False)
+        self._last_revocations[agent_id] = (result, snapshot)
+        return result
+
+    async def _snapshot_descendants(self, root_agent_id: str) -> frozenset[str]:
+        """Enumerate the descendants of `root_agent_id` in the active
+        delegation graph BEFORE cascade_revoke runs.
+
+        Walks every chain via `list_chains()` (Phase 01 includes only active
+        chains; pre-cascade nothing is soft-deleted yet, so this is the full
+        delegation graph). Builds a delegator_id → [delegatee_id] adjacency
+        map and BFS from `root_agent_id`. Returns the set of descendants
+        (NOT including the root itself, matching the spec contract that
+        `RevocationResult.revoked_agents` is the descendant set).
+
+        Per kailash 2.13.4 `DelegationRecord` (`kailash.trust.chain`):
+        - `delegator_id: str` — agent_id of the delegator
+        - `delegatee_id: str` — agent_id of the delegatee (canonical field)
+
+        Phase 02: when `SqliteTrustStore` exposes a
+        `list_chains_for_root(root)` or descendant-query helper, switch to
+        an O(log N) lookup instead of the O(N×M) full walk.
+        """
+        chains = await self._chain_store.list_chains()
+        delegations_by_delegator: dict[str, list[str]] = {}
+        for chain in chains:
+            for d in chain.get_active_delegations():
+                delegations_by_delegator.setdefault(d.delegator_id, []).append(d.delegatee_id)
+        descendants: set[str] = set()
+        queue: list[str] = [root_agent_id]
+        while queue:
+            node = queue.pop(0)
+            for child in delegations_by_delegator.get(node, []):
+                if child not in descendants and child != root_agent_id:
+                    descendants.add(child)
+                    queue.append(child)
+        return frozenset(descendants)
+
+    async def verify_cascade_complete(self, *, agent_id: str) -> bool:
+        """Verify every pre-revoke descendant of `agent_id` is in the cached
+        RevocationResult's `revoked_agents` set.
+
+        EC-8 cross-channel cascade defense per shard 5 § 3.3 — a malformed
+        delegation_registry that under-reports descendants would silently
+        leave a Day-6 child grant alive after the Day-1 root was revoked.
+
+        The verifier compares the PRE-revoke descendant snapshot (taken
+        in `revoke()`) against the post-revoke `RevocationResult.revoked_agents`.
+        Snapshot is the ground truth at revoke-time; revoked_agents is what
+        kailash's BFS actually visited. Any snapshot member NOT in
+        revoked_agents is the EC-8 gap.
+
+        Returns True on completeness; raises `CascadeIncompleteError` with
+        up to 5 missing descendant IDs on incompleteness, OR
+        `RevocationNotFoundError` if no `revoke(agent_id=...)` cached
+        result is found.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(agent_id, field="agent_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"agent_id failed identifier safety validation: {exc}",
+            ) from exc
+
+        cached = self._last_revocations.get(agent_id)
+        if cached is None:
+            raise RevocationNotFoundError(
+                f"no cached cascade revocation found for agent_id={agent_id!r}; "
+                "call revoke(agent_id=...) first or T-01-17 Ledger persistence "
+                "for cross-session lookup",
+            )
+        result, snapshot = cached
+        revoked_set = set(result.revoked_agents)
+        missing = sorted(snapshot - revoked_set)
+
+        if missing:
+            raise CascadeIncompleteError(
+                f"cascade rooted at {agent_id!r} is incomplete: "
+                f"{len(missing)} descendant(s) absent from revoked_agents — {missing[:5]}"
+                + (f" (+ {len(missing) - 5} more)" if len(missing) > 5 else ""),
+            )
+        return True
 
     # ------------------------------------------------------------------
     # R2-H-01 algorithm_id wire-form translator (T-01-15, LOAD-BEARING)
