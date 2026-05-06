@@ -134,13 +134,13 @@ class RevocationError(TrustStoreError):
 
 
 class RevocationNotFoundError(RevocationError):
-    """Raised when `verify_cascade_complete(revocation_id=...)` is called with
-    a revocation_id that no prior `revoke()` call produced.
+    """Raised when `verify_cascade_complete(agent_id=...)` is called with an
+    agent_id that no prior `revoke()` call produced.
 
-    Phase 01 caches the latest RevocationResult per principal_id keyed by
-    revocation_id; lookup miss = the caller is asking about a revocation
-    this adapter never executed (test artifact, off-by-one principal,
-    forged revocation_id).
+    Phase 01 caches `(RevocationResult, pre_revoke_descendant_snapshot)` per
+    cascade-root `agent_id`; lookup miss = the caller is asking about a
+    revocation this adapter never executed (test artifact, off-by-one
+    agent_id, cross-session lookup before T-01-17 Ledger persistence ships).
     """
 
 

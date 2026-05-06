@@ -240,6 +240,7 @@ class TrustVault:
         self._verify_argon2_params(argon2_params)
 
         master_key = self._derive_master_key(passphrase, salt)
+        owned_by_self = False  # H-1: don't zeroize once vault has installed the key
         try:
             aesgcm = AESGCM(bytes(master_key))
             try:
@@ -259,15 +260,19 @@ class TrustVault:
                 ) from exc
 
             # Successful decrypt — own the master key + payload, start timer.
+            # `owned_by_self = True` BEFORE _touch_activity so a failure inside
+            # the timer scheduler (e.g., asyncio internals) does NOT trigger
+            # the outer zeroize and corrupt the live vault key.
             self._master_key = master_key
             self._payload = payload
             self._idle_locked = False
+            owned_by_self = True
             self._touch_activity()
-        except VaultUnlockFailedError:
-            _zeroize(master_key)
-            raise
         except Exception:
-            _zeroize(master_key)
+            # Only zeroize if the vault has NOT taken ownership; otherwise
+            # we'd zero out the live key behind self._master_key (H-1).
+            if not owned_by_self:
+                _zeroize(master_key)
             raise
 
     async def lock(self) -> None:
@@ -542,22 +547,35 @@ class TrustVault:
     # ------------------------------------------------------------------
 
     async def export_master_key_for_shamir(self) -> bytes:
-        """Return a copy of the in-memory master key for Shamir splitting.
+        """Return an independent 32-byte copy of the master key for Shamir splitting.
 
         Per `specs/shamir-recovery.md` § Algorithm: SLIP-0039 Shamir splits
         the 32-byte master key (AES-256 key) — NOT the passphrase. The
         ShamirRitualCoordinator (T-15, Wave 2) calls this hook to obtain
         the master key bytes to split into m-of-n shards.
 
-        Vault MUST be unlocked. Returns a fresh `bytes` copy — caller is
-        responsible for zeroizing after Shamir split completes.
+        Vault MUST be unlocked. Returns a fresh `bytes` (immutable) buffer
+        independent of the in-vault `bytearray` — mutating the in-vault key
+        does NOT affect the returned bytes and vice versa.
+
+        **Caller-side memory hygiene** (per `rules/trust-plane-security.md`
+        MUST NOT Rule 3): the returned `bytes` is IMMUTABLE — Python provides
+        no API to overwrite its bytes in-place. The caller MUST:
+
+        1. Treat the returned bytes as a sensitive secret with the same
+           memory residency discipline as the vault's own master key.
+        2. For best-effort zeroize, copy into a `bytearray` immediately and
+           overwrite the bytearray slot once Shamir splitting completes;
+           drop the original `bytes` reference to release it for GC.
+        3. NEVER log / print / serialize the returned bytes.
+
+        TODO(T-15): wrap in `Sensitive[bytes]` typed context manager that
+        auto-zeroes on `__exit__` (Phase 02 hardening alongside the
+        Secure-Enclave binding).
         """
         self._require_unlocked()
         self._touch_activity()
         assert self._master_key is not None  # type checker
-        # Return a fresh bytes copy. Caller-side responsibility to zeroize.
-        # Phase 02 will wrap the export in a `Sensitive[bytes]` typed handle
-        # that auto-zeroes on context exit.
         return bytes(self._master_key)
 
     async def import_master_key_from_shamir(self, reconstructed: bytes) -> None:
@@ -566,15 +584,30 @@ class TrustVault:
         Per `specs/shamir-recovery.md` § Recovery flow: Shamir reconstruction
         produces the SAME 32-byte master key the original Argon2id would
         have derived from the passphrase. The on-disk salt + Argon2id params
-        are preserved; this hook simply installs the reconstructed key as
-        the vault's in-memory master key and decrypts the on-disk payload
-        under it. If the reconstructed key is wrong, AES-GCM tag verification
-        fails and `VaultUnlockFailedError` is raised — the vault stays sealed.
+        are preserved unchanged; this hook simply installs the reconstructed
+        key as the vault's in-memory master key and decrypts the on-disk
+        payload under it. If the reconstructed key is wrong, AES-GCM tag
+        verification fails and `VaultUnlockFailedError` is raised — the
+        vault stays sealed.
 
         The vault MUST exist on disk. The vault MUST be sealed at the start
         of the call (we install a NEW master key rather than rotating an
         existing one). Phase 02 adds an explicit `rotate_master_key`
         operation for the post-recovery passphrase change.
+
+        **Caller-side memory hygiene** (per `rules/trust-plane-security.md`
+        MUST NOT Rule 3): the caller's `reconstructed` bytes is IMMUTABLE
+        — Python provides no API to overwrite its contents in-place. The
+        vault makes its own internal `bytearray` copy (which IS zeroized on
+        `lock()`), so the caller's `reconstructed` copy survives until GC.
+        The caller is responsible for minimizing residency of the
+        reconstructed bytes — e.g., by passing a freshly constructed bytes
+        object and dropping the reference immediately after this call
+        returns.
+
+        TODO(T-15): accept `Sensitive[bytes]` from the
+        ShamirRitualCoordinator that auto-zeroes the caller-side bytes on
+        context exit (Phase 02 hardening).
         """
         if self.is_unlocked:
             raise VaultLockedError(
@@ -601,6 +634,7 @@ class TrustVault:
         self._verify_argon2_params(argon2_params)
 
         master_key = bytearray(reconstructed)  # mutable copy so we can zero it
+        owned_by_self = False  # H-1: don't zeroize once vault has installed the key
         try:
             aesgcm = AESGCM(bytes(master_key))
             try:
@@ -616,9 +650,13 @@ class TrustVault:
             self._master_key = master_key
             self._payload = payload
             self._idle_locked = False
+            owned_by_self = True
             self._touch_activity()
         except Exception:
-            _zeroize(master_key)
+            # Only zeroize if the vault has NOT taken ownership; otherwise
+            # we'd zero out the live key behind self._master_key (H-1).
+            if not owned_by_self:
+                _zeroize(master_key)
             raise
 
     # ------------------------------------------------------------------

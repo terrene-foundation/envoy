@@ -177,6 +177,61 @@ class TestVerifyCascadeComplete:
         with pytest.raises(RevocationNotFoundError):
             await adapter.verify_cascade_complete(agent_id="agent-C")
 
+    async def test_cascade_incomplete_fires_when_snapshot_descendant_missing(
+        self, adapter: TrustStoreAdapter
+    ) -> None:
+        """H-01 (gate review): the snapshot-pre-revoke design MUST be able to
+        catch an EC-8 gap. Construct a synthetic cache entry where the
+        pre-revoke snapshot contains a descendant that the RevocationResult
+        does NOT include — verify_cascade_complete must raise
+        CascadeIncompleteError and name the missing descendant.
+
+        Without a real Genesis chain (Tier 2 territory), we exercise the
+        verify branch directly by injecting a synthetic cache entry. This
+        proves the CascadeIncompleteError path is REACHABLE — not the
+        zero-tolerance Rule 2 fake-classification dead-code that the gate
+        review surfaced before the snapshot-pre-revoke refactor.
+        """
+        from kailash.trust.revocation.cascade import RevocationResult
+
+        # Pre-revoke snapshot says cascade rooted at "root-X" should have
+        # visited 3 descendants; kailash's BFS only visited 2 (the EC-8 gap).
+        synthetic_result = RevocationResult(
+            success=True,
+            events=[],
+            revoked_agents=["root-X", "child-A", "child-B"],
+            errors={},
+        )
+        synthetic_snapshot = frozenset({"child-A", "child-B", "child-C-missing"})
+        adapter._last_revocations["root-X"] = (synthetic_result, synthetic_snapshot)
+
+        with pytest.raises(CascadeIncompleteError, match="child-C-missing"):
+            await adapter.verify_cascade_complete(agent_id="root-X")
+
+    async def test_cache_bounded_to_maxlen_lru_eviction(self, adapter: TrustStoreAdapter) -> None:
+        """M-1 (security review): _last_revocations is a bounded LRU
+        (maxlen 10000) per rules/trust-plane-security.md MUST Rule 4.
+        Insertions past capacity evict the oldest entry. We test by
+        temporarily lowering the maxlen so the test runs fast."""
+        original_maxlen = adapter.__class__._REVOCATION_CACHE_MAXLEN
+        try:
+            adapter.__class__._REVOCATION_CACHE_MAXLEN = 3
+            for i in range(5):
+                await adapter.revoke(
+                    agent_id=f"agent-burst-{i}",
+                    reason="cap-test",
+                    revoked_by="test-principal-cascade",
+                )
+            # After 5 inserts with cap=3: only the last 3 survive.
+            assert len(adapter._last_revocations) == 3
+            assert "agent-burst-0" not in adapter._last_revocations
+            assert "agent-burst-1" not in adapter._last_revocations
+            assert "agent-burst-2" in adapter._last_revocations
+            assert "agent-burst-3" in adapter._last_revocations
+            assert "agent-burst-4" in adapter._last_revocations
+        finally:
+            adapter.__class__._REVOCATION_CACHE_MAXLEN = original_maxlen
+
 
 # ---------------------------------------------------------------------------
 # Shamir export — vault master key is exposed for SLIP-0039 splitting
@@ -239,6 +294,37 @@ class TestShamirImport:
         assert v2.is_unlocked
         assert (await v2.read()) == PAYLOAD
         await v2.lock()
+
+    async def test_import_preserves_on_disk_salt_and_argon2_params(self, vault_path: Path) -> None:
+        """L-02 (gate review): Shamir import MUST NOT rewrite the on-disk
+        salt or Argon2id parameters — those are passphrase-derivation
+        invariants. Post-Shamir-import, an unlock(passphrase) with the
+        ORIGINAL passphrase MUST still succeed because the salt + params
+        are unchanged. This is the salt-preservation invariant T-15
+        ShamirRitualCoordinator depends on for "post-recovery passphrase
+        change" workflows."""
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(PAYLOAD, PASSPHRASE)
+        original_salt = v._read_existing_salt()
+        original_bytes = vault_path.read_bytes()
+
+        # Shamir round-trip
+        await v.unlock(PASSPHRASE)
+        master_key = await v.export_master_key_for_shamir()
+        await v.lock()
+        v2 = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v2.import_master_key_from_shamir(master_key)
+        await v2.lock()
+
+        # Salt unchanged → original passphrase still derives the same key.
+        assert v2._read_existing_salt() == original_salt
+        # File contents unchanged on disk (no re-encrypt during import).
+        assert vault_path.read_bytes() == original_bytes
+        # Original passphrase still works post-import.
+        v3 = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v3.unlock(PASSPHRASE)
+        assert (await v3.read()) == PAYLOAD
+        await v3.lock()
 
     async def test_import_rejects_wrong_size(self, vault_path: Path) -> None:
         v = TrustVault(vault_path, idle_ttl_seconds=10)
