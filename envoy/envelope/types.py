@@ -129,6 +129,16 @@ class FinancialDimension:
                 )
             if f < 0:
                 raise ValueError("financial ceiling must be non-negative")
+        # L-03 shard A C1 fix (security review CRITICAL): coerce
+        # list-passed-at-construction to tuple. Without this, callers
+        # passing `authored_constraints=[c1]` would store a list (Python
+        # dataclasses don't enforce the tuple annotation), defeating the
+        # immutability invariant for that instance. Coerce defensively at
+        # construction so the invariant holds regardless of input shape.
+        if not isinstance(self.authored_constraints, tuple):
+            self.authored_constraints = tuple(self.authored_constraints)
+        if not isinstance(self.imported_constraints, tuple):
+            self.imported_constraints = tuple(self.imported_constraints)
 
 
 @dataclass(slots=True)
@@ -143,6 +153,13 @@ class OperationalDimension:
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
+    def __post_init__(self) -> None:
+        # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        if not isinstance(self.authored_constraints, tuple):
+            self.authored_constraints = tuple(self.authored_constraints)
+        if not isinstance(self.imported_constraints, tuple):
+            self.imported_constraints = tuple(self.imported_constraints)
+
 
 @dataclass(slots=True)
 class TemporalDimension:
@@ -153,6 +170,13 @@ class TemporalDimension:
     # L-03 shard A: tuple-typed constraint lists.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
+
+    def __post_init__(self) -> None:
+        # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        if not isinstance(self.authored_constraints, tuple):
+            self.authored_constraints = tuple(self.authored_constraints)
+        if not isinstance(self.imported_constraints, tuple):
+            self.imported_constraints = tuple(self.imported_constraints)
 
 
 @dataclass(slots=True)
@@ -167,6 +191,13 @@ class DataAccessDimension:
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
 
+    def __post_init__(self) -> None:
+        # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        if not isinstance(self.authored_constraints, tuple):
+            self.authored_constraints = tuple(self.authored_constraints)
+        if not isinstance(self.imported_constraints, tuple):
+            self.imported_constraints = tuple(self.imported_constraints)
+
 
 @dataclass(slots=True)
 class CommunicationDimension:
@@ -180,6 +211,13 @@ class CommunicationDimension:
     # L-03 shard A: tuple-typed constraint lists.
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
+
+    def __post_init__(self) -> None:
+        # L-03 shard A C1 fix: coerce list-passed-at-construction to tuple.
+        if not isinstance(self.authored_constraints, tuple):
+            self.authored_constraints = tuple(self.authored_constraints)
+        if not isinstance(self.imported_constraints, tuple):
+            self.imported_constraints = tuple(self.imported_constraints)
 
 
 # ---------------------------------------------------------------------------

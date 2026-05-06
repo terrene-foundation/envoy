@@ -1,5 +1,10 @@
 # Wave 1 follow-up — L-03: frozen dimension dataclasses
 
+> **STATUS UPDATE 2026-05-06**: Original todo was a single ~420 LOC shard. Session-end inspection of `compiler.py` revealed 10+ mutation sites — realistic full-freeze scope is ~600 LOC. Split into 2 shards:
+>
+> - **Shard A — LANDED via PR #10** (`feat(phase-01-L-03 shard A): constraint lists as tuples`): tuple-typed authored_constraints + imported_constraints + `__post_init__` coercion (CRITICAL C1 fix per security review). Closes the `.append`-based widening attack vector. 56 regression tests.
+> - **Shard B — DEFERRED to a fresh session**: full `@dataclass(frozen=True)` on 5 dimensions + EnvelopeMetadata + SemanticChecks; compiler refactor (envelope_id, authorship_score.setdefault().append, etc.) using `dataclasses.replace`. ~400-500 LOC. Tracking via `# SHARD_B_TRIGGER` markers in `tests/regression/test_l03_constraint_lists_immutable.py::TestShardBFollowupTracking` (3 tests locking current scalar/metadata mutability — when shard B lands, EVERY test in that class MUST flip from "assert mutation succeeded" to `pytest.raises(FrozenInstanceError)`).
+
 Origin: gate-level security review of PR #3 (Phase 01 Wave 1) finding L-03 — out-of-shard for T-01-15's budget.
 
 ## Problem
