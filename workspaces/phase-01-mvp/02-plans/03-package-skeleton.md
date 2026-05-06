@@ -401,13 +401,18 @@ envoy/
 │   ├── types.py                       # InboundMessage, SendReceipt, ChannelKind enum
 │   └── errors.py                      # 11 typed errors per specs/channel-adapters.md § Error taxonomy
 │
-└── heartbeat/                         # shard 17 — 5 stubs (R2-H-02 fix; DE-SCOPED to Phase 02 entry)
+├── heartbeat/                         # shard 17 — 5 stubs (R2-H-02 fix; DE-SCOPED to Phase 02 entry)
+│   ├── __init__.py
+│   ├── client.py                      # HeartbeatClient: no-op in Phase 01; called from 21 emit-site primitives
+│   ├── star_prio.py                   # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+│   ├── ohttp.py                       # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+│   ├── signed_consent.py              # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+│   └── registry.py                    # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+│
+└── observability/                     # carry-forward R1-M-05 per workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md § 4
     ├── __init__.py
-    ├── client.py                      # HeartbeatClient: no-op in Phase 01; called from 21 emit-site primitives
-    ├── star_prio.py                   # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
-    ├── ohttp.py                       # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
-    ├── signed_consent.py              # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
-    └── registry.py                    # PhaseDeferredError stub — deferred network/crypto primitive — never called from Phase 01 production code
+    ├── metrics.py                     # Prometheus counters (envoy_*_total, envoy_*_seconds); BOUNDED label cardinality per rules/tenant-isolation.md Rule 4 — top-N principal_id strategy OR aggregation-tier strategy, NEVER unbounded principal_id labels
+    └── tracing.py                     # OpenTelemetry span helpers (start_span, record_attribute) wrapping opentelemetry-{api,sdk,exporter-otlp} (transitive via kailash[shamir,nexus,kaizen])
 ```
 
 ### 2.1 `envoy/cli.py` — 11 subcommand routing
@@ -458,6 +463,8 @@ Each subcommand imports the primitive's facade, NOT the primitive's internal mod
 ### 2.2 `envoy/__init__.py` — package re-exports
 
 The package `__init__.py` re-exports the facade class for each primitive so downstream users do `from envoy import DailyDigestService` etc. without crawling submodule paths. Per `rules/orphan-detection.md` MUST Rule 6 (module-scope public imports appear in `__all__`):
+
+**Typed-error import pattern (carry-forward R1-M-03 disposition per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4):** every primitive's `errors.py` re-exports its typed errors at the package facade so `from envoy import EnvelopeCompilationError` works for downstream users. That is, in addition to the 12 facade-class re-exports below, `envoy/__init__.py` MUST also re-export every typed error declared in any `envoy/<primitive>/errors.py` (e.g. `EnvelopeCompilationError`, `MonotonicTighteningError`, `LedgerHaltedError`, `LedgerAlgorithmMismatchError`, `LedgerRollbackDetectedError`, `PrincipalRequiredError`, `VaultLockedError`, `PostureTransitionRefusedError`, `InsufficientSharesError`, `ShardChecksumFailedError`, `CommitmentVerificationFailedError`, `KeychainUnavailableError`, `NotPrimaryChannelError`, `VisibleSecretMismatchError`, etc.) AND list each in `__all__`. Implementation pattern: each `envoy/<primitive>/errors.py` declares `__all__` listing its typed errors; the package `__init__.py` does `from envoy.<primitive>.errors import *` (or explicit re-imports) and concatenates the typed-error names into the top-level `__all__`. This is verbatim the pattern; the rule applies uniformly across every primitive.
 
 ```python
 # envoy/__init__.py
@@ -679,6 +686,15 @@ Per `rules/orphan-detection.md` + `rules/facade-manager-detection.md`, every fac
 - **MUST Rule 1 (facade-manager-detection.md):** every manager-shape class has a Tier 2 test that imports through the facade (`from envoy import DailyDigestService`, NOT `from envoy.daily_digest.service import DailyDigestService`).
 - **MUST Rule 2 (facade-manager-detection.md):** Tier 2 file naming `test_<lowercase>_wiring.py`. Enforced per § 3 above.
 - **MUST Rule 3 (facade-manager-detection.md):** manager constructor takes the parent framework instance. Pinned per primitive shard's § 4 implementation contract; this skeleton does not redefine.
+
+### 5.1 Tenant-isolation consolidated rule (carry-forward R1-M-04 disposition)
+
+Per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4, this rule is consolidated here so every primitive's `/implement` cycle reads it without ambiguity. Citing `rules/tenant-isolation.md` Rules 1 + 2:
+
+- **Constructor contract:** every primitive facade constructor (the 12 in § 2.2 above — `BoundaryConversationRuntime`, `EnvelopeCompiler`, `EnvoyLedger`, `TrustStoreAdapter`, `GrantMomentOrchestrator`, `PostureGate`, `DailyDigestService`, `EnvoyBudgetOrchestrator`, `ShamirRitualCoordinator`, `ConnectionVaultAdapter`, `EnvoyModelRouter`, plus `KailashRuntime` adapters) MUST take `principal_id: PrincipalId` as a required keyword argument. NO defaults. Omission MUST raise `PrincipalRequiredError` (Rule 2 strict mode — typed error, no silent fallback to a placeholder principal).
+- **Persistence contract:** every Trust-store row, Ledger row, and Vault entry written by these primitives MUST persist `principal_id` as an indexed column. Auditability (`rules/tenant-isolation.md` Rule 5) requires per-principal forensic queries to be index-served, not full-table-scan.
+- **Cache key contract:** any cache key built by Phase 01 primitives includes `principal_id` as a dimension per `rules/tenant-isolation.md` Rule 1, even when the secondary key is per-principal-unique (defense-in-depth against future schema refactors).
+- **Tier 2 verification:** `tests/tier2/test_principal_required_error_strict_mode.py` (already named in § 3 above) is the canonical regression for the strict-mode error; per-primitive wiring tests assert `principal_id` is persisted on every write surface.
 
 ---
 
