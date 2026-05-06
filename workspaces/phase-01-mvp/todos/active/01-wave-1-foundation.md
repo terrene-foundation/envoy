@@ -418,6 +418,36 @@ The methodology is structurally validated; recommend codifying as a /implement S
 
 **Estimate:** 0.5 session.
 
+## Verification — T-01-19
+
+Status: SHIPPED 2026-05-06. Commit (per-todo cadence on `feat/phase-01-wave-1-t-01-19`).
+
+- `envoy/ledger/export.py` (~225 LOC): 3 frozen dataclasses (`TrustAnchorKey`, `SegmentBoundary`, `ExportBundle`) + pure-function `compute_receipt_hash(bundle_minus_receipt) -> str`.
+- `EnvoyLedger.export()` method on the facade — produces a signed bundle from the persisted entries + head_commitment.
+- **Closes T-01-20** in same shard: `SegmentBoundary` enforces the 4-key segment-boundary algorithm_identifier per `specs/independent-verifier.md` L35 R3-M-02 carry-forward (`{sig, hash, shamir, canonical_json: jcs-rfc8785}`); 3-key trust-lineage form is REJECTED at construction. `from_trust_lineage_3_key()` factory promotes producer-side. Standalone T-01-20 todo subsumed.
+
+Phase 01 narrow scope:
+
+- Single segment per export covering [0, head_sequence] (no MigrationAnnouncement boundaries to split on yet).
+- Minimal trust_anchor_key_set: just the signing key (Phase 02 wires device_attestation_chain).
+- Empty `runtime_attestation` (Phase 02).
+- JSON-only (PDF lands at Wave 5 CLI).
+
+**Test coverage**: `tests/tier1/test_envoy_ledger_export_bundle.py` (27 cases / 9 classes): `TestSegmentBoundary` (7 — 3-key rejection, 4-key acceptance, wrong canonical_json value, promoter, promoter-rejects-4-key-input, negative from_sequence, to<from); `TestTrustAnchorKey` (3 — valid, invalid key_class, sha256 prefix); `TestExportRoundTrip` (2 — returns ExportBundle, empty ledger raises); `TestVerifierInvariant1AscendingSequence` (1); `TestVerifierInvariant3ChainLink` (1 — parent_hash links to prev entry_id); `TestVerifierInvariant4ContentAddressing` (1 — recomputed entry_id matches stored); `TestVerifierInvariant6HeadEqualsLastEntry` (1); `TestVerifierInvariant8ReceiptHash` (3 — matches canonical, determinism, tamper detection); `TestVerifierInvariant9SegmentBoundaryDispatch` (2 — single segment covers entries, segment uses 4-key form); `TestBundleSchemaShape` (6 — 9 top-level field set, runtime_attestation field, trust_anchor includes signing key, canonical_dumps byte-stable round-trip).
+
+**Verification gate**: pytest tier1+regression `260 passed in 9.86s`; zero collection errors; zero warnings.
+
+**Out of T-01-19 scope** (later shards):
+
+- PDF receipt_hash form (Wave 5 CLI).
+- Partial exports with `start_after_sequence` declaration (Phase 02).
+- Multi-segment boundaries when MigrationAnnouncement records appear (Phase 02).
+- Full device_attestation_chain in trust_anchor_key_set (Phase 02).
+- Independent Verifier (`envoy-ledger-verify`) — separate Python package + Tier 3 e2e gate (T-01-21+).
+- Tier 2 wiring with real SqliteAuditStore + cross-process verifier round-trip (T-01-21).
+
+inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols cited in this shard — pure envoy-internal).
+
 ---
 
 ## T-01-20 — Build envoy/ledger/segment_boundary 4-key serializer (R3-M-02)

@@ -41,6 +41,12 @@ from envoy.ledger.errors import (
     LedgerVerificationFailedError,
     PhaseAOrphanDetectedError,
 )
+from envoy.ledger.export import (
+    ExportBundle,
+    SegmentBoundary,
+    TrustAnchorKey,
+    compute_receipt_hash,
+)
 from envoy.ledger.facade import EnvoyLedger, VerificationReport
 from envoy.ledger.hash_chain import EntryEnvelope, HashChainBuilder
 from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment
@@ -51,6 +57,7 @@ __all__ = [
     "EntryEnvelope",
     "EntryKeyDestroyedError",
     "EnvoyLedger",
+    "ExportBundle",
     "HaltedByRollbackRecord",
     "HashChainBuilder",
     "HeadCommitment",
@@ -63,6 +70,9 @@ __all__ = [
     "LedgerSyncConflictError",
     "LedgerVerificationFailedError",
     "PhaseAOrphanDetectedError",
+    "SegmentBoundary",
+    "TrustAnchorKey",
     "VerificationReport",
     "canonical_dumps",
+    "compute_receipt_hash",
 ]
