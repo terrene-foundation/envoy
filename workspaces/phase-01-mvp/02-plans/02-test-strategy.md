@@ -54,6 +54,7 @@ For each of the 9 ECs from `02-mvp-objectives.md`, the table below names: (a) Ti
 - `tests/integration/test_resume_from_each_state.py` — every S0–S10 state resumable via `envoy init --resume <ritual_id>`.
 - `tests/integration/test_envelope_compiler_wiring.py` — compile produces `canonical_bytes` byte-equal to JCS-NFC fixture; Ledger row written.
 - `tests/integration/test_envelope_compiler_monotonic_tightening_at_compile.py` — child compile with widened dimension raises `MonotonicTighteningError`.
+- `tests/integration/test_envoy_model_router_chat_async_routing.py` (carry-forward R1-M-02 disposition per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4) — imports `EnvoyModelRouter` through facade; asserts `chat()` routes through `LlmDeployment.chat_async()` per shard 13 § 7.1 HOLD rationale (async-routing wiring contract). Tier 2 against real Ollama; verifies the facade calls the underlying async chat method, not a sync shim.
 - `tests/regression/test_t018_*.py` (visible-secret), `test_t023_*.py` (Authorship Score seeding).
 
 #### Tier 3 end-to-end battery
@@ -140,16 +141,17 @@ Scheduled Daily Digest fires at user's local-morning hour for ≥7 consecutive d
 
 `tests/e2e/test_envoy_ledger_tampering_battery.py` — for an N=1000-entry export bundle:
 
-| #   | Tampering form                                         | Expected verifier verdict                |
-| --- | ------------------------------------------------------ | ---------------------------------------- |
-| 1   | Untampered bundle                                      | PASS                                     |
-| 2   | Single-bit flip in entry K's `content`                 | FAIL at entry K                          |
-| 3   | Single-bit flip in entry K's `signature_hex`           | FAIL at entry K                          |
-| 4   | Entry K removed entirely                               | FAIL at chain-link gap                   |
-| 5   | Entry K duplicated (inserted as K+1 with same content) | FAIL at entry_id collision               |
-| 6   | Entries K and K+1 swapped                              | FAIL at K's parent_hash mismatch         |
-| 7   | Entry K's `lamport_clock.lamport_time` decreased       | FAIL at Lamport monotonicity             |
-| 8   | Entry K's `algorithm_identifier` mismatches segment    | FAIL with `LedgerAlgorithmMismatchError` |
+| #   | Tampering form                                                                                                                                                       | Expected verifier verdict                                                                                    |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1   | Untampered bundle                                                                                                                                                    | PASS                                                                                                         |
+| 2   | Single-bit flip in entry K's `content`                                                                                                                               | FAIL at entry K                                                                                              |
+| 3   | Single-bit flip in entry K's `signature_hex`                                                                                                                         | FAIL at entry K                                                                                              |
+| 4   | Entry K removed entirely                                                                                                                                             | FAIL at chain-link gap                                                                                       |
+| 5   | Entry K duplicated (inserted as K+1 with same content)                                                                                                               | FAIL at entry_id collision                                                                                   |
+| 6   | Entries K and K+1 swapped (adjacent reorder)                                                                                                                         | FAIL at K's parent_hash mismatch                                                                             |
+| 6b  | Entries K and K+M swapped, M ≥ 5 (non-adjacent reorder; carry-forward R3-M-01 per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4) | FAIL at K's parent_hash mismatch — verifier MUST detect non-adjacent (i, j) reorder, not only adjacent swaps |
+| 7   | Entry K's `lamport_clock.lamport_time` decreased                                                                                                                     | FAIL at Lamport monotonicity                                                                                 |
+| 8   | Entry K's `algorithm_identifier` mismatches segment                                                                                                                  | FAIL with `LedgerAlgorithmMismatchError`                                                                     |
 
 Verifier MUST detect every form and identify the failing entry index. Per `rules/orphan-detection.md` Rule 2a, the round-trip is THROUGH the facade — `envoy ledger export` produces the bundle; the separately-codebased `envoy-ledger-verify` consumes it.
 

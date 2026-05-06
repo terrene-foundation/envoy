@@ -36,6 +36,19 @@ The artifact `envoy ledger export --format json` produces. Phase 01 wire shape:
         "sig": "ed25519", "hash": "sha256", "shamir": "slip39",
         "canonical_json": "jcs-rfc8785"
       }
+      // Carry-forward R3-M-02 disposition (per
+      // `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md`
+      // § 5): the 4-key form above is canonical for the segment-boundary
+      // `algorithm_identifier`. The fourth key `canonical_json` documents the
+      // JCS canonicalization profile (RFC 8785) the entries in this segment
+      // were canonicalized under and is REQUIRED on the wire. Shard 6's serializer
+      // (which currently produces the 3-key trust-lineage wire form
+      // `{sig,hash,shamir}` per `specs/trust-lineage.md` line 24) MUST be extended
+      // at /implement time so the segment-boundary form carries the additional
+      // `canonical_json` key. The trust-lineage 3-key form is unchanged; the
+      // segment-boundary 4-key form is a strict superset and applies only at
+      // ledger-export segment boundaries. The shard-6 serializer extension is
+      // tracked as a /implement task; the spec stays at 4-key.
     }
   ],
   "entries": [

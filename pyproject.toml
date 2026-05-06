@@ -12,28 +12,35 @@ authors = [
 ]
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications",
+    "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    # Kailash (Rust-accelerated Python binding — free, no registration, no gating).
-    # Published on PyPI, source hosted on the Terrene Foundation GitHub org.
-    # The binding links against a Rust runtime whose source is trade secret,
-    # but install + use is free for every user.
-    # Alternative: replace with `kailash-py` for the fully open-source
-    # (Apache 2.0) pure-Python implementation of the same specs.
-    "kailash>=3.20.0",
-    # CLI Framework
+    # Phase 01 runtime: pure-Python kailash per ADR-0001 phase-migration table.
+    # The runtime is wired through the abstract `kailash-runtime` interface
+    # (envoy/runtime/protocol.py); Phase 02 adds the Rust-backed binding via
+    # the runtime adapter slot per `11-phase-02-handoff.md` T-11-04.
+    # Apache 2.0; Foundation-stewarded; install via `pipx install envoy-agent`.
+    "kailash[nexus,kaizen,dataflow,pact]>=2.13.4",
+    # OS keychain wrapper (Connection Vault — shard 14)
+    "keyring>=24.0",
+    # CLI framework
     "click>=8.0",
     "rich>=13.0.0",
+    # Channel adapter SDKs (shard 16) — bot-API trio (Telegram is LGPL-3.0+; see NOTICES)
+    "python-telegram-bot>=21.0",
+    "slack-sdk>=3.27",
+    "discord.py>=2.3",
+    # Scheduler (Daily Digest — shard 11)
+    "apscheduler>=3.10",
     # Utilities
     "python-dotenv>=1.0.0",
     "structlog>=23.1.0",

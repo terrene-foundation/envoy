@@ -127,16 +127,26 @@ class EnvelopeCompiler:
         *,
         parent: EnvelopeConfig | None = None,    # for child-envelope compile
     ) -> EnvelopeConfig: ...
-        # Steps:
+        # Steps (carry-forward R2-M-03 disposition per
+        # `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4 —
+        # the explicit lexicographic sort of `authored_constraints` is part of the canonical
+        # pipeline because JCS canonicalization (RFC 8785) requires a stable iteration order):
         # 1. Validate schema_version + algorithm_identifier match
         # 2. Resolve template imports (publisher sig + reputation; local-only P01)
         # 3. NFC-normalize all string values
         # 4. Validate every numeric field via math.isfinite (NaN/Inf guard)
         # 5. If parent: RoleEnvelope.validate_tightening(parent.dimensions, child.dimensions)
-        # 6. Compute authorship_score
-        # 7. JCS canonicalize → canonical_bytes + content_hash
-        # 8. Emit Ledger entry (envelope_compile or envelope_edit)
-        # 9. Return EnvelopeConfig
+        # 6. Sort `authored_constraints` lexicographically at construction (carry-forward
+        #    R2-M-03) — JCS canonicalization (step 8) requires a stable iteration order;
+        #    relying on insertion order is BLOCKED because Python dict iteration order
+        #    is insertion-stable but the upstream `EnvelopeConfigInput` may have been
+        #    deserialized from a non-deterministic source (e.g. JSON parsed by a sibling
+        #    process). The lex-sort happens BEFORE authorship-score computation and
+        #    BEFORE JCS canonicalize so both surfaces see the canonical ordering.
+        # 7. Compute authorship_score
+        # 8. JCS canonicalize → canonical_bytes + content_hash
+        # 9. Emit Ledger entry (envelope_compile or envelope_edit)
+        # 10. Return EnvelopeConfig
 
     def to_constraint_envelope_config(
         self, env: EnvelopeConfig
@@ -165,6 +175,18 @@ class EnvelopeCompiler:
         #   cross_domain_rules_authored: UNION with order lexicographic tie-break
         #   tool_output_budget_bytes: MIN
         #   semantic_checks.*classifier_ensemble: SUPERSET (more-or-equal classifiers)
+        #
+        # Carry-forward R2-M-05 disposition (per
+        # `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4):
+        # `IntersectConflictError` raised by upstream `intersect_envelopes` (or by any
+        # of the Envoy-superset folding rules above) MUST propagate to the caller
+        # unchanged. Never silently fall back to a "best-effort" intersection, never
+        # widen one side to make the conflict disappear, never substitute a partial
+        # result. The caller (Grant Moment, Boundary Conversation, etc.) is responsible
+        # for surfacing the conflict to the user in plain language; the compiler's
+        # contract is to raise on conflict, period. (The compiler MAY emit a Ledger
+        # entry on the failure per `specs/envelope-model.md` § Error taxonomy before
+        # re-raising, but MUST NOT swallow the error.)
 
 class EnvelopeTemplateResolver:  # Phase 01: local-only
     def resolve(self, ref: TemplateRef) -> EnvelopeTemplate: ...
