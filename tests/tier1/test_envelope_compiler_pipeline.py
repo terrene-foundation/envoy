@@ -112,9 +112,13 @@ class TestR2M03AuthoredConstraintsSort:
                 ]
             )
         )
-        # Pin envelope_id so the hashes are comparable
-        ci_a.metadata.envelope_id = "env-test-001"
-        ci_b.metadata.envelope_id = "env-test-001"
+        # Pin envelope_id so the hashes are comparable. L-03 shard B:
+        # EnvelopeMetadata is frozen; use dataclasses.replace to mint
+        # a new metadata instance with the pinned envelope_id.
+        import dataclasses
+
+        ci_a.metadata = dataclasses.replace(ci_a.metadata, envelope_id="env-test-001")
+        ci_b.metadata = dataclasses.replace(ci_b.metadata, envelope_id="env-test-001")
         env_a = compiler.compile(ci_a, principal_id=principal_id)
         env_b = compiler.compile(ci_b, principal_id=principal_id)
         # canonical_bytes/content_hash include `compiled_at` indirectly only if

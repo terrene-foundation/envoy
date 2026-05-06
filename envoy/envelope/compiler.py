@@ -201,18 +201,24 @@ class EnvelopeCompiler:
         # Step 6 — R2-M-03: sort authored_constraints lexicographically
         config_input = self._sort_authored_constraints(config_input)
 
-        # Step 7 — authorship score (delegated)
+        # Step 7 — authorship score (delegated) + algorithm pin + envelope_id
+        # mint. L-03 shard B: EnvelopeMetadata is now frozen; we build a new
+        # metadata via dataclasses.replace and assign to the (still-mutable)
+        # config_input.metadata field. Three field updates collapse into
+        # ONE atomic replace per Phase 01 simplicity.
+        import dataclasses
+
         authorship = self._authorship_scorer.score_input(config_input)
-        config_input.metadata.authorship_score = dict(authorship)
-
-        # Pin algorithm identifier (single-point assignment)
-        config_input.metadata.algorithm_identifier = self._algorithm_identifier
-
-        # Assign envelope_id if not present (uuid-v7 isn't in stdlib pre-3.14;
-        # uuid-v4 is the Phase 01 disposition — registry-safe and crypto-random.
-        # Phase 02 entry can swap to uuid-v7 for time-orderable IDs.)
-        if not config_input.metadata.envelope_id:
-            config_input.metadata.envelope_id = str(uuid.uuid4())
+        new_envelope_id = config_input.metadata.envelope_id or str(uuid.uuid4())
+        # uuid-v7 isn't in stdlib pre-3.14; uuid-v4 is the Phase 01
+        # disposition — registry-safe and crypto-random. Phase 02 entry
+        # can swap to uuid-v7 for time-orderable IDs.
+        config_input.metadata = dataclasses.replace(
+            config_input.metadata,
+            authorship_score=dict(authorship),
+            algorithm_identifier=self._algorithm_identifier,
+            envelope_id=new_envelope_id,
+        )
 
         # Step 8 — JCS canonicalize → canonical_bytes + content_hash
         payload = self._to_canonical_payload(config_input, envelope_version=envelope_version)

@@ -165,42 +165,60 @@ class TestShardBFollowupTracking:
         d.per_call_ceiling_microdollars = 999
         assert d.per_call_ceiling_microdollars == 999
 
-    def test_envelope_metadata_authorship_score_still_mutable_pre_shard_b(
+    def test_envelope_metadata_authorship_score_field_reassignment_rejected(
         self,
     ) -> None:
-        """Per gate review L-3 + security review L-3: lock the current
-        mutability of `EnvelopeMetadata.authorship_score` so shard B's
-        flip to FrozenInstanceError is detectable. Mirrors the dimension
-        scalar lock above for the metadata surface that compiler.py
-        currently mutates via `metadata.authorship_score = dict(...)` +
-        `metadata.authorship_score.setdefault().append(...)`.
+        """L-03 shard B Step 1 LANDED — EnvelopeMetadata is now frozen.
+        Field reassignment of `authorship_score` raises
+        `FrozenInstanceError`. Compiler uses `dataclasses.replace` for
+        this update.
 
-        # SHARD_B_TRIGGER: shard B converts this to FrozenInstanceError.
+        Inner dict mutation (m.authorship_score["k"] = v) STILL succeeds
+        today — the dict reference is mutable. Phase 02 deep-freeze via
+        MappingProxyType closes that vector.
         """
+        import dataclasses
+
         from envoy.envelope.types import EnvelopeMetadata
 
         m = EnvelopeMetadata()
-        # CURRENT BEHAVIOR: metadata field reassignment succeeds.
-        m.authorship_score = {"authored_count": 99}
-        assert m.authorship_score == {"authored_count": 99}
-        # Inner dict mutation also succeeds today.
+        # Field reassignment rejected — frozen dataclass.
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            m.authorship_score = {"authored_count": 99}  # type: ignore[misc]
+        # Inner dict mutation STILL succeeds — Phase 02 closes via
+        # MappingProxyType deep-freeze.
         m.authorship_score["authored_count"] = 999
         assert m.authorship_score["authored_count"] == 999
 
-    def test_envelope_metadata_envelope_id_still_mutable_pre_shard_b(self) -> None:
-        """Per gate review L-3: compiler.py:215 currently does
-        `config_input.metadata.envelope_id = str(uuid.uuid4())`. Lock
-        this current behavior so shard B's compiler refactor (use
-        `dataclasses.replace` to mint frozen metadata) doesn't silently
-        regress.
+    def test_envelope_metadata_envelope_id_field_reassignment_rejected(self) -> None:
+        """L-03 shard B Step 1 LANDED — envelope_id reassignment raises
+        FrozenInstanceError. Compiler uses dataclasses.replace to mint
+        the new envelope_id."""
+        import dataclasses
 
-        # SHARD_B_TRIGGER: shard B converts this to FrozenInstanceError.
-        """
         from envoy.envelope.types import EnvelopeMetadata
 
         m = EnvelopeMetadata(envelope_id="test-1")
-        m.envelope_id = "test-2"
-        assert m.envelope_id == "test-2"
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            m.envelope_id = "test-2"  # type: ignore[misc]
+        # The stored value is unchanged.
+        assert m.envelope_id == "test-1"
+
+    def test_envelope_metadata_replace_mints_new_instance(self) -> None:
+        """L-03 shard B Step 1 LANDED — the compiler's pattern of
+        `dataclasses.replace(metadata, envelope_id=..., authorship_score=...)`
+        produces a new EnvelopeMetadata with the changed fields; the
+        original instance is untouched."""
+        import dataclasses
+
+        from envoy.envelope.types import EnvelopeMetadata
+
+        original = EnvelopeMetadata(envelope_id="orig", sub_agent_session_inheritance="isolated")
+        replaced = dataclasses.replace(original, envelope_id="new", authorship_score={"v": 1})
+        assert original.envelope_id == "orig"
+        assert replaced.envelope_id == "new"
+        assert replaced.authorship_score == {"v": 1}
+        assert replaced.sub_agent_session_inheritance == "isolated"  # preserved
 
 
 class TestConstructionTimeListCoercion:
