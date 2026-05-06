@@ -280,9 +280,17 @@ class SemanticChecks:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class EnvelopeMetadata:
-    """Per spec § Schema § metadata."""
+    """Per spec § Schema § metadata.
+
+    L-03 shard B (frozen=True): once constructed, the metadata fields
+    cannot be reassigned. Compiler builds new metadata via
+    `dataclasses.replace(metadata, envelope_id=..., authorship_score=...)`.
+    Note: dict fields (authorship_score, enterprise_mode, goal_reconfirmation)
+    are still mutable IN-PLACE via .setdefault / .__setitem__ — Phase 02
+    deep-freeze via MappingProxyType closes that vector.
+    """
 
     envelope_id: str = ""
     algorithm_identifier: AlgorithmIdentifier = field(default_factory=AlgorithmIdentifier)

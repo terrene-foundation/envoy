@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import uuid
+import dataclasses
 from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -60,7 +61,16 @@ class AuthorshipScorer(Protocol):
     """Protocol satisfied by `envoy.authorship.score.AuthorshipScore` (Wave 2)."""
 
     def score_input(self, config_input: EnvelopeConfigInput) -> dict[str, Any]:
-        """Return {authored_count, imported_count, template_provenance}."""
+        """Return {authored_count, imported_count, template_provenance}.
+
+        Ordering invariant (compile pipeline step 7): this method is called
+        BEFORE `metadata.algorithm_identifier` and `metadata.envelope_id` are
+        pinned. Concrete implementations MUST NOT consume those fields from
+        `config_input.metadata` — they are not canonical at this point in
+        the pipeline. Consume `metadata.authorship_score`, the dimension
+        `authored_constraints` / `imported_constraints` tuples, and
+        `template_refs` only.
+        """
         ...
 
 
@@ -201,18 +211,29 @@ class EnvelopeCompiler:
         # Step 6 — R2-M-03: sort authored_constraints lexicographically
         config_input = self._sort_authored_constraints(config_input)
 
-        # Step 7 — authorship score (delegated)
+        # Step 7 — authorship score (delegated) + algorithm pin + envelope_id
+        # mint. L-03 shard B: EnvelopeMetadata is now frozen; we build a new
+        # metadata via dataclasses.replace and assign to the (still-mutable)
+        # config_input.metadata field. Three field updates collapse into
+        # ONE atomic replace per Phase 01 simplicity.
+        #
+        # Ordering invariant: score_input is called BEFORE algorithm_identifier
+        # and envelope_id are pinned (the new pinned values land in the SAME
+        # dataclasses.replace that consumes authorship). Real Wave 2
+        # AuthorshipScorer impls MUST NOT consume metadata.algorithm_identifier
+        # or metadata.envelope_id from the input — those fields are not yet
+        # canonical at this point in the pipeline.
         authorship = self._authorship_scorer.score_input(config_input)
-        config_input.metadata.authorship_score = dict(authorship)
-
-        # Pin algorithm identifier (single-point assignment)
-        config_input.metadata.algorithm_identifier = self._algorithm_identifier
-
-        # Assign envelope_id if not present (uuid-v7 isn't in stdlib pre-3.14;
-        # uuid-v4 is the Phase 01 disposition — registry-safe and crypto-random.
-        # Phase 02 entry can swap to uuid-v7 for time-orderable IDs.)
-        if not config_input.metadata.envelope_id:
-            config_input.metadata.envelope_id = str(uuid.uuid4())
+        new_envelope_id = config_input.metadata.envelope_id or str(uuid.uuid4())
+        # uuid-v7 isn't in stdlib pre-3.14; uuid-v4 is the Phase 01
+        # disposition — registry-safe and crypto-random. Phase 02 entry
+        # can swap to uuid-v7 for time-orderable IDs.
+        config_input.metadata = dataclasses.replace(
+            config_input.metadata,
+            authorship_score=dict(authorship),
+            algorithm_identifier=self._algorithm_identifier,
+            envelope_id=new_envelope_id,
+        )
 
         # Step 8 — JCS canonicalize → canonical_bytes + content_hash
         payload = self._to_canonical_payload(config_input, envelope_version=envelope_version)

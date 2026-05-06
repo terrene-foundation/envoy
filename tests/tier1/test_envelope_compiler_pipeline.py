@@ -112,9 +112,13 @@ class TestR2M03AuthoredConstraintsSort:
                 ]
             )
         )
-        # Pin envelope_id so the hashes are comparable
-        ci_a.metadata.envelope_id = "env-test-001"
-        ci_b.metadata.envelope_id = "env-test-001"
+        # Pin envelope_id so the hashes are comparable. L-03 shard B:
+        # EnvelopeMetadata is frozen; use dataclasses.replace to mint
+        # a new metadata instance with the pinned envelope_id.
+        import dataclasses
+
+        ci_a.metadata = dataclasses.replace(ci_a.metadata, envelope_id="env-test-001")
+        ci_b.metadata = dataclasses.replace(ci_b.metadata, envelope_id="env-test-001")
         env_a = compiler.compile(ci_a, principal_id=principal_id)
         env_b = compiler.compile(ci_b, principal_id=principal_id)
         # canonical_bytes/content_hash include `compiled_at` indirectly only if
@@ -172,3 +176,53 @@ class TestTemplateResolution:
         ci = EnvelopeConfigInput(template_refs=["local:does-not-exist.json"])
         with pytest.raises(TemplateResolutionError, match="not found"):
             compiler.compile(ci, principal_id=principal_id)
+
+
+class TestPipelineOrderingInvariant:
+    """L-03 shard B step 1 / security review M-1: lock the
+    `_fold_templates` → step 7 ordering so a future refactor that
+    re-orders the pipeline silently dropping `template_provenance`
+    fails loudly.
+
+    Threat: step 7 minted a fresh `metadata.authorship_score` via
+    `dataclasses.replace`. If a future agent moves step 7 BEFORE
+    `_fold_templates`'s in-place `setdefault("template_provenance",
+    []).append(...)`, the provenance entry would land on the OLD
+    metadata and be discarded by replace. This test asserts the
+    survival contract end-to-end.
+    """
+
+    def test_template_provenance_survives_compile_pipeline(
+        self, compiler, principal_id, tmp_path
+    ) -> None:
+        import json
+
+        # Author a minimal local template under the resolver root.
+        template_path = tmp_path / "tier1-prov-test.json"
+        template_path.write_text(
+            json.dumps(
+                {
+                    "financial": {
+                        "authored_constraints": [
+                            {"constraint_id": "tier1-prov-rule", "rule_ast": {"op": "noop"}}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ci = EnvelopeConfigInput(template_refs=[f"local:{template_path.name}"])
+        env = compiler.compile(ci, principal_id=principal_id)
+
+        # The fold step must have appended a provenance entry, and
+        # step 7's dataclasses.replace must have preserved it.
+        provenance = env.metadata.authorship_score.get("template_provenance")
+        assert isinstance(provenance, list)
+        assert len(provenance) == 1
+        assert provenance[0]["uri"] == f"local:{template_path.name}"
+        assert provenance[0]["hash"]  # template_hash is non-empty hex digest
+
+        # And the imported constraint itself round-tripped (defense-in-depth).
+        imported_ids = [c.constraint_id for c in env.financial.imported_constraints]
+        assert "tier1-prov-rule" in imported_ids
