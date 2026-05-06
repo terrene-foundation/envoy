@@ -161,6 +161,16 @@ class PrincipalRequiredError(Exception):
     """Raised when an adapter call is missing the required principal_id dimension."""
 
 
+class VaultLockedError(Exception):
+    """Raised when a vault-touching adapter call fires while the Trust Vault container is locked.
+
+    Carry-forward R2-M-02 disposition (per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4):
+    every adapter method that reads or writes the vault region MUST raise this typed error
+    when invoked outside an `unlock(passphrase)` -> `lock()` window or after the idle timer
+    expired. No silent fallback to a sentinel; no implicit re-unlock.
+    """
+
+
 class TrustStoreAdapter:
     """Envoy-side adapter over kailash-py trust primitives.
 
@@ -176,6 +186,32 @@ class TrustStoreAdapter:
         principal_id: str,
         # Vault-cipher params from specs/trust-vault.md § Encryption
     ) -> None: ...
+
+    # --- Vault lifecycle surface (carry-forward R2-M-02 disposition) ---
+    # Per workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md § 4:
+    # explicit vault lifecycle is part of the § 4 step-3 (vault container) contract.
+    # Every adapter method that reads/writes the vault region MUST guard against
+    # VaultLockedError (per specs/trust-vault.md § Encryption + § File format).
+    async def unlock(self, passphrase: str) -> None:
+        """Derive the master key (Argon2id + Secure-Enclave/TPM-bound secret),
+        AES-256-GCM-decrypt the vault region, start the idle-lock timer."""
+        ...
+
+    async def lock(self) -> None:
+        """Zeroize the in-memory master key, encrypt-back any dirty pages,
+        cancel the idle-lock timer."""
+        ...
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        """`async with TrustStoreAdapter(...) as ts:` auto-locks on exit
+        regardless of exception path. Invokes self.lock()."""
+        ...
+
+    def _idle_timer_reset(self) -> None:
+        """Every adapter call (read or write) MUST invoke this before returning
+        so the idle-lock timer resets to the configured TTL. Internal; not
+        part of the public surface."""
+        ...
 
     # --- Genesis seeding (single-principal Phase 01) ---
     async def seed_genesis(
@@ -206,7 +242,20 @@ class TrustStoreAdapter:
         envelope_version: int,
         effective_envelope_hash: str,
         valid_from, valid_until,
-    ) -> DelegationRecord: ...
+    ) -> DelegationRecord:
+        """Record a delegation under `delegator`.
+
+        Carry-forward R2-M-04 disposition (per `workspaces/phase-01-mvp/04-validate/round-4-implementation-comprehensive.md` § 4):
+        this method MUST route every delegation through
+        `kailash.trust.operations.TrustOperations.delegate(...)` and exercise the
+        upstream's full 10-step verification (cycle-free check, depth ≤ 16, capability
+        intersection, monotonic tightening, signing-key ownership, algorithm-identifier
+        coercion, parent_hash linkage, timestamp ordering, principal_id consistency,
+        envelope-version monotonicity). The adapter MUST NOT bypass any of the 10
+        steps with a "fast path" — `rules/zero-tolerance.md` Rule 4 forbids
+        re-implementing SDK logic.
+        """
+        ...
 
     # --- Cascade revocation (EC-2 + EC-8) ---
     async def revoke(
