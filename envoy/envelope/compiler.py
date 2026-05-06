@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import uuid
+import dataclasses
 from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -60,7 +61,16 @@ class AuthorshipScorer(Protocol):
     """Protocol satisfied by `envoy.authorship.score.AuthorshipScore` (Wave 2)."""
 
     def score_input(self, config_input: EnvelopeConfigInput) -> dict[str, Any]:
-        """Return {authored_count, imported_count, template_provenance}."""
+        """Return {authored_count, imported_count, template_provenance}.
+
+        Ordering invariant (compile pipeline step 7): this method is called
+        BEFORE `metadata.algorithm_identifier` and `metadata.envelope_id` are
+        pinned. Concrete implementations MUST NOT consume those fields from
+        `config_input.metadata` — they are not canonical at this point in
+        the pipeline. Consume `metadata.authorship_score`, the dimension
+        `authored_constraints` / `imported_constraints` tuples, and
+        `template_refs` only.
+        """
         ...
 
 
@@ -206,8 +216,13 @@ class EnvelopeCompiler:
         # metadata via dataclasses.replace and assign to the (still-mutable)
         # config_input.metadata field. Three field updates collapse into
         # ONE atomic replace per Phase 01 simplicity.
-        import dataclasses
-
+        #
+        # Ordering invariant: score_input is called BEFORE algorithm_identifier
+        # and envelope_id are pinned (the new pinned values land in the SAME
+        # dataclasses.replace that consumes authorship). Real Wave 2
+        # AuthorshipScorer impls MUST NOT consume metadata.algorithm_identifier
+        # or metadata.envelope_id from the input — those fields are not yet
+        # canonical at this point in the pipeline.
         authorship = self._authorship_scorer.score_input(config_input)
         new_envelope_id = config_input.metadata.envelope_id or str(uuid.uuid4())
         # uuid-v7 isn't in stdlib pre-3.14; uuid-v4 is the Phase 01

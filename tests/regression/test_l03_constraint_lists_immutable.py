@@ -187,6 +187,9 @@ class TestShardBFollowupTracking:
             m.authorship_score = {"authored_count": 99}  # type: ignore[misc]
         # Inner dict mutation STILL succeeds — Phase 02 closes via
         # MappingProxyType deep-freeze.
+        # SHARD_B_TRIGGER (Phase 02 deep-freeze): when MappingProxyType
+        # lands, this `m.authorship_score["k"] = v` line MUST raise
+        # TypeError instead of succeeding.
         m.authorship_score["authored_count"] = 999
         assert m.authorship_score["authored_count"] == 999
 
