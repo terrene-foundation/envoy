@@ -352,9 +352,13 @@ class EnvoyLedger:
                 ledger cannot be exported — would violate verifier
                 invariant 1).
         """
+        import dataclasses
+        import hashlib
+
         from kailash.trust.audit_store import AuditFilter
 
         from envoy.ledger.export import (
+            _BUNDLE_SCHEMA_VERSION,
             ExportBundle,
             SegmentBoundary,
             TrustAnchorKey,
@@ -384,44 +388,46 @@ class EnvoyLedger:
         )
 
         # Phase 01 trust anchor key set: just the signing key. Phase 02
-        # adds the device_attestation_chain.
+        # adds the device_attestation_chain. Per security review M-2 +
+        # gate review M-3: hash the signing_key_id to produce the spec-
+        # mandated sha256:<hex> shape (avoids double-prefix hazard if the
+        # caller-supplied key_id already has a prefix).
+        key_id_hash = hashlib.sha256(self._signing_key_id.encode("utf-8")).hexdigest()
         anchor = TrustAnchorKey(
-            key_id=f"sha256:{self._signing_key_id}",
+            key_id=f"sha256:{key_id_hash}",
             public_key_hex=self._signing_pubkey,
             key_class="runtime_device",
             valid_from=self._head.signed_at,
             valid_until=None,
         )
 
-        bundle_minus_receipt = {
-            "schema_version": "envoy-ledger-export/1.0",
-            "exported_at": _now_canonical(),
-            "device_id": self._device_id,
-            "tenant_id": self._tenant_id,
-            "segment_boundaries": [segment.to_dict()],
-            "entries": [dict(env) for env in envoy_envelopes],
-            "head_commitment": {
-                "head_sequence": self._head.head_sequence,
-                "head_entry_id": self._head.head_entry_id,
-                "signed_at": self._head.signed_at,
-                "runtime_attestation": {},
-                "signature_hex": self._head.signature_hex,
-            },
-            "trust_anchor_key_set": [anchor.to_dict()],
-        }
-        receipt_hash = compute_receipt_hash(bundle_minus_receipt)
+        # Per gate review M-3 + security review M-2: device_id MUST be
+        # sha256:<hex> per spec L29. The producer's logical device_id is
+        # caller-supplied human-readable; the wire form is its sha256.
+        device_id_hash = hashlib.sha256(self._device_id.encode("utf-8")).hexdigest()
+        wire_device_id = f"sha256:{device_id_hash}"
 
-        return ExportBundle(
-            schema_version=bundle_minus_receipt["schema_version"],
-            exported_at=bundle_minus_receipt["exported_at"],
-            device_id=self._device_id,
+        # SECURITY H-1 fix: build the ExportBundle with a placeholder
+        # receipt_hash, then compute the real receipt_hash from
+        # `bundle.to_dict_minus_receipt()` (the dataclass's own canonical
+        # view), then dataclasses.replace to install the real value.
+        # This eliminates the parallel-dict byte-identity hazard — the
+        # receipt commits to the SAME canonical bytes the verifier
+        # reconstructs from the bundle.
+        placeholder_receipt = "sha256:" + ("0" * 64)
+        interim_bundle = ExportBundle(
+            schema_version=_BUNDLE_SCHEMA_VERSION,
+            exported_at=_now_canonical(),
+            device_id=wire_device_id,
             tenant_id=self._tenant_id,
             segment_boundaries=(segment,),
             entries=tuple(dict(e) for e in envoy_envelopes),
             head_commitment=self._head,
             trust_anchor_key_set=(anchor,),
-            receipt_hash=receipt_hash,
+            receipt_hash=placeholder_receipt,
         )
+        receipt_hash = compute_receipt_hash(interim_bundle.to_dict_minus_receipt())
+        return dataclasses.replace(interim_bundle, receipt_hash=receipt_hash)
 
     async def verify_chain(self) -> VerificationReport:
         """Walk every entry in the audit store and verify parent_hash chain

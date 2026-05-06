@@ -192,15 +192,26 @@ class ExportBundle:
     Frozen + slots so an export captured at time T cannot be mutated
     before signing / shipping.
 
+    **Mutability narrow contract** (per security review M-1): the
+    `entries` tuple is itself immutable, but each contained `dict[str, Any]`
+    is mutable. Phase 01 narrow scope: callers MUST NOT retain references
+    to `entries[i]` after `ExportBundle` construction; the producer
+    constructs once and ships; `to_dict_minus_receipt()` does a defensive
+    copy on read so verifier-side mutation cannot bleed back. Phase 02
+    hardens via `MappingProxyType` deep-freeze.
+
     Phase 01 narrow scope: `runtime_attestation` is `{}` (Phase 02 wires
     real attestation per `specs/runtime-abstraction.md` § Runtime
-    attestation). `entries` is a list of envelope DICTS (already
+    attestation). `entries` is a tuple of envelope dicts (already
     canonicalized via EntryEnvelope.to_dict()) so the bundle's canonical
     bytes are stable.
 
-    `receipt_hash` is computed at construction via `compute_receipt_hash`
-    over `to_dict_minus_receipt`; mutation post-construction would
-    invalidate the receipt.
+    `receipt_hash` is computed by the producer factory
+    (`EnvoyLedger.export()`) FROM the `ExportBundle.to_dict_minus_receipt()`
+    of an interim bundle (with placeholder receipt_hash), then a final
+    `dataclasses.replace(...)` swaps the placeholder for the real value.
+    This eliminates the parallel-dict byte-identity hazard per security
+    review H-1 — the receipt hashes the dataclass's own canonical view.
     """
 
     schema_version: str
@@ -214,13 +225,29 @@ class ExportBundle:
     receipt_hash: str
 
     def __post_init__(self) -> None:
+        # Schema + non-empty shape checks
         if self.schema_version != _BUNDLE_SCHEMA_VERSION:
             raise ValueError(
                 f"schema_version pinned to {_BUNDLE_SCHEMA_VERSION!r} "
                 f"(got {self.schema_version!r})"
             )
-        if not self.device_id:
-            raise ValueError("device_id must be non-empty")
+        # device_id MUST match the spec L29 sha256:<hex> shape (gate review M-3 +
+        # security review M-2). Producer at EnvoyLedger.export() hashes the
+        # logical device_id to produce this value.
+        if not self.device_id.startswith("sha256:"):
+            raise ValueError(
+                f"device_id MUST be 'sha256:<hex>' per specs/independent-verifier.md "
+                f"L29 (got {self.device_id!r})"
+            )
+        # exported_at MUST match the canonical 27-char ISO 8601 UTC shape per
+        # #731 byte pinning (gate review M-2).
+        from envoy.ledger.canonical import is_canonical_timestamp
+
+        if not is_canonical_timestamp(self.exported_at):
+            raise ValueError(
+                f"exported_at MUST match Phase 01 ISO 8601 microsecond shape "
+                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.exported_at!r})"
+            )
         if not self.entries:
             raise ValueError("entries must be non-empty (full export)")
         if not self.segment_boundaries:
@@ -229,6 +256,45 @@ class ExportBundle:
             raise ValueError("trust_anchor_key_set must be non-empty")
         if not self.receipt_hash.startswith("sha256:"):
             raise ValueError(f"receipt_hash must be 'sha256:<hex>' (got {self.receipt_hash!r})")
+        # Verifier invariant 1 — entries ascending by sequence (gate review M-2)
+        sequences = [e["sequence"] for e in self.entries]
+        if sequences != sorted(sequences) or len(set(sequences)) != len(sequences):
+            raise ValueError(
+                "entries MUST be ordered ascending by sequence with all "
+                f"sequences distinct (got {sequences})"
+            )
+        # Verifier invariant 2 — Phase 01 full-export narrow scope: first
+        # entry's sequence MUST equal segment_boundaries[0].from_sequence + 1
+        # (segment from_sequence is the BEFORE-Genesis sentinel; first appended
+        # entry is sequence + 1). The Genesis-type assertion (entries[0].type
+        # == "GenesisRecord") defers to Wave 3 when Boundary Conversation
+        # produces real Genesis records — currently Phase 01 entries are
+        # whatever-the-first-append-was. (Gate review H-1.)
+        first_seg = self.segment_boundaries[0]
+        if self.entries[0]["sequence"] != first_seg.from_sequence + 1:
+            raise ValueError(
+                f"first entry's sequence ({self.entries[0]['sequence']}) MUST "
+                f"equal segment_boundaries[0].from_sequence + 1 "
+                f"({first_seg.from_sequence + 1}) per verifier invariant 2"
+            )
+        # Verifier invariant 6 — head_commitment matches last entry (gate
+        # review M-2 — covered by tests but added to __post_init__ as
+        # belt-and-suspenders defense for direct-construction callers).
+        last = self.entries[-1]
+        if self.head_commitment.head_sequence != last["sequence"]:
+            raise ValueError(
+                f"head_commitment.head_sequence ({self.head_commitment.head_sequence}) "
+                f"MUST equal entries[-1].sequence ({last['sequence']})"
+            )
+        if self.head_commitment.head_entry_id != last["entry_id"]:
+            raise ValueError("head_commitment.head_entry_id MUST equal entries[-1].entry_id")
+        # Verifier invariant 9 — segment window covers head_sequence
+        if first_seg.to_sequence != self.head_commitment.head_sequence:
+            raise ValueError(
+                f"segment_boundaries[0].to_sequence ({first_seg.to_sequence}) "
+                f"MUST equal head_commitment.head_sequence "
+                f"({self.head_commitment.head_sequence}) for Phase 01 single-segment"
+            )
 
     def to_dict_minus_receipt(self) -> dict[str, Any]:
         """Canonical dict EXCLUDING receipt_hash. Used for receipt_hash

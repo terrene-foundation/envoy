@@ -207,6 +207,131 @@ class TestExportRoundTrip:
             await ledger.export()
 
 
+class TestVerifierInvariant2GenesisOrStartSequence:
+    """Gate review H-1: spec L81 mandates either Genesis-typed entries[0]
+    OR start_after_sequence > 0 with explicit declaration. Phase 01
+    narrow scope (Genesis not yet wired by Boundary Conversation) enforces
+    the cheaper structural invariant: entries[0].sequence equals
+    segment_boundaries[0].from_sequence + 1 (full export from start)."""
+
+    async def test_first_entry_sequence_immediately_after_segment_from(
+        self, populated_ledger: EnvoyLedger
+    ) -> None:
+        bundle = await populated_ledger.export()
+        first_seg = bundle.segment_boundaries[0]
+        assert bundle.entries[0]["sequence"] == first_seg.from_sequence + 1
+
+    async def test_post_init_rejects_misaligned_first_entry(
+        self, populated_ledger: EnvoyLedger
+    ) -> None:
+        """Constructing an ExportBundle with entries[0].sequence != from_sequence + 1
+        MUST be rejected at __post_init__."""
+        from envoy.ledger import SegmentBoundary
+
+        bundle = await populated_ledger.export()
+        # Use a segment whose from_sequence is shifted but valid — the
+        # entries are at sequences 1, 2, 3; from_sequence=2 means
+        # entries[0].sequence (1) != from_sequence + 1 (3) → invariant 2
+        # rejection. Note: the segment-window/head match check (inv 9)
+        # fires AFTER inv 2 in __post_init__ order, so we use a
+        # from_sequence that ALSO matches head segment-window (== to
+        # avoid that earlier check firing).
+        bad_segment = SegmentBoundary.from_trust_lineage_3_key(
+            from_sequence=2,
+            to_sequence=bundle.head_commitment.head_sequence,
+            trust_lineage_form=VALID_ALGO_ID,
+        )
+        with pytest.raises(ValueError, match="verifier invariant 2"):
+            ExportBundle(
+                schema_version=bundle.schema_version,
+                exported_at=bundle.exported_at,
+                device_id=bundle.device_id,
+                tenant_id=bundle.tenant_id,
+                segment_boundaries=(bad_segment,),
+                entries=bundle.entries,
+                head_commitment=bundle.head_commitment,
+                trust_anchor_key_set=bundle.trust_anchor_key_set,
+                receipt_hash=bundle.receipt_hash,
+            )
+
+
+class TestBundlePostInitValidation:
+    """Gate review M-2 — direct ExportBundle(...) construction (bypassing
+    EnvoyLedger.export()) MUST be rejected for spec-mandated shape gaps."""
+
+    async def test_non_canonical_device_id_rejected(self, populated_ledger: EnvoyLedger) -> None:
+        bundle = await populated_ledger.export()
+        with pytest.raises(ValueError, match="device_id MUST be"):
+            ExportBundle(
+                schema_version=bundle.schema_version,
+                exported_at=bundle.exported_at,
+                device_id="device-test-no-prefix",  # MISSING sha256: prefix
+                tenant_id=bundle.tenant_id,
+                segment_boundaries=bundle.segment_boundaries,
+                entries=bundle.entries,
+                head_commitment=bundle.head_commitment,
+                trust_anchor_key_set=bundle.trust_anchor_key_set,
+                receipt_hash=bundle.receipt_hash,
+            )
+
+    async def test_non_canonical_exported_at_rejected(self, populated_ledger: EnvoyLedger) -> None:
+        bundle = await populated_ledger.export()
+        with pytest.raises(ValueError, match="ISO 8601 microsecond"):
+            ExportBundle(
+                schema_version=bundle.schema_version,
+                exported_at="2026-05-06T14:23:45Z",  # missing microseconds
+                device_id=bundle.device_id,
+                tenant_id=bundle.tenant_id,
+                segment_boundaries=bundle.segment_boundaries,
+                entries=bundle.entries,
+                head_commitment=bundle.head_commitment,
+                trust_anchor_key_set=bundle.trust_anchor_key_set,
+                receipt_hash=bundle.receipt_hash,
+            )
+
+    async def test_non_ascending_entries_rejected(self, populated_ledger: EnvoyLedger) -> None:
+        bundle = await populated_ledger.export()
+        # Reverse the entries to break the ascending order.
+        bad = tuple(reversed(bundle.entries))
+        with pytest.raises(ValueError, match="ascending by sequence"):
+            ExportBundle(
+                schema_version=bundle.schema_version,
+                exported_at=bundle.exported_at,
+                device_id=bundle.device_id,
+                tenant_id=bundle.tenant_id,
+                segment_boundaries=bundle.segment_boundaries,
+                entries=bad,
+                head_commitment=bundle.head_commitment,
+                trust_anchor_key_set=bundle.trust_anchor_key_set,
+                receipt_hash=bundle.receipt_hash,
+            )
+
+    async def test_segment_window_mismatched_to_head_rejected(
+        self, populated_ledger: EnvoyLedger
+    ) -> None:
+        bundle = await populated_ledger.export()
+        # Mint a segment whose to_sequence differs from head_sequence.
+        from envoy.ledger import SegmentBoundary
+
+        bad_segment = SegmentBoundary.from_trust_lineage_3_key(
+            from_sequence=0,
+            to_sequence=99,  # WRONG — head is at 3
+            trust_lineage_form=VALID_ALGO_ID,
+        )
+        with pytest.raises(ValueError, match="segment_boundaries"):
+            ExportBundle(
+                schema_version=bundle.schema_version,
+                exported_at=bundle.exported_at,
+                device_id=bundle.device_id,
+                tenant_id=bundle.tenant_id,
+                segment_boundaries=(bad_segment,),
+                entries=bundle.entries,
+                head_commitment=bundle.head_commitment,
+                trust_anchor_key_set=bundle.trust_anchor_key_set,
+                receipt_hash=bundle.receipt_hash,
+            )
+
+
 class TestVerifierInvariant1AscendingSequence:
     async def test_entries_ascending_by_sequence(self, populated_ledger: EnvoyLedger) -> None:
         bundle = await populated_ledger.export()
@@ -274,6 +399,49 @@ class TestVerifierInvariant8ReceiptHash:
         d["entries"][0]["content"] = {"tampered": "yes"}
         new_hash = compute_receipt_hash(d)
         assert new_hash != bundle.receipt_hash
+
+    @pytest.mark.parametrize(
+        "tamper_path,tamper_value",
+        [
+            (("head_commitment", "signature_hex"), "deadbeef" * 16),
+            (("trust_anchor_key_set", 0, "public_key_hex"), "x" * 64),
+            (("segment_boundaries", 0, "algorithm_identifier", "sig"), "ed448"),
+            (("tenant_id",), "evil-tenant"),
+            (("device_id",), "sha256:" + "f" * 64),
+        ],
+    )
+    async def test_receipt_hash_detects_diverse_tampers(
+        self,
+        populated_ledger: EnvoyLedger,
+        tamper_path: tuple,
+        tamper_value: Any,
+    ) -> None:
+        """Per security review L-1 — exercise tamper classes across the
+        bundle's distinct surfaces, not just entries[0].content. Each
+        mutation MUST produce a different receipt_hash."""
+        bundle = await populated_ledger.export()
+        d = bundle.to_dict_minus_receipt()
+        cursor = d
+        for key in tamper_path[:-1]:
+            cursor = cursor[key]
+        cursor[tamper_path[-1]] = tamper_value
+        new_hash = compute_receipt_hash(d)
+        assert (
+            new_hash != bundle.receipt_hash
+        ), f"tamper at {tamper_path} did NOT propagate into receipt_hash"
+
+    async def test_receipt_hash_round_trips_dataclass_canonical_view(
+        self, populated_ledger: EnvoyLedger
+    ) -> None:
+        """SECURITY H-1 regression: the receipt_hash MUST be derived from
+        the ExportBundle's own `to_dict_minus_receipt()` (the dataclass's
+        canonical view), NOT from a parallel dict shape that could drift.
+        The producer factory uses `dataclasses.replace` post-construction
+        so the receipt commits to the SAME canonical bytes the verifier
+        reconstructs. This test locks the invariant."""
+        bundle = await populated_ledger.export()
+        recomputed = compute_receipt_hash(bundle.to_dict_minus_receipt())
+        assert bundle.receipt_hash == recomputed
 
 
 class TestVerifierInvariant9SegmentBoundaryDispatch:
