@@ -2,7 +2,7 @@
 
 ## Purpose
 
-BET-12 structural enforcement primitive. Semantic de-dup + minimum-impact + posture-ratchet gate.
+BET-12 structural enforcement primitive. Counts authored vs imported constraints across the 5-dim envelope; the count is the substrate the posture-ratchet gate consumes (`specs/posture-ladder.md` § State-transition contract).
 
 ## Provenance
 
@@ -12,12 +12,7 @@ BET-12 structural enforcement primitive. Semantic de-dup + minimum-impact + post
 
 ## Score computation
 
-```
-AuthorshipScore = count of envelope.*.authored_constraints where:
-  - authored: true
-  - novelty_check_passed: true (Jaccard < 0.85 on AST canonical form + adversarial-wording classifier < 0.8)
-  - minimum_impact_check_passed: true (dry-run corpus + user's 30-day Ledger history)
-```
+Stored counters re-derived from the 5-dim envelope per § Re-derivation from the Ledger. The novelty + minimum-impact gates are pre-set on stored constraints by the input pipeline; T-02-30 implements the count-only recompute (the gates themselves are out of scope — see § Out of scope).
 
 ## Stored counters (envelope.metadata.authorship_score schema)
 
@@ -52,23 +47,7 @@ def rederive_authorship_counters(envelope, ledger_slice):
     return AuthorshipCounters(authored_count=authored, imported_count=imported, template_provenance=template_provenance)
 ```
 
-## Novelty de-duplication algorithm
-
-1. Canonicalize proposed constraint AST (tree-normalize: sort sibling terms lexicographically, constant-fold).
-2. Tree-Jaccard similarity against each existing constraint's canonicalized AST. Threshold 0.85.
-3. `envoy-registry:novelty.adversarial-wording:v1` classifier check (catches LLM-assisted gaming). Threshold 0.8.
-4. Distinct iff both checks pass.
-5. Quarterly retrain of adversarial-wording classifier on user-submitted attempts.
-
-## Minimum-impact check algorithm
-
-1. Dry-run corpus: Foundation-curated `standard_action_corpus_v1` (10k actions across 5 dimensions) + user's 30-day Ledger history.
-2. For each action: evaluate under current envelope vs current + proposed. Distinct decision on ≥1 action → proposed has behavioral impact.
-3. No decision change → `MinimumImpactCheckFailedError`; UX surfaces "here's what would narrow me."
-
-## Cold-start
-
-If user history <30 days, synthetic corpus only. Implicit "trust user intent" with warning.
+T-02-30 ships the count-only recompute at `envoy/authorship/score.py::recompute_authorship_counters`. The function gates `authored` on `c.authored` and forward-compat on `getattr(c, "novelty_check_passed", True)` / `getattr(c, "minimum_impact_check_passed", True)` so a Phase-04 dataclass extension automatically gates on the new flags. The in-memory `template_provenance` is a tuple-of-tuples (L-03 immutability); the wire shape via `AuthorshipCounters.to_dict()` is the spec-canonical list-of-dicts.
 
 ## Posture-ratchet gate
 
@@ -83,15 +62,9 @@ If user history <30 days, synthetic corpus only. Implicit "trust user intent" wi
 
 ## Error taxonomy
 
-| Error                                 | Trigger                                                                                      | User action                                                                                                       | Retry                    |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `NoveltyCheckFailedError`             | Tree-Jaccard ≥ 0.85 OR adversarial-wording classifier ≥ 0.8 against existing constraints     | Re-author with substantive AST difference; or accept template attribution and skip authorship credit              | Manual after re-author   |
-| `MinimumImpactCheckFailedError`       | Proposed constraint produces no decision change on dry-run corpus + 30-day Ledger            | UX surfaces "here's what would narrow me"; user broadens scope or removes redundancy                              | Manual after re-author   |
-| `AuthorshipScoreDivergenceError`      | `metadata.authorship_score.authored_count` signed value diverges from runtime re-derivation  | Halt posture ratchet; investigate Ledger replay; surface to user as audit alert                                   | Never (T-023 defense)    |
-| `ClassifierRegistryMissError`         | `envoy-registry:novelty.adversarial-wording:v1` not resolvable at check time                 | Refuse novelty check fail-closed per envelope-model.md unavailability_policy; user re-prompts after registry sync | Auto after registry sync |
-| `TemplateProvenanceHashMismatchError` | `template_hash` in `template_provenance` no longer matches `envoy-registry:*` template entry | Surface to user; user re-imports template explicitly OR pins to old version                                       | Manual                   |
-| `EnterprisePostureCeilingError`       | Enterprise-mode user attempts AUTONOMOUS posture on shared template                          | Refuse posture raise; per-employee envelope required (specs/enterprise-deployment.md)                             | Never (T-024 defense)    |
-| `ColdStartInsufficientHistoryError`   | User Ledger history <30d and synthetic corpus refuses minimum-impact check                   | UX surfaces cold-start advisory; allow with warning per §Cold-start                                               | Manual                   |
+| Error                            | Trigger                                                                                     | User action                                                                     | Retry                 |
+| -------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------- |
+| `AuthorshipScoreDivergenceError` | `metadata.authorship_score.authored_count` signed value diverges from runtime re-derivation | Halt posture ratchet; investigate Ledger replay; surface to user as audit alert | Never (T-023 defense) |
 
 ## Cross-references
 
@@ -100,24 +73,19 @@ If user history <30 days, synthetic corpus only. Implicit "trust user intent" wi
 - specs/boundary-conversation.md — authorship nudge at novelty-failed constraint.
 - specs/weekly-posture-review.md — score progression ritual.
 - specs/posture-ladder.md — ratchet target enum (PSEUDO/TOOL/SUPERVISED/DELEGATING/AUTONOMOUS).
-- specs/foundation-ops.md — `envoy-registry:novelty.adversarial-wording:v1` classifier registry + `standard_action_corpus_v1` corpus.
+- specs/foundation-ops.md — Phase-04 classifier registry + standard-action corpus dependencies (out of Phase-01 scope; see § Out of scope below).
 - specs/threat-model.md — T-023, T-024.
 
 ## Test location
 
-- `tests/unit/test_novelty_jaccard_threshold.py` — Jaccard 0.85 boundary cases.
-- `tests/unit/test_adversarial_wording_classifier_threshold.py` — 0.8 boundary on registry-curated samples.
-- `tests/integration/test_minimum_impact_dry_run.py` — `standard_action_corpus_v1` + 30-day Ledger replay (Tier 2, real Ledger).
-- `tests/integration/test_authorship_score_rederivation.py` — sign+recompute round-trip; mismatch → `AuthorshipScoreDivergenceError`.
-- `tests/regression/test_t023_score_inflation.py` — T-023 defense; LLM-assisted authoring caught by adversarial classifier.
-- `tests/regression/test_t024_enterprise_delegation_upward.py` — T-024 enterprise N=5 DELEGATING ceiling on shared templates.
-- `tests/integration/test_template_provenance_hash_binding.py` — template version drift detected at re-derivation.
-- `tests/regression/test_cold_start_synthetic_corpus.py` — <30-day history fall-through.
+- `tests/tier1/test_authorship_score_recompute_pure.py` — count-only recompute determinism, 5-dim canonical iteration order, construction-order invariance, immutability, round-trip dict, cold-start (T-02-30).
 
-## Open questions
+## Out of scope (Phase 01)
 
-1. Jaccard 0.85 + adversarial 0.8 thresholds — empirical calibration via Phase 01 user research.
-2. `standard_action_corpus_v1` curation cadence — Foundation quarterly refresh vs event-driven.
-3. Annual posture decay (-1 level at 12mo) — too aggressive vs too lenient pending Phase 03 telemetry.
-4. Cross-principal authorship credit in Shared Household — does household member's authoring count toward another member's score.
-5. Re-derivation cost on long Ledger histories — caching strategy to keep verify <50ms latency budget.
+These behaviors are documented in this spec's intent but NOT implemented on main as of T-02-30:
+
+- Novelty de-duplication algorithm (Tree-Jaccard + adversarial-wording classifier) — Phase 04 hardening; tracked in `workspaces/phase-01-mvp/todos/` for the Phase 02→04 handoff plan (`11-phase-02-handoff.md`).
+- Minimum-impact dry-run against `standard_action_corpus_v1` — Phase 04; same handoff.
+- Cold-start synthetic corpus — depends on Phase 04 minimum-impact.
+- Annual posture decay (-1 level at 12mo) — Phase 03 telemetry calibration.
+- Cross-principal authorship credit (Shared Household) — Phase 03.
