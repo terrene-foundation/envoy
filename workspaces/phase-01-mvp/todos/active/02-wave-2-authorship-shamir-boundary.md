@@ -8,7 +8,13 @@
 
 ---
 
-## T-02-30 — Build envoy/authorship/score (pure function)
+## T-02-30 — Build envoy/authorship/score (pure function) ✅ CLOSED 2026-05-07 (PR #14)
+
+**Status:** Shipped. `recompute_authorship_counters()` + `AuthorshipCounters` frozen dataclass + `AuthorshipScoreDivergenceError` (commits cd75810b + 9ecbcb2 + merge 024ad8d). Per /autonomize Rule 1 optimal pick: count-only recompute on `c.authored is True` only; spec edit per `spec-accuracy.md` Rule 5 removed Phase-04 algorithm content. Sibling-spec sweep (per `specs-authority.md` Rule 5b) edited `posture-ladder.md` + `envelope-model.md`. 20/20 Tier 1 tests; full suite 403/403 pass.
+
+**Gate-review surfaced findings (all resolved in same PR per autonomous-execution.md Rule 4):** H-01 (`getattr(_, _, True)` silent inflation), H-02 (truthy coercion), M-1 (cross-spec drift — envelope-model.md + posture-ladder.md still cited Phase-04 errors), M-01 (template_hash None/"" collapse), M-02 (from_dict type validation).
+
+**Deferred to T-02-31 PostureGate (next-shard consumer):** L-02 log emission (PostureGate emits authorship.recompute / authorship.divergence at DEBUG / WARN per observability.md Rule 8). Phase-04 novelty + minimum-impact + classifier registry + cold-start corpus stay Phase 04 territory.
 
 **Implements:** `specs/authorship-score.md` § Score recompute
 
@@ -97,9 +103,13 @@
 
 ---
 
-## T-02-35 — Build envoy/shamir/paper + commitments + distribution_checklist
+## T-02-35 — Build envoy/shamir/paper + commitments + distribution_checklist ✅ CLOSED 2026-05-07 (PR #15)
 
-**T-02-34 prerequisite (carried forward from PR #13 review L-2):** the `CommitmentBinder` Protocol contract MUST be re-architected so the coordinator computes `sha256:{hex}` commitments LOCALLY and passes them to the binder for STORAGE-ONLY. The binder MUST NOT derive commitments — that boundary lets a malicious binder substitute commitments for a different secret without detection. Update the Protocol signature in `envoy/shamir/types.py` to: `bind_to_genesis(principal_id: str, commitments: list[str]) -> Awaitable[None]` (commitments computed by coordinator, binder writes them to Genesis Record).
+**Status:** Shipped. `commitments.py` (compute/verify) + `paper.py` (PaperShardCard + PaperShardRenderer) + `distribution_checklist.py` (TrustVaultChecklistPersister) + new `envoy/trust/vault.py` `read_metadata()` / `write_metadata()` API (commits 6ec5fde + b6a5904 + merge f862b29). L-2 Protocol re-architecture landed: `CommitmentBinder.bind_to_genesis(principal_id, commitments) -> Awaitable[None]` — coordinator computes commitments locally; binder is storage-only. 47 new Tier 1 tests; full suite 431/431 pass on shard branch, 451/451 on merged main.
+
+**Gate-review surfaced findings (all resolved in same PR per autonomous-execution.md Rule 4):** H-2 (vault tmpfile bare `open()` bypassed `O_NOFOLLOW` per trust-plane-security MUST Rule 1 — fixed via `os.open(..., O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)` + best-effort orphan-tmp unlink), M-1/M-2 (Unicode confusable + control-char H-06 bypass — three-layer defense added: whitelist regex `^slot-\d+$` + ASCII-only check + substring blacklist; applied at renderer + persister + DistributionChecklist `__post_init__`), M-3 (read_metadata raises documented), L-1 (read_metadata returns deepcopy), reviewer M-1 (DistributionChecklist `__post_init__` validation closes in-memory construction gap).
+
+**H-1 race window (deferred, doc-only fix):** `read_metadata → mutate → write_metadata` cycle has no compare-and-swap; concurrent async tasks can clobber each other's mutations. Phase 02 hardening adds vault-level `update_metadata(callable)` primitive. Phase 01 supported topology: single-process single-task. Documented in `write_metadata` docstring.
 
 **Source:** Shard 15 § 3 steps 2 + 4 + 5.
 
