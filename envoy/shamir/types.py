@@ -90,32 +90,46 @@ class ShamirGenerator(Protocol):
 class CommitmentBinder(Protocol):
     """Step 3 — binds shard public commitments to the user's Genesis Record.
 
-    Production implementation lands in T-02-35 (`envoy/shamir/commitments.py`).
-    Per `specs/shamir-recovery.md` § Shard public commitments + line 41 +
-    `specs/trust-lineage.md` § Schema GenesisRecord line 27, the binder
-    computes `[f"sha256:{sha256(serialize_shard(s)).hexdigest()}"
-    for s in shards]` and writes them to `Genesis.shard_public_commitments`.
+    **L-2 re-architecture (T-02-35):** the binder is STORAGE-ONLY. The
+    coordinator computes commitments LOCALLY via
+    `envoy.shamir.commitments.compute_commitment` (which hashes
+    `kailash.trust.vault.shamir.serialize_shard(shard)`) and passes the
+    pre-computed list to the binder. The prior shape — where the binder
+    computed commitments AND wrote them — let a malicious binder
+    substitute commitments for a different secret without coordinator
+    detection. The current shape closes the substitution path: the binder
+    cannot forge a commitment that survives the coordinator's local
+    recomputation at recover time.
 
-    For T-02-34 testability: Tier 1 fakes record the shards passed and
-    return a placeholder commitment list. Real binding lives in T-02-37.
+    Production implementation: T-02-37 wires a TrustStoreAdapter binder
+    that writes `commitments` to `Genesis.shard_public_commitments` per
+    `specs/trust-lineage.md` § Schema GenesisRecord line 27.
+
+    For Tier 1 testability: fakes record the (principal_id, commitments)
+    pair the coordinator passed; assertions verify the commitments are
+    sha256-prefixed strings (matching the coordinator's local-compute
+    output shape).
     """
 
-    def bind_to_genesis(
-        self, principal_id: str, shards: list[list[str]]
-    ) -> Awaitable[list[str]]: ...
+    def bind_to_genesis(self, principal_id: str, commitments: list[str]) -> Awaitable[None]: ...
 
 
 @runtime_checkable
 class PaperRenderer(Protocol):
     """Step 4 — renders each shard for human transcription.
 
-    Production implementation lands in T-02-35 (`envoy/shamir/paper.py`).
-    Per `specs/shamir-recovery.md` § Card format line 29, NO 'Envoy'
-    label, NO real names; opaque slot labels only (H-06 fix).
+    Production implementation lives in `envoy/shamir/paper.py`
+    (`PaperShardRenderer` — T-02-35). Per `specs/shamir-recovery.md`
+    § Card format line 29: NO 'Envoy' label, NO real names; opaque slot
+    labels only (H-06 fix). The renderer raises `EnvoyLabelOnCardError`
+    if the supplied `slot_label` violates the H-06 constraint.
 
-    For T-02-34 testability: Tier 1 fakes record `(shard, slot_label,
-    sequence)` tuples and return placeholder card objects. The concrete
-    `PaperShardCard` shape lands in T-02-35.
+    Return type is annotated as `Any` to keep the Protocol importable
+    without forcing `envoy/shamir/paper.py` to load at module-import
+    time (avoids the circular dependency on `from __future__ import
+    annotations` evaluation order). The concrete `PaperShardCard`
+    dataclass lives in `envoy/shamir/paper.py`; consumers that need the
+    typed return import it directly from there.
     """
 
     def render(self, shard: list[str], slot_label: str, sequence: tuple[int, int]) -> Any: ...
@@ -143,6 +157,9 @@ class ChecklistPersister(Protocol):
 # ---------------------------------------------------------------------------
 
 
+_OPAQUE_SLOT_LABEL_RE = __import__("re").compile(r"^slot-\d+$")
+
+
 @dataclass(frozen=True, slots=True)
 class DistributionChecklist:
     """Persistent opaque-slot-label checklist for the ritual.
@@ -153,6 +170,13 @@ class DistributionChecklist:
 
     Phase 04 hidden envelope MAY add real holder names if the user opts
     in; Phase 01 has the field shape but does NOT populate it.
+
+    `__post_init__` enforces the H-06 whitelist (`^slot-\\d+$`) at
+    construction time per security review M-1 on PR #15: in-memory
+    construction was previously the only un-gated write path
+    (renderer + persister both gated, but a caller could still
+    construct `DistributionChecklist(slot_labels=("Envoy-1",))` directly
+    in memory). The whitelist closes that gap as defense-in-depth.
     """
 
     ritual_id: str
@@ -161,6 +185,29 @@ class DistributionChecklist:
     slot_labels: tuple[str, ...]
     created_at: datetime
     rotation_history: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # H-06 enforcement at construction time per `specs/shamir-recovery.md`
+        # § Card format line 29 + security review M-1 on PR #15. Defense-
+        # in-depth alongside the renderer + persister gates.
+        for i, label in enumerate(self.slot_labels):
+            if not isinstance(label, str) or not label:
+                raise ValueError(
+                    f"slot_labels[{i}] must be a non-empty string; "
+                    f"got {label!r}"
+                )
+            if not label.isascii():
+                raise ValueError(
+                    f"slot_labels[{i}] {label!r} contains non-ASCII "
+                    f"characters — H-06 defense rejects Unicode "
+                    f"confusables."
+                )
+            if not _OPAQUE_SLOT_LABEL_RE.fullmatch(label):
+                raise ValueError(
+                    f"slot_labels[{i}] {label!r} does not match opaque "
+                    f"pattern `^slot-\\d+$` — H-06 enforcement per "
+                    f"specs/shamir-recovery.md line 29."
+                )
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable form per `rules/eatp.md` SDK conventions."""

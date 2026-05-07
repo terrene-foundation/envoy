@@ -116,12 +116,25 @@ class _ShamirGeneratorFake:
 
 
 class _CommitmentBinderFake:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, list[list[str]]]] = []
+    """L-2 re-architecture (T-02-35): binder is STORAGE-ONLY.
 
-    async def bind_to_genesis(self, principal_id: str, shards: list[list[str]]) -> list[str]:
-        self.calls.append((principal_id, [list(s) for s in shards]))
-        return [f"sha256:fake-{i:02x}" for i in range(len(shards))]
+    Pre-T-02-35 shape: `bind_to_genesis(principal_id, shards) -> list[str]`
+    — the binder computed commitments AND wrote them. A malicious binder
+    could substitute commitments for a different secret without coordinator
+    detection.
+
+    Current shape: `bind_to_genesis(principal_id, commitments) -> None`.
+    The coordinator computes commitments locally (sha256 over
+    `serialize_shard(shard)`) and passes the pre-computed list. The binder
+    cannot forge a commitment that survives the coordinator's local
+    recomputation at recovery time.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def bind_to_genesis(self, principal_id: str, commitments: list[str]) -> None:
+        self.calls.append((principal_id, list(commitments)))
 
 
 class _PaperRendererFake:
@@ -209,6 +222,48 @@ class TestRitualStepSequence:
         assert sequences == [(i, DEFAULT_TOTAL_SHARDS) for i in range(1, DEFAULT_TOTAL_SHARDS + 1)]
 
     @pytest.mark.asyncio
+    async def test_coordinator_passes_precomputed_commitments_to_binder(self) -> None:
+        """L-2 re-architecture (T-02-35): coordinator computes commitments
+        LOCALLY (sha256 over `serialize_shard(shard)`) and passes the
+        pre-computed list to the binder. Binder is STORAGE-ONLY.
+
+        This test asserts the binder receives a `list[str]` whose entries
+        are sha256-prefixed digests — NOT the raw shards. A future
+        refactor that drops the local-compute step and reverts to
+        passing raw shards will fail this test loudly.
+        """
+        from envoy.shamir.commitments import compute_commitment
+
+        coord, _, gen, binder, _, _ = _make_coordinator()
+        await coord.run_first_time_ritual()
+
+        # Binder received exactly one call with (principal_id, commitments).
+        assert len(binder.calls) == 1
+        principal_id, commitments = binder.calls[0]
+        # Every commitment is a sha256-prefixed hex string (66 chars total
+        # = "sha256:" prefix + 64 hex chars).
+        assert isinstance(commitments, list)
+        assert len(commitments) == DEFAULT_TOTAL_SHARDS
+        for c in commitments:
+            assert isinstance(c, str)
+            assert c.startswith("sha256:")
+            assert len(c) == len("sha256:") + 64
+            assert re.fullmatch(r"sha256:[0-9a-f]{64}", c)
+
+        # The commitments match what the coordinator should have computed
+        # locally for the generator's shards. The fake generator records
+        # `secret` but not `shards` directly; the deterministic-sentinel
+        # construction means we can recompute the exact shard list:
+        # shard `i` of `n` = ["secret-{secret[0]:02x}", "shard-{i+1}-of-{n}"].
+        secret_byte = gen.calls[0]["secret"][0]
+        rebuilt_shards = [
+            [f"secret-{secret_byte:02x}", f"shard-{i + 1}-of-{DEFAULT_TOTAL_SHARDS}"]
+            for i in range(DEFAULT_TOTAL_SHARDS)
+        ]
+        rebuilt_commitments = [compute_commitment(s) for s in rebuilt_shards]
+        assert commitments == rebuilt_commitments
+
+    @pytest.mark.asyncio
     async def test_persisted_checklist_carries_ritual_metadata(self) -> None:
         coord, _, _, _, _, persister = _make_coordinator()
         result = await coord.run_first_time_ritual()
@@ -240,12 +295,15 @@ class TestRitualStepSequence:
         observed_at_step_3: list[bytes] = []
 
         class _ProbeBinder:
+            """L-2 re-architecture: binder receives pre-computed commitments
+            from the coordinator (storage-only). The probe asserts the
+            generator's secret snapshot was already captured at step 2 time.
+            """
+
             def __init__(self, gen: _ShamirGeneratorFake) -> None:
                 self.gen = gen
 
-            async def bind_to_genesis(
-                self, principal_id: str, shards: list[list[str]]
-            ) -> list[str]:
+            async def bind_to_genesis(self, principal_id: str, commitments: list[str]) -> None:
                 # Snapshot whatever the generator has at this point.
                 # Step 6 (zeroize) overwrites the local bytearray
                 # before the generator's snapshot is changed; the
@@ -256,7 +314,6 @@ class TestRitualStepSequence:
                 # snapshot ALREADY captured the secret at step 2 time.
                 assert self.gen.observed_secret == secret
                 observed_at_step_3.append(self.gen.observed_secret or b"")
-                return ["sha256:fake"]
 
         mks = _MasterKeyFake(secret=secret)
         gen = _ShamirGeneratorFake()
@@ -347,9 +404,7 @@ class TestMasterKeyZeroization:
         """
 
         class _FailingBinder:
-            async def bind_to_genesis(
-                self, principal_id: str, shards: list[list[str]]
-            ) -> list[str]:
+            async def bind_to_genesis(self, principal_id: str, commitments: list[str]) -> None:
                 raise RuntimeError("simulated commitment-binding failure")
 
         secret = b"\xcd" * 32

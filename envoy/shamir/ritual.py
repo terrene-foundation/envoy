@@ -42,6 +42,7 @@ import logging
 import secrets
 from datetime import datetime, timezone
 
+from envoy.shamir.commitments import compute_commitment
 from envoy.shamir.errors import (
     MasterKeyZeroizationError,
     RitualPreconditionError,
@@ -224,7 +225,15 @@ class ShamirRitualCoordinator:
         )
 
         # Step 3: bind shard public commitments to Genesis Record.
-        commitments = await self._commitment_binder.bind_to_genesis(self._principal_id, shards)
+        # **L-2 re-architecture (T-02-35):** the coordinator computes
+        # commitments LOCALLY (sha256 over `serialize_shard(shard)`) and
+        # passes the pre-computed list to the binder. The binder is now
+        # STORAGE-ONLY — it cannot substitute commitments for a different
+        # secret because the coordinator owns the computation. See
+        # `envoy/shamir/commitments.py` + `envoy/shamir/types.py`
+        # CommitmentBinder docstring for the full failure-mode analysis.
+        commitments = [compute_commitment(shard) for shard in shards]
+        await self._commitment_binder.bind_to_genesis(self._principal_id, commitments)
 
         # Step 4: render each shard via paper renderer (H-06: opaque slot label).
         paper_cards = tuple(

@@ -61,8 +61,43 @@ class MasterKeyZeroizationError(ShamirRitualError):
     """
 
 
+class EnvoyLabelOnCardError(ShamirRitualError):
+    """H-06 violation — the supplied slot label contains 'Envoy' or a real name.
+
+    Per `specs/shamir-recovery.md` § Card format (line 29):
+    > NO "Envoy" label; NO name. Distribution checklist persists only opaque
+    > slot labels in Trust Vault; real names optional + in hidden envelope
+    > (Phase 04) only (H-06 fix).
+
+    The error fires from the paper renderer (`envoy/shamir/paper.py`) when
+    the supplied `slot_label` contains a forbidden token. T-02-35 also reuses
+    this error class for shape-validation failures inside the renderer
+    (malformed shard / sequence) so callers handle a single typed error
+    surface for "card cannot be printed" scenarios.
+
+    Phase 01 enforces the H-06 fix structurally — a malicious or careless
+    caller cannot bypass the check by constructing a `PaperShardCard`
+    directly because the dataclass is frozen and the renderer is the only
+    public construction path mandated by the `PaperRenderer` Protocol.
+    """
+
+
+class ChecklistPersisterError(ShamirRitualError):
+    """The DistributionChecklist could not be persisted to the Trust Vault.
+
+    Wraps lower-level `VaultLockedError` / `VaultUnlockFailedError` /
+    `OSError` (atomic-write failure) into a single typed error the
+    coordinator surfaces to the boundary-conversation channel.
+
+    Per `rules/communication.md`, the user_message is plain-language: "We
+    couldn't save the backup checklist. Re-unlock the vault and try again."
+    """
+
+
 __all__ = [
     "ShamirRitualError",
     "RitualPreconditionError",
     "MasterKeyZeroizationError",
+    "EnvoyLabelOnCardError",
+    "ChecklistPersisterError",
 ]

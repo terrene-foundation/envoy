@@ -455,3 +455,76 @@ class TestArgon2ParameterStrictMatch:
         v2 = TrustVault(vault_path, idle_ttl_seconds=10)
         with pytest.raises(Argon2ParameterMismatchError):
             await v2.unlock(PASSPHRASE)
+
+
+# ---------------------------------------------------------------------------
+# Metadata slot (T-02-35) — read_metadata / write_metadata round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataSlot:
+    """T-02-35 added a JSON-envelope metadata slot inside the vault payload.
+    Used by `TrustVaultChecklistPersister` to persist DistributionChecklists
+    keyed by ritual_id. Phase 01 contract: arbitrary JSON-serializable
+    metadata round-trips across vault lock/unlock cycles.
+    """
+
+    async def test_read_metadata_on_fresh_vault_returns_empty_dict(self, vault_path: Path) -> None:
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(b"", PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        assert (await v.read_metadata()) == {}
+        await v.lock()
+
+    async def test_read_metadata_legacy_payload_returns_empty_dict(self, vault_path: Path) -> None:
+        """A vault created before the metadata API landed has an opaque-
+        bytes payload. `read_metadata` MUST gracefully return an empty
+        dict rather than raising on JSON-decode failure.
+        """
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(PAYLOAD, PASSPHRASE)  # raw bytes, not JSON
+        await v.unlock(PASSPHRASE)
+        assert (await v.read_metadata()) == {}
+        await v.lock()
+
+    async def test_write_then_read_metadata_round_trip(self, vault_path: Path) -> None:
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(b"", PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        metadata = {
+            "shamir_distribution_checklists": {
+                "ritual-a": {"slot_labels": ["slot-1", "slot-2", "slot-3"]},
+            },
+            "other_phase02_slot": {"key": "value"},
+        }
+        await v.write_metadata(metadata)
+        loaded = await v.read_metadata()
+        assert loaded == metadata
+        await v.lock()
+
+    async def test_metadata_persists_across_lock_unlock(self, vault_path: Path) -> None:
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(b"", PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        await v.write_metadata({"foo": "bar", "nested": [1, 2, 3]})
+        await v.lock()
+        # Fresh adapter — proves the persistence is on disk, not in
+        # the in-memory payload of the original instance.
+        v2 = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v2.unlock(PASSPHRASE)
+        assert (await v2.read_metadata()) == {"foo": "bar", "nested": [1, 2, 3]}
+        await v2.lock()
+
+    async def test_write_metadata_rejects_non_dict(self, vault_path: Path) -> None:
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(b"", PASSPHRASE)
+        await v.unlock(PASSPHRASE)
+        with pytest.raises(TypeError, match="metadata"):
+            await v.write_metadata("not-a-dict")  # type: ignore[arg-type]
+        await v.lock()
+
+    async def test_write_metadata_requires_unlocked(self, vault_path: Path) -> None:
+        v = TrustVault(vault_path, idle_ttl_seconds=10)
+        await v.create(b"", PASSPHRASE)
+        with pytest.raises(VaultLockedError):
+            await v.write_metadata({"foo": "bar"})
