@@ -43,6 +43,18 @@ Per `rules/trust-plane-security.md` MUST NOT Rule 3 (no private key material
 in memory) — the master key is held only between `unlock()` and `lock()`,
 and `lock()` zeros the key bytes via best-effort `bytearray` mutation
 before releasing the reference.
+
+**Metadata slot (T-02-35).** Phase 01 carves a minimal metadata slot inside
+the existing payload via a self-discriminating JSON envelope. `read_metadata()`
+returns `{}` if the payload is not a JSON envelope (legacy opaque-bytes
+payloads remain compatible); `write_metadata(dict)` serializes
+`{"_etmd_v1": <dict>}` and routes through the standard
+`write(plaintext)` path. The envelope discriminator key is "_etmd_v1"
+(Envoy Trust MetaData v1) — chosen to avoid the literal substring "envoy"
+in the on-disk plaintext so H-06 (no "Envoy" label in persisted state) is
+honored at envelope-key level too. Used by T-02-35
+`TrustVaultChecklistPersister` to persist
+`metadata["shamir_distribution_checklists"][ritual_id]` per shard 15 § 3.5.
 """
 
 from __future__ import annotations
@@ -55,6 +67,7 @@ import struct
 import time
 import warnings
 from pathlib import Path
+from typing import Any
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -349,6 +362,94 @@ class TrustVault:
             payload=plaintext,
         )
         self._touch_activity()
+
+    # ------------------------------------------------------------------
+    # Metadata slot (T-02-35) — JSON envelope inside vault payload
+    # ------------------------------------------------------------------
+    #
+    # Phase 01 carves a minimal metadata slot inside the existing vault
+    # payload via a self-discriminating JSON envelope:
+    #
+    #     {"_etmd_v1": {<top-level metadata dict>}}
+    #
+    # The envelope discriminator key (`_etmd_v1` = "Envoy Trust MetaData
+    # version 1") deliberately avoids the literal substring "envoy" so
+    # the unlocked payload bytes carry zero leakage of the product
+    # identity — H-06 (per `specs/shamir-recovery.md` line 29) requires
+    # that persisted state contain only opaque labels, and while H-06
+    # primarily targets holder-facing labels on cards / checklists, the
+    # discriminator-key choice extends the H-06 invariant to internal
+    # envelope structure as a defense-in-depth measure (a heap-dump
+    # forensics attacker scanning for "envoy" finds nothing).
+    #
+    # `read_metadata()` returns the inner dict; `write_metadata(d)`
+    # serializes the envelope and routes through the standard
+    # `write(plaintext)` path. Existing callers using `read()` /
+    # `write(bytes)` directly are unaffected — the envelope shape is
+    # purely a convention layered on top of the bytes API. Vaults that
+    # have NEVER had `write_metadata()` called return `{}` from
+    # `read_metadata()` (the fallback covers legacy / non-JSON payloads).
+    #
+    # Phase 02 may promote this to a structured payload region with its
+    # own crypto domain key per `specs/trust-vault.md` § File format
+    # ("Shamir commitments / ritual state" region). Phase 01's contract
+    # is intentionally minimal: persist arbitrary JSON-serializable
+    # metadata across lock/unlock cycles for collaborators that need a
+    # safe-on-disk slot (T-02-35 DistributionChecklist persister).
+
+    _METADATA_ENVELOPE_KEY = "_etmd_v1"
+
+    async def read_metadata(self) -> dict[str, Any]:
+        """Return the metadata dict stored in the vault's payload.
+
+        Returns an empty dict if the vault has never had `write_metadata()`
+        called, OR if the payload bytes are not a JSON envelope of the
+        expected shape (legacy opaque-bytes payloads). The method NEVER
+        raises on shape mismatch — the absence of the envelope is the same
+        as "no metadata persisted".
+
+        Use cases (Phase 01): T-02-35 DistributionChecklist persister
+        stores `{ritual_id -> checklist_dict}` under
+        `metadata["shamir_distribution_checklists"]`.
+        """
+        import json as _json
+
+        payload = await self.read()
+        if not payload:
+            return {}
+        try:
+            envelope = _json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            # Legacy opaque-bytes payload — no metadata envelope present.
+            return {}
+        if not isinstance(envelope, dict):
+            return {}
+        inner = envelope.get(self._METADATA_ENVELOPE_KEY)
+        if not isinstance(inner, dict):
+            return {}
+        return inner
+
+    async def write_metadata(self, metadata: dict[str, Any]) -> None:
+        """Persist `metadata` as a JSON envelope inside the vault's payload.
+
+        Overwrites any prior metadata. Callers that need read-modify-write
+        semantics MUST `read_metadata()` first, mutate, then
+        `write_metadata()` — there is no atomic compare-and-swap in
+        Phase 01.
+
+        Raises:
+            VaultLockedError: vault is sealed.
+            TypeError: `metadata` is not a dict.
+            ValueError: `metadata` contains values that are not
+                JSON-serializable (propagated from `json.dumps`).
+        """
+        import json as _json
+
+        if not isinstance(metadata, dict):
+            raise TypeError(f"metadata must be a dict; got {type(metadata).__name__}")
+        envelope = {self._METADATA_ENVELOPE_KEY: metadata}
+        payload = _json.dumps(envelope, sort_keys=True).encode("utf-8")
+        await self.write(payload)
 
     # ------------------------------------------------------------------
     # Idle-lock timer
