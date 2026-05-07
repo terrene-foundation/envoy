@@ -411,7 +411,21 @@ class TestEntryEnvelopeShapeValidation:
 class TestHaltedByRollbackRecordEnumRejection:
     """Gate review L-3: HaltedByRollbackRecord.detection_reason has a
     frozenset allowlist of 3 values; the rejection path MUST be tested
-    directly rather than only the happy path."""
+    directly rather than only the happy path.
+
+    Round-2 update (R2-H-1 + R2-H-2): record now carries `schema_version`
+    + `runtime_identity` + `halted_at` (was `detected_at`) per
+    `specs/ledger.md` § Halted state JSON shape lines 537-548."""
+
+    @staticmethod
+    def _runtime_identity():
+        from envoy.ledger.head import RuntimeIdentity
+
+        return RuntimeIdentity.from_runtime(
+            device_id="device-test-r2",
+            signing_key_id="envoy-signing-key",
+            algorithm_identifier={"sig": "ed25519", "hash": "sha256", "shamir": "slip39"},
+        )
 
     def test_unknown_detection_reason_rejected(self) -> None:
         from envoy.ledger import HaltedByRollbackRecord
@@ -423,7 +437,9 @@ class TestHaltedByRollbackRecordEnumRejection:
                 detected_sequence=8,
                 detected_entry_id="sha256:" + "b" * 64,
                 detection_reason="not_a_real_reason",
-                detected_at="2026-05-06T14:23:45.000000Z",
+                halted_at="2026-05-06T14:23:45.000000Z",
+                schema_version="halt/1.0",
+                runtime_identity=self._runtime_identity(),
             )
 
     @pytest.mark.parametrize(
@@ -443,12 +459,14 @@ class TestHaltedByRollbackRecordEnumRejection:
             detected_sequence=8,
             detected_entry_id="sha256:" + "b" * 64,
             detection_reason=valid_reason,
-            detected_at="2026-05-06T14:23:45.000000Z",
+            halted_at="2026-05-06T14:23:45.000000Z",
+            schema_version="halt/1.0",
+            runtime_identity=self._runtime_identity(),
         )
         assert rec.detection_reason == valid_reason
 
-    def test_non_canonical_detected_at_rejected(self) -> None:
-        """Security M-1: detected_at MUST match the 27-char timestamp shape."""
+    def test_non_canonical_halted_at_rejected(self) -> None:
+        """Security M-1: halted_at MUST match the 27-char timestamp shape."""
         from envoy.ledger import HaltedByRollbackRecord
 
         with pytest.raises(ValueError, match="ISO 8601 microsecond"):
@@ -458,7 +476,43 @@ class TestHaltedByRollbackRecordEnumRejection:
                 detected_sequence=8,
                 detected_entry_id="sha256:" + "b" * 64,
                 detection_reason="sequence_decrease",
-                detected_at="2026-05-06T14:23:45Z",  # missing microseconds
+                halted_at="2026-05-06T14:23:45Z",  # missing microseconds
+                schema_version="halt/1.0",
+                runtime_identity=self._runtime_identity(),
+            )
+
+    def test_wrong_schema_version_rejected(self) -> None:
+        """R2-H-1: schema_version MUST be the literal 'halt/1.0' per spec."""
+        from envoy.ledger import HaltedByRollbackRecord
+
+        with pytest.raises(ValueError, match="schema_version"):
+            HaltedByRollbackRecord(
+                last_known_good_sequence=10,
+                last_known_good_entry_id="sha256:" + "a" * 64,
+                detected_sequence=8,
+                detected_entry_id="sha256:" + "b" * 64,
+                detection_reason="sequence_decrease",
+                halted_at="2026-05-06T14:23:45.000000Z",
+                schema_version="halt/2.0",  # wrong version
+                runtime_identity=self._runtime_identity(),
+            )
+
+    def test_runtime_identity_must_be_dataclass_not_dict(self) -> None:
+        """R2-H-2: runtime_identity MUST be a RuntimeIdentity dataclass —
+        a dict bypasses the canonical-ordering invariant on
+        algorithm_identifier."""
+        from envoy.ledger import HaltedByRollbackRecord
+
+        with pytest.raises(ValueError, match="runtime_identity"):
+            HaltedByRollbackRecord(
+                last_known_good_sequence=10,
+                last_known_good_entry_id="sha256:" + "a" * 64,
+                detected_sequence=8,
+                detected_entry_id="sha256:" + "b" * 64,
+                detection_reason="sequence_decrease",
+                halted_at="2026-05-06T14:23:45.000000Z",
+                schema_version="halt/1.0",
+                runtime_identity={"device_id": "x"},  # dict, not RuntimeIdentity
             )
 
 

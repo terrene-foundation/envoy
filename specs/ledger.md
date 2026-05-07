@@ -541,11 +541,15 @@ When the runtime detects a rollback (`head_sequence` decrease or `HeadCommitment
   "detected_head": {"sequence": <int>, "entry_id": "sha256:..."},
   "detection_reason": "sequence_decrease | head_signature_mismatch | algorithm_identifier_downgrade",
   "runtime_identity": {...},
-  "halted_at": "<iso8601>",
-  "signed_by": "runtime_device_key",
-  "signature_hex": "ed25519"
+  "halted_at": "<iso8601>"
 }
 ```
+
+The above is the **inner content** persisted at `EntryEnvelope.content`. The
+outer `EntryEnvelope` carries `type="HaltedByRollback"`, `signed_by=device:<id>`,
+and `signature_hex=<ed25519 hex>` per § Entry envelope schema (lines 17-33).
+Inner content does NOT duplicate `signature_hex`; the canonical wire-form
+locates the signature on the outer envelope only.
 
 Signed by the runtime device key. After halt, the runtime refuses further Ledger writes until the user completes an `envoy ledger audit` ritual that resolves the divergence.
 

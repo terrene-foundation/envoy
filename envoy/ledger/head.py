@@ -73,6 +73,66 @@ class HeadCommitment:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeIdentity:
+    """Runtime attestation triple bound into the HaltedByRollback record.
+
+    Per `specs/ledger.md` § Halted state (`runtime_identity` field at line 545):
+    the halt record carries the runtime's identifying triple — device_id +
+    signing_key_id + algorithm_identifier — so an external verifier can
+    bind the halt event to a specific runtime instance and re-verify the
+    outer envelope's Ed25519 signature.
+
+    `algorithm_identifier` is the same dict the EnvoyLedger holds at
+    `self._algorithm_identifier`; we model it as a sorted tuple of
+    `(key, value)` pairs so the frozen dataclass can hash + canonical-dump
+    deterministically. `to_dict()` re-materializes the dict for wire form.
+    """
+
+    device_id: str
+    signing_key_id: str
+    algorithm_identifier: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.device_id, str) or not self.device_id:
+            raise ValueError("device_id must be non-empty str")
+        if not isinstance(self.signing_key_id, str) or not self.signing_key_id:
+            raise ValueError("signing_key_id must be non-empty str")
+        if not isinstance(self.algorithm_identifier, tuple) or not self.algorithm_identifier:
+            raise ValueError("algorithm_identifier must be non-empty tuple of (key, value) pairs")
+        for pair in self.algorithm_identifier:
+            if not (isinstance(pair, tuple) and len(pair) == 2):
+                raise ValueError("algorithm_identifier entries must be 2-tuples")
+            if not (isinstance(pair[0], str) and isinstance(pair[1], str)):
+                raise ValueError("algorithm_identifier keys and values must be str")
+        # Sorted-by-key invariant: external verifiers depend on canonical ordering.
+        if list(self.algorithm_identifier) != sorted(self.algorithm_identifier):
+            raise ValueError("algorithm_identifier must be sorted by key for canonical dumps")
+
+    def to_dict(self) -> dict:
+        return {
+            "device_id": self.device_id,
+            "signing_key_id": self.signing_key_id,
+            "algorithm_identifier": dict(self.algorithm_identifier),
+        }
+
+    @classmethod
+    def from_runtime(
+        cls,
+        *,
+        device_id: str,
+        signing_key_id: str,
+        algorithm_identifier: dict,
+    ) -> "RuntimeIdentity":
+        """Construct from the runtime's live state. Sorts algorithm_identifier
+        items by key so the canonical-dump is stable across runs."""
+        return cls(
+            device_id=device_id,
+            signing_key_id=signing_key_id,
+            algorithm_identifier=tuple(sorted(algorithm_identifier.items())),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class HaltedByRollbackRecord:
     """Forensic record minted when the runtime detects a rollback.
 
@@ -83,7 +143,7 @@ class HaltedByRollbackRecord:
     suffix) when persisting. Audit-trail consumers grep the audit_store
     for `action == "HaltedByRollback"`.
 
-    Per specs/ledger.md § Halted state (lines 532-545): the runtime appends
+    Per specs/ledger.md § Halted state (lines 532-548): the runtime appends
     this entry BEFORE halting further Ledger writes when:
 
     - `head_sequence` decreases between syncs, OR
@@ -98,6 +158,12 @@ class HaltedByRollbackRecord:
     - `sequence_decrease` — head_sequence non-monotonic
     - `head_signature_mismatch` — HeadCommitment signature failed
     - `algorithm_identifier_downgrade` — entry algorithm regressed
+
+    Wire-form note: the inner content emitted by `to_dict()` matches spec
+    JSON shape lines 537-548 exactly. The outer `EntryEnvelope` carries
+    `type`, `signed_by`, and `signature_hex`; the inner content carries
+    `schema_version`, `last_known_good_head`, `detected_head`,
+    `detection_reason`, `runtime_identity`, and `halted_at`.
     """
 
     last_known_good_sequence: int
@@ -105,7 +171,9 @@ class HaltedByRollbackRecord:
     detected_sequence: int
     detected_entry_id: str
     detection_reason: str
-    detected_at: str
+    halted_at: str
+    schema_version: str
+    runtime_identity: RuntimeIdentity
 
     _VALID_REASONS = frozenset(
         {
@@ -114,6 +182,7 @@ class HaltedByRollbackRecord:
             "algorithm_identifier_downgrade",
         }
     )
+    _SCHEMA_VERSION = "halt/1.0"
 
     def __post_init__(self) -> None:
         if self.detection_reason not in self._VALID_REASONS:
@@ -129,16 +198,28 @@ class HaltedByRollbackRecord:
             raise ValueError("last_known_good_sequence must be non-negative int")
         if not isinstance(self.detected_sequence, int) or self.detected_sequence < 0:
             raise ValueError("detected_sequence must be non-negative int")
-        # detected_at MUST match the 27-char #731 microsecond-padded UTC ISO 8601
+        # halted_at MUST match the 27-char #731 microsecond-padded UTC ISO 8601
         # shape — same reason as HeadCommitment.signed_at.
-        if not is_canonical_timestamp(self.detected_at):
+        if not is_canonical_timestamp(self.halted_at):
             raise ValueError(
-                f"detected_at MUST match Phase 01 ISO 8601 microsecond shape "
-                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.detected_at!r})"
+                f"halted_at MUST match Phase 01 ISO 8601 microsecond shape "
+                f"'YYYY-MM-DDTHH:MM:SS.NNNNNNZ' (got {self.halted_at!r})"
+            )
+        if self.schema_version != self._SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version must be {self._SCHEMA_VERSION!r} " f"(got {self.schema_version!r})"
+            )
+        if not isinstance(self.runtime_identity, RuntimeIdentity):
+            raise ValueError(
+                f"runtime_identity must be a RuntimeIdentity instance "
+                f"(got {type(self.runtime_identity).__name__})"
             )
 
     def to_dict(self) -> dict:
+        # Order matches spec JSON shape (specs/ledger.md:537-548) so
+        # canonical_dumps produces bytes external verifiers can re-derive.
         return {
+            "schema_version": self.schema_version,
             "last_known_good_head": {
                 "sequence": self.last_known_good_sequence,
                 "entry_id": self.last_known_good_entry_id,
@@ -148,8 +229,9 @@ class HaltedByRollbackRecord:
                 "entry_id": self.detected_entry_id,
             },
             "detection_reason": self.detection_reason,
-            "detected_at": self.detected_at,
+            "runtime_identity": self.runtime_identity.to_dict(),
+            "halted_at": self.halted_at,
         }
 
 
-__all__ = ["HaltedByRollbackRecord", "HeadCommitment"]
+__all__ = ["HaltedByRollbackRecord", "HeadCommitment", "RuntimeIdentity"]
