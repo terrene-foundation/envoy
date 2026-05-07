@@ -34,7 +34,7 @@ Promotion to a higher level requires ALL of:
 
 1. **Authorship Score threshold met** per specs/authorship-score.md:
    - `PSEUDO → TOOL`: N=0 (no authorship required; default entry).
-   - `TOOL → SUPERVISED`: N=1 (one authored constraint survives novelty + minimum-impact).
+   - `TOOL → SUPERVISED`: N=1 (one constraint with `authored=true`; the count-only gate per specs/authorship-score.md § Re-derivation from the Ledger).
    - `SUPERVISED → DELEGATING`: N=3 (personal mode) or N=5 (enterprise mode).
    - `DELEGATING → AUTONOMOUS`: N=5 (personal mode only — enterprise AUTONOMOUS forbidden on shared templates per specs/enterprise-deployment.md).
 2. **Grant Moment co-signature** by user's Genesis key. Ratchet-up IS a first-class `posture_change` Ledger entry signed by Genesis, not by the runtime.
