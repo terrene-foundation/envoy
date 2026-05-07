@@ -70,7 +70,18 @@
 
 ---
 
-## T-02-34 — Build envoy/shamir/ritual
+## T-02-34 — Build envoy/shamir/ritual ✅ CLOSED 2026-05-07 (PR #13)
+
+**Status:** Shipped. Coordinator + 5 collaborator Protocols + RitualResult + DistributionChecklist + typed errors landed at PR #13 (commits 573757e + 8cfd5ff + merge 594196f). 38/38 Tier 1 tests green; full suite 383/383 pass.
+
+**Gate-review surfaced findings (resolved in same PR per autonomous-execution.md Rule 4):** C-1 master-key residency (passed `bytearray` directly to kailash, eliminating the `bytes()` boundary copy); H-1 atomic slice-assignment overwrite; H-2 deterministic zero-fill BEFORE entropy-dependent random fill; H-3 `principal_id` hashed at INFO per observability.md Rule 8; rev-2/3 Protocol structural conformance tests; rev-4 ritual-id salt against same-microsecond collision; rev-5 threshold==total_shards edge cases; L-1 test fake uses `secrets.token_bytes(32)`; rev-6 `collections.abc.Awaitable`.
+
+**Deferred to named successor shards (out of T-02-34 scope, documented in PR #13 commit body):**
+
+- H-4 master-key fingerprint binding → T-02-43 (Boundary Conversation S8 wiring) where fingerprint verification is the natural fit
+- M-1 channel-adapter user_message encoding → T-02-43
+- L-2 binder MUST NOT compute commitments (coordinator should re-derive locally) → T-02-35 prerequisite (see below)
+- rev-1 generator returning duplicate shards silently accepted → T-02-37 (real generator wiring)
 
 **Implements:** `specs/shamir-recovery.md`
 
@@ -87,6 +98,8 @@
 ---
 
 ## T-02-35 — Build envoy/shamir/paper + commitments + distribution_checklist
+
+**T-02-34 prerequisite (carried forward from PR #13 review L-2):** the `CommitmentBinder` Protocol contract MUST be re-architected so the coordinator computes `sha256:{hex}` commitments LOCALLY and passes them to the binder for STORAGE-ONLY. The binder MUST NOT derive commitments — that boundary lets a malicious binder substitute commitments for a different secret without detection. Update the Protocol signature in `envoy/shamir/types.py` to: `bind_to_genesis(principal_id: str, commitments: list[str]) -> Awaitable[None]` (commitments computed by coordinator, binder writes them to Genesis Record).
 
 **Source:** Shard 15 § 3 steps 2 + 4 + 5.
 
