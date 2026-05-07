@@ -30,6 +30,7 @@ so the Tier 1 test can assert the rejection.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -107,10 +108,19 @@ class PaperShardCard:
 
 # H-06 enforcement: tokens that MUST NOT appear (case-insensitive) in slot
 # labels. The check is a substring match — narrower than name-pattern
-# matching — to avoid false positives on legitimate slot identifiers like
-# "slot-3" while still catching `Envoy` / `envoy` / `Alice's Card` /
-# `Bob-Backup`. Phase 02 may add a richer name-detection pass.
+# matching as a SECONDARY defense. Primary defense is the whitelist regex
+# below (`_OPAQUE_SLOT_LABEL_RE`) which only accepts the canonical `slot-N`
+# form produced by `ShamirRitualCoordinator._opaque_slot_labels()`. The
+# combination defeats Unicode confusable + control-char + name attacks
+# per security review M-1 + M-2 on PR #15.
 _FORBIDDEN_LABEL_TOKENS: tuple[str, ...] = ("envoy",)
+
+# Whitelist regex — opaque slot labels MUST match `slot-N` exactly per H-06
+# (per security review M-1: blacklist substring is bypassable via Unicode
+# confusables `ＥＮＶＯＹ` U+FF25... or zero-width-space splits like `env​oy`
+# — both lower-case to non-`envoy` and pass the substring check).
+# Whitelisting ASCII `slot-` + digits is the structural defense.
+_OPAQUE_SLOT_LABEL_RE = re.compile(r"^slot-\d+$")
 
 # Phase 01 transcription layout. 24 words → 4 rows × 6 words for visual
 # alignment per shard 15 § 3.2 ("rows of 6"). The identifier is opaque to
@@ -122,14 +132,28 @@ _WORDS_PER_ROW = 6
 def _validate_slot_label(slot_label: str) -> None:
     """Reject any slot label that violates H-06 (no 'Envoy' / no real names).
 
-    Phase 01 enforces a substring check on `_FORBIDDEN_LABEL_TOKENS`. The check
-    is intentionally narrow — it catches the failure mode shard 15 § 3.2
-    enumerates ("NO 'Envoy' label; NO name") without false-positiving on
-    legitimate `slot-N` identifiers. Real-name detection (Alice / Bob /
-    common-name dictionary) is BLOCKED from Phase 01 because of localization
-    drift and false-positive risk; the substring check is the structural
-    minimum, paired with a UX layer that funnels users into the canonical
-    `slot-N` shape via `_opaque_slot_labels()`.
+    Defense-in-depth, three-layer (per security review M-1 + M-2 on PR #15):
+
+    1. **Whitelist regex** (`_OPAQUE_SLOT_LABEL_RE` = `^slot-\\d+$`) — primary
+       defense. Only the canonical `slot-N` form (ASCII `slot-` + digits)
+       passes. Defeats Unicode confusables (`ＥＮＶＯＹ` fullwidth, `еnvoy`
+       Cyrillic), zero-width-space splits (`env​oy`), control-char
+       injection (`slot-1\nEnvoy`, `slot-1\x00Alice`), and any name pattern
+       — all in one structural check.
+    2. **ASCII-only check** — redundant with the regex but explicit, so a
+       future regex relaxation cannot accidentally re-open the Unicode
+       bypass without simultaneously removing this guard.
+    3. **Substring blacklist** (`_FORBIDDEN_LABEL_TOKENS`) — defense-in-depth
+       safety net for any future relaxation that admits non-`slot-N` labels.
+       The blacklist is BYPASSABLE alone (proven by security review M-1)
+       but acts as belt-and-suspenders alongside the whitelist.
+
+    The coordinator's `_opaque_slot_labels()` always produces canonical
+    `slot-N` strings, so legitimate Phase 01 callers are never affected.
+    Phase 02 / Phase 04 schema extension that wants richer labels MUST
+    relax the whitelist explicitly AND re-derive the H-06 enforcement
+    surface — the test harness's `test_render_rejects_envoy_slot_label`
+    will fail-loud at relaxation time.
     """
     if not isinstance(slot_label, str) or not slot_label:
         raise EnvoyLabelOnCardError(
@@ -140,6 +164,31 @@ def _validate_slot_label(slot_label: str) -> None:
                 "ritual prepared for you."
             ),
         )
+    if not slot_label.isascii():
+        raise EnvoyLabelOnCardError(
+            f"slot_label {slot_label!r} contains non-ASCII characters — "
+            f"H-06 defense rejects Unicode confusables (e.g. fullwidth, "
+            f"Cyrillic look-alikes, zero-width spaces).",
+            user_message=(
+                "Backup cards use only the standard label (slot-1, slot-2, "
+                "...). Special characters or look-alike letters are not "
+                "accepted — they can disguise an attempted name leak."
+            ),
+        )
+    if not _OPAQUE_SLOT_LABEL_RE.fullmatch(slot_label):
+        raise EnvoyLabelOnCardError(
+            f"slot_label {slot_label!r} does not match opaque pattern "
+            f"`^slot-\\d+$` — H-06 enforcement rejects custom labels per "
+            f"specs/shamir-recovery.md line 29.",
+            user_message=(
+                "Backup cards must use the opaque slot label "
+                "(slot-1, slot-2, ...) the ritual prepared for you. "
+                "Real names — if you want them recorded — go in the "
+                "private envelope, never on the card itself."
+            ),
+        )
+    # Defense-in-depth substring blacklist. Should be redundant with the
+    # whitelist above, but kept as belt-and-suspenders.
     lowered = slot_label.lower()
     for token in _FORBIDDEN_LABEL_TOKENS:
         if token in lowered:

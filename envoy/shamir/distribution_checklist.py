@@ -32,6 +32,7 @@ async I/O contract).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Protocol, runtime_checkable
 
 from envoy.shamir.errors import ChecklistPersisterError, EnvoyLabelOnCardError
@@ -47,12 +48,17 @@ logger = logging.getLogger(__name__)
 # Vault metadata top-level key per shard 15 § 3.5.
 _METADATA_KEY_CHECKLISTS = "shamir_distribution_checklists"
 
-# H-06 forbidden token — checklist slot labels MUST NOT contain "envoy"
-# (case-insensitive). Mirrors `envoy/shamir/paper.py::_FORBIDDEN_LABEL_TOKENS`.
-# Duplicated here (rather than imported) to avoid coupling the persister
-# module to the renderer's private constant; the rule itself comes from
-# `specs/shamir-recovery.md` line 29 and is enforced at every site that
-# persists slot labels.
+# H-06 enforcement is three-layer per security review M-1 + M-2 on PR #15.
+# (1) Whitelist regex `^slot-\d+$` — primary defense, defeats Unicode
+#     confusables + control-char + name attacks.
+# (2) ASCII-only check — explicit Unicode-confusable rejection.
+# (3) Substring blacklist — defense-in-depth safety net for any future
+#     relaxation that admits non-`slot-N` labels.
+# All three duplicated from `envoy/shamir/paper.py` rather than imported,
+# to avoid cross-module coupling — the H-06 rule comes from
+# `specs/shamir-recovery.md` line 29 and is enforced independently at
+# every site that persists slot labels.
+_OPAQUE_SLOT_LABEL_RE = re.compile(r"^slot-\d+$")
 _FORBIDDEN_LABEL_TOKENS: tuple[str, ...] = ("envoy",)
 
 
@@ -103,6 +109,32 @@ def _validate_checklist_slot_labels(checklist: DistributionChecklist) -> None:
                     "report it."
                 ),
             )
+        # Layer 1 — ASCII-only (Unicode confusable defense).
+        if not label.isascii():
+            raise EnvoyLabelOnCardError(
+                f"slot_label {label!r} contains non-ASCII characters — "
+                f"H-06 defense rejects Unicode confusables.",
+                user_message=(
+                    "Backup checklist cannot be saved — a card slot label "
+                    "contains special characters or look-alike letters. "
+                    "Re-run the backup ritual to regenerate the checklist."
+                ),
+            )
+        # Layer 2 — whitelist regex (primary defense).
+        if not _OPAQUE_SLOT_LABEL_RE.fullmatch(label):
+            raise EnvoyLabelOnCardError(
+                f"slot_label {label!r} does not match opaque pattern "
+                f"`^slot-\\d+$` — H-06 enforcement per "
+                f"specs/shamir-recovery.md line 29.",
+                user_message=(
+                    "Backup checklist cannot be saved — a card slot label "
+                    "does not use the standard opaque form (slot-1, "
+                    "slot-2, ...). Re-run the backup ritual to regenerate "
+                    "the checklist."
+                ),
+            )
+        # Layer 3 — substring blacklist (defense-in-depth, redundant
+        # with whitelist but kept as belt-and-suspenders).
         lowered = label.lower()
         for token in _FORBIDDEN_LABEL_TOKENS:
             if token in lowered:

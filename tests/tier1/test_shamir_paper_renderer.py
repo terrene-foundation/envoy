@@ -112,8 +112,12 @@ class TestH06SlotLabelEnforcement:
     """
 
     def test_render_rejects_envoy_label(self) -> None:
+        """Per security review M-1 on PR #15, the validator now applies a
+        whitelist regex `^slot-\\d+$` BEFORE the substring blacklist —
+        "Envoy Backup" fails the whitelist (contains uppercase + space).
+        """
         renderer = PaperShardRenderer()
-        with pytest.raises(EnvoyLabelOnCardError, match="forbidden token"):
+        with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
             renderer.render(_SAMPLE_24_WORDS, "Envoy Backup", (1, 5))
 
     def test_render_rejects_envoy_label_case_insensitive(self) -> None:
@@ -122,6 +126,50 @@ class TestH06SlotLabelEnforcement:
             renderer.render(_SAMPLE_24_WORDS, "envoy-1", (1, 5))
         with pytest.raises(EnvoyLabelOnCardError):
             renderer.render(_SAMPLE_24_WORDS, "ENVOY", (1, 5))
+
+    def test_render_rejects_unicode_confusable(self) -> None:
+        """Per security review M-1 on PR #15: Unicode confusables
+        (`ＥＮＶＯＹ` fullwidth U+FF25... or `еnvoy` Cyrillic) lower-case
+        to non-`envoy` and bypass the substring blacklist alone. The
+        ASCII-only check + whitelist regex defeat them.
+        """
+        renderer = PaperShardRenderer()
+        with pytest.raises(EnvoyLabelOnCardError, match="non-ASCII"):
+            renderer.render(_SAMPLE_24_WORDS, "ＥＮＶＯＹ", (1, 5))
+        # Cyrillic look-alike — `е` is U+0435, NOT ASCII `e`.
+        with pytest.raises(EnvoyLabelOnCardError, match="non-ASCII"):
+            renderer.render(_SAMPLE_24_WORDS, "еnvoy", (1, 5))
+
+    def test_render_rejects_control_char_injection(self) -> None:
+        """Per security review M-2 on PR #15: control chars in slot
+        labels corrupt the rendered card layout AND can hide injected
+        names from a substring-only check (`slot-1\\nEnvoy`,
+        `slot-1\\x00Alice`). Whitelist `^slot-\\d+$` rejects.
+        """
+        renderer = PaperShardRenderer()
+        with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
+            renderer.render(_SAMPLE_24_WORDS, "slot-1\nEnvoy", (1, 5))
+        with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
+            renderer.render(_SAMPLE_24_WORDS, "slot-1\x00Alice", (1, 5))
+        with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
+            renderer.render(_SAMPLE_24_WORDS, "slot-1\rBob", (1, 5))
+
+    def test_render_accepts_canonical_slot_label(self) -> None:
+        """Whitelist regex `^slot-\\d+$` accepts the canonical opaque
+        form — exact ASCII `slot-` prefix + ≥1 ASCII digits.
+        """
+        renderer = PaperShardRenderer()
+        for n in (1, 5, 9, 99, 1000):
+            card = renderer.render(_SAMPLE_24_WORDS, f"slot-{n}", (1, 5))
+            assert card.slot_label == f"slot-{n}"
+
+    def test_render_rejects_custom_label_form(self) -> None:
+        """Whitelist regex rejects any non-canonical form — Phase 04
+        relaxation MUST explicitly opt-in via spec extension."""
+        renderer = PaperShardRenderer()
+        for label in ("backup-1", "card_1", "1", "slot-", "slot-A1", "Slot-1"):
+            with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
+                renderer.render(_SAMPLE_24_WORDS, label, (1, 5))
 
     def test_render_rejects_empty_slot_label(self) -> None:
         renderer = PaperShardRenderer()

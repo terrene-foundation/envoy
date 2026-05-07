@@ -157,6 +157,9 @@ class ChecklistPersister(Protocol):
 # ---------------------------------------------------------------------------
 
 
+_OPAQUE_SLOT_LABEL_RE = __import__("re").compile(r"^slot-\d+$")
+
+
 @dataclass(frozen=True, slots=True)
 class DistributionChecklist:
     """Persistent opaque-slot-label checklist for the ritual.
@@ -167,6 +170,13 @@ class DistributionChecklist:
 
     Phase 04 hidden envelope MAY add real holder names if the user opts
     in; Phase 01 has the field shape but does NOT populate it.
+
+    `__post_init__` enforces the H-06 whitelist (`^slot-\\d+$`) at
+    construction time per security review M-1 on PR #15: in-memory
+    construction was previously the only un-gated write path
+    (renderer + persister both gated, but a caller could still
+    construct `DistributionChecklist(slot_labels=("Envoy-1",))` directly
+    in memory). The whitelist closes that gap as defense-in-depth.
     """
 
     ritual_id: str
@@ -175,6 +185,29 @@ class DistributionChecklist:
     slot_labels: tuple[str, ...]
     created_at: datetime
     rotation_history: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # H-06 enforcement at construction time per `specs/shamir-recovery.md`
+        # § Card format line 29 + security review M-1 on PR #15. Defense-
+        # in-depth alongside the renderer + persister gates.
+        for i, label in enumerate(self.slot_labels):
+            if not isinstance(label, str) or not label:
+                raise ValueError(
+                    f"slot_labels[{i}] must be a non-empty string; "
+                    f"got {label!r}"
+                )
+            if not label.isascii():
+                raise ValueError(
+                    f"slot_labels[{i}] {label!r} contains non-ASCII "
+                    f"characters — H-06 defense rejects Unicode "
+                    f"confusables."
+                )
+            if not _OPAQUE_SLOT_LABEL_RE.fullmatch(label):
+                raise ValueError(
+                    f"slot_labels[{i}] {label!r} does not match opaque "
+                    f"pattern `^slot-\\d+$` — H-06 enforcement per "
+                    f"specs/shamir-recovery.md line 29."
+                )
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable form per `rules/eatp.md` SDK conventions."""

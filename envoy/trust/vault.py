@@ -402,16 +402,24 @@ class TrustVault:
     async def read_metadata(self) -> dict[str, Any]:
         """Return the metadata dict stored in the vault's payload.
 
-        Returns an empty dict if the vault has never had `write_metadata()`
-        called, OR if the payload bytes are not a JSON envelope of the
-        expected shape (legacy opaque-bytes payloads). The method NEVER
-        raises on shape mismatch — the absence of the envelope is the same
-        as "no metadata persisted".
+        Returns a deep-copy of the persisted metadata so callers cannot
+        accidentally mutate the locally-parsed envelope (per security
+        review L-1 on PR #15). Returns an empty dict if the vault has
+        never had `write_metadata()` called OR if the payload bytes are
+        not a JSON envelope of the expected shape (legacy opaque-bytes
+        payloads). The method does NOT raise on shape mismatch — absence
+        of the envelope is the same as "no metadata persisted".
 
         Use cases (Phase 01): T-02-35 DistributionChecklist persister
         stores `{ritual_id -> checklist_dict}` under
         `metadata["shamir_distribution_checklists"]`.
+
+        Raises:
+            VaultLockedError: vault is sealed (propagated from `self.read()`).
+            AutoLockIdleTimeoutError: idle-lock fired (propagated from
+                `self.read()`).
         """
+        import copy as _copy
         import json as _json
 
         payload = await self.read()
@@ -427,7 +435,10 @@ class TrustVault:
         inner = envelope.get(self._METADATA_ENVELOPE_KEY)
         if not isinstance(inner, dict):
             return {}
-        return inner
+        # Deep-copy per security review L-1: a caller mutating the
+        # returned dict MUST NOT be able to corrupt other callers'
+        # views of the same vault state.
+        return _copy.deepcopy(inner)
 
     async def write_metadata(self, metadata: dict[str, Any]) -> None:
         """Persist `metadata` as a JSON envelope inside the vault's payload.
@@ -437,8 +448,21 @@ class TrustVault:
         `write_metadata()` — there is no atomic compare-and-swap in
         Phase 01.
 
+        **Race window** (per security review H-1 on PR #15, doc-only fix):
+        Concurrent async tasks running `read_metadata → mutate →
+        write_metadata` cycles against the SAME vault can clobber each
+        other's mutations. The auto-lock timer can also fire BETWEEN
+        the read and the write of a single task's cycle, raising
+        `AutoLockIdleTimeoutError` on the write half. Phase 02 hardening
+        adds `update_metadata(callable)` as a vault-level
+        compare-and-swap primitive; until then, callers MUST NOT
+        interleave concurrent metadata writes against the same vault
+        (single-process single-task is the supported topology for
+        Phase 01).
+
         Raises:
             VaultLockedError: vault is sealed.
+            AutoLockIdleTimeoutError: idle-lock fired between read and write.
             TypeError: `metadata` is not a dict.
             ValueError: `metadata` contains values that are not
                 JSON-serializable (propagated from `json.dumps`).
@@ -625,14 +649,45 @@ class TrustVault:
         aesgcm = AESGCM(bytes(master_key))
         ciphertext = aesgcm.encrypt(nonce, payload, header)
 
-        # Atomic write: temp file + fsync + os.replace
+        # Atomic write: temp file + fsync + os.replace.
+        #
+        # Per `rules/trust-plane-security.md` MUST Rule 1 (no bare `open()`
+        # for record files) + security review H-2 on PR #15: open the
+        # tmpfile via `os.open` with `O_NOFOLLOW | O_EXCL` to defend
+        # against an attacker pre-creating the tmp path as a symlink.
+        # `O_NOFOLLOW` rejects an existing symlink at the tmp path
+        # (would otherwise let the attacker redirect ciphertext writes
+        # to `/etc/shadow` or similar). `O_EXCL` rejects any existing
+        # file at the path so two parallel writes do not race on the
+        # same tmpfile. Mode 0o600 matches the post-replace `chmod`
+        # below so file permissions are correct from creation.
         tmp_path = self._vault_path.with_suffix(self._vault_path.suffix + ".tmp")
         self._vault_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp_path, "wb") as f:
-            f.write(header)
-            f.write(ciphertext)
-            f.flush()
-            os.fsync(f.fileno())
+        # Best-effort cleanup of any orphaned tmp from a prior crash —
+        # `O_EXCL` would otherwise refuse the create.
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(tmp_path), flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(header)
+                f.write(ciphertext)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            # On any failure (write error, cancellation), unlink the
+            # tmp file before propagating so retries do not collide
+            # with `O_EXCL`.
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         os.replace(tmp_path, self._vault_path)
         # Best-effort restrictive permissions per
         # rules/trust-plane-security.md MUST Rule 6 (database file permissions).

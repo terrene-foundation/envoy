@@ -161,13 +161,34 @@ class TestH06EnforcementOnPersist:
     @pytest.mark.asyncio
     async def test_persist_rejects_envoy_slot_label(self, unlocked_vault: TrustVault) -> None:
         """A caller constructing a malformed `DistributionChecklist`
-        directly bypasses the coordinator's `_opaque_slot_labels()` helper.
-        The persister is the structural last gate.
+        bypasses the coordinator's `_opaque_slot_labels()` helper.
+
+        Per security review M-1 on PR #15, defense is now three-layer:
+        (1) `DistributionChecklist.__post_init__` rejects at construction;
+        (2) renderer rejects at render time; (3) persister is the
+        structural last gate.
+
+        Layer 1 fires first now — `_make_checklist(slot_labels=...)` with
+        a non-`slot-N` label raises `ValueError` from `__post_init__`
+        before the persister sees the object. This test asserts that
+        the construction-layer gate fires; the persister-level check is
+        defense-in-depth.
         """
         persister = TrustVaultChecklistPersister(unlocked_vault, principal_id="alice")
-        bad = _make_checklist(slot_labels=("slot-1", "slot-2", "Envoy Backup", "slot-4", "slot-5"))
-        with pytest.raises(EnvoyLabelOnCardError, match="forbidden token"):
-            await persister.persist(bad)
+        # Construction-layer rejection (per security review M-1):
+        with pytest.raises(ValueError, match="opaque pattern"):
+            _make_checklist(
+                slot_labels=("slot-1", "slot-2", "Envoy Backup", "slot-4", "slot-5")
+            )
+        # Defense-in-depth: even if a malicious caller bypasses
+        # `DistributionChecklist.__post_init__` via `object.__setattr__`,
+        # the persister's pre-write validator fires.
+        good = _make_checklist()
+        # Bypass the frozen-dataclass post-init via object.__setattr__
+        # to simulate a malicious mutation reaching the persister.
+        object.__setattr__(good, "slot_labels", ("slot-1", "Envoy-leak", "slot-3", "slot-4", "slot-5"))
+        with pytest.raises(EnvoyLabelOnCardError, match="opaque pattern"):
+            await persister.persist(good)
 
     @pytest.mark.asyncio
     async def test_persist_rejects_empty_slot_labels(self, unlocked_vault: TrustVault) -> None:
