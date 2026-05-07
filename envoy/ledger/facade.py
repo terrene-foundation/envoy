@@ -61,7 +61,7 @@ from envoy.ledger.errors import (
     LedgerVerificationFailedError,
 )
 from envoy.ledger.hash_chain import EntryEnvelope, HashChainBuilder
-from envoy.ledger.head import HeadCommitment
+from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment
 from envoy.ledger.lamport import LamportClock
 
 logger = logging.getLogger(__name__)
@@ -304,7 +304,38 @@ class EnvoyLedger:
         # head locally. If we instead persisted the entry first and then
         # the head signing failed (e.g., transient key_manager error), the
         # entry would be persisted with stale head — chain ahead of head.
-        new_head = self._mint_head_commitment(entry_id=entry_id, sequence=tentative_sequence)
+        try:
+            new_head = self._mint_head_commitment(entry_id=entry_id, sequence=tentative_sequence)
+        except LedgerRollbackDetectedError:
+            # Per `specs/ledger.md` § Halted state: when the runtime detects
+            # a rollback, it appends a HaltedByRollback entry BEFORE halting
+            # further Ledger writes. `_mint_head_commitment` set
+            # `self._halted = True` before raising; the persist below
+            # bypasses the public `append()` halted-gate by calling
+            # `self._audit_store.append` directly. The halt record's
+            # forensic payload preserves last-known-good vs detected-head
+            # so post-mortem recovery can locate the divergence point.
+            #
+            # Invariant: `self._head` is non-None on this branch — the
+            # rollback detection itself requires it (per
+            # `_mint_head_commitment` line 577). The assert documents the
+            # invariant for static analysis.
+            assert self._head is not None
+            try:
+                await self._persist_halt_record(
+                    last_known_good_sequence=self._head.head_sequence,
+                    last_known_good_entry_id=self._head.head_entry_id,
+                    detected_sequence=tentative_sequence,
+                    detected_entry_id=entry_id,
+                    detection_reason="sequence_decrease",
+                )
+            except Exception:
+                # Persist failure does NOT suppress the rollback signal —
+                # the original LedgerRollbackDetectedError still propagates.
+                # Operators that grep for `ledger.halt_record_persist_failed`
+                # see the secondary failure alongside the primary halt.
+                logger.exception("ledger.halt_record_persist_failed")
+            raise
 
         # Translate envoy envelope → kailash AuditEvent.
         audit_event = self._envelope_to_audit_event(envelope)
@@ -552,6 +583,108 @@ class EnvoyLedger:
             event,
             tenant_id=self._tenant_id,
             agent_id=self._device_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal: HaltedByRollback persistence
+    # ------------------------------------------------------------------
+
+    async def _persist_halt_record(
+        self,
+        *,
+        last_known_good_sequence: int,
+        last_known_good_entry_id: str,
+        detected_sequence: int,
+        detected_entry_id: str,
+        detection_reason: str,
+    ) -> None:
+        """Mint + sign + append a HaltedByRollback entry to the audit_store.
+
+        Per `specs/ledger.md` § Halted state, the entry is appended BEFORE
+        halting further Ledger writes. The caller (`append()` rollback
+        handler) MUST have already set `self._halted = True` (via
+        `_mint_head_commitment`) so that any concurrent caller hitting the
+        public `append()` entrypoint is rejected with `LedgerHaltedError`
+        rather than racing this persist.
+
+        The halt record uses `self._sequence + 1` as its own envelope
+        sequence (the rejected tentative slot is now the halt-record's
+        slot). After persistence, chain state advances so `verify_chain()`
+        walks the halt record correctly; further appends are blocked by
+        the halted-gate at the public `append()` entrypoint.
+
+        Detection reasons are restricted to the spec-mandated set:
+        - `sequence_decrease` — head_sequence non-monotonic (Phase 01 path)
+        - `head_signature_mismatch` — HeadCommitment signature failed (Phase 02+)
+        - `algorithm_identifier_downgrade` — entry algorithm regressed (Phase 02+)
+        """
+        halt_record = HaltedByRollbackRecord(
+            last_known_good_sequence=last_known_good_sequence,
+            last_known_good_entry_id=last_known_good_entry_id,
+            detected_sequence=detected_sequence,
+            detected_entry_id=detected_entry_id,
+            detection_reason=detection_reason,
+            detected_at=_now_canonical(),
+        )
+
+        halt_content = halt_record.to_dict()
+        halt_content_hash = "sha256:" + hashlib.sha256(canonical_dumps(halt_content)).hexdigest()
+        halt_sequence = self._sequence + 1
+        halt_lamport = LamportClock(
+            lamport_time=self._lamport_time + 1,
+            device_id=self._device_id,
+            local_seq=self._local_seq + 1,
+        )
+        halt_timestamp = halt_record.detected_at
+
+        canonical_bytes, halt_entry_id = self._builder.build_unsigned(
+            prev_entry_id=self._last_entry_id,
+            sequence=halt_sequence,
+            lamport=halt_lamport,
+            timestamp=halt_timestamp,
+            type_="HaltedByRollback",
+            content=halt_content,
+            intent_id=None,
+            content_trust_level="system",
+            description_content_hash=halt_content_hash,
+            signed_by=f"device:{self._device_id}",
+            algorithm_identifier=self._algorithm_identifier,
+        )
+        halt_signature = self._key_manager.sign_with_key(self._signing_key_id, canonical_bytes)
+        halt_envelope = self._builder.seal(
+            entry_id=halt_entry_id,
+            signature_hex=halt_signature,
+            prev_entry_id=self._last_entry_id,
+            sequence=halt_sequence,
+            lamport=halt_lamport,
+            timestamp=halt_timestamp,
+            type_="HaltedByRollback",
+            content=halt_content,
+            intent_id=None,
+            content_trust_level="system",
+            description_content_hash=halt_content_hash,
+            signed_by=f"device:{self._device_id}",
+            algorithm_identifier=self._algorithm_identifier,
+        )
+        halt_audit_event = self._envelope_to_audit_event(halt_envelope)
+        await self._audit_store.append(halt_audit_event)
+
+        # Advance chain state so verify_chain() walks the halt record correctly.
+        # Per spec, no further appends occur (halted-gate blocks them), so
+        # these advances are terminal — the halt record IS the chain tail.
+        self._lamport_time += 1
+        self._local_seq += 1
+        self._sequence = halt_sequence
+        self._last_entry_id = halt_entry_id
+
+        logger.warning(
+            "ledger.halted_by_rollback",
+            extra={
+                "halt_entry_id": halt_entry_id,
+                "detection_reason": detection_reason,
+                "detected_sequence": detected_sequence,
+                "last_known_good_sequence": last_known_good_sequence,
+            },
         )
 
     # ------------------------------------------------------------------

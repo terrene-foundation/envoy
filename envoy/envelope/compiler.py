@@ -25,13 +25,16 @@ the protocol guarantees the wiring contract is testable now).
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import math
 import uuid
-import dataclasses
 from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 from envoy.envelope.canonical_bytes import canonical_bytes as _canonical_bytes
 from envoy.envelope.canonical_bytes import content_hash as _content_hash
@@ -136,12 +139,29 @@ class EnvelopeCompiler:
         algorithm_identifier: AlgorithmIdentifier | None = None,
     ) -> None:
         self._template_resolver = template_resolver
-        self._authorship_scorer: AuthorshipScorer = (
-            authorship_scorer if authorship_scorer is not None else _NoopAuthorshipScorer()
-        )
-        self._ledger_writer: LedgerWriter = (
-            ledger_writer if ledger_writer is not None else _NoopLedgerWriter()
-        )
+        # Per rules/observability.md Rule 3 (mode=fake) and rules/zero-tolerance.md
+        # Rule 2 fake-dispatch defense: emit a WARN at construction when a
+        # caller relies on the Phase-01 NoOp defaults instead of a real
+        # AuthorshipScorer / LedgerWriter. Tier-1 unit tests legitimately
+        # pass None to exercise pure compiler behavior; Tier-2/3 wiring +
+        # production callers MUST inject the real collaborators. The WARN
+        # surfaces orphan-default usage in the operator's WARN+ scan.
+        if authorship_scorer is None:
+            logger.warning(
+                "envelope.compiler.using_noop_authorship_scorer",
+                extra={"mode": "fake", "reason": "phase_01_default"},
+            )
+            self._authorship_scorer: AuthorshipScorer = _NoopAuthorshipScorer()
+        else:
+            self._authorship_scorer = authorship_scorer
+        if ledger_writer is None:
+            logger.warning(
+                "envelope.compiler.using_noop_ledger_writer",
+                extra={"mode": "fake", "reason": "phase_01_default"},
+            )
+            self._ledger_writer: LedgerWriter = _NoopLedgerWriter()
+        else:
+            self._ledger_writer = ledger_writer
         self._algorithm_identifier = (
             algorithm_identifier if algorithm_identifier is not None else AlgorithmIdentifier()
         )
