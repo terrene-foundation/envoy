@@ -29,7 +29,7 @@ dependencies = [
     # (envoy/runtime/protocol.py); Phase 02 adds the Rust-backed binding via
     # the runtime adapter slot per `11-phase-02-handoff.md` T-11-04.
     # Apache 2.0; Foundation-stewarded; install via `pipx install envoy-agent`.
-    "kailash[nexus,kaizen,dataflow,pact]>=2.13.4",
+    "kailash[nexus,kaizen,dataflow,pact,shamir]>=2.13.4",
     # Trust Vault crypto (T-01-13) — AES-256-GCM via cryptography; Argon2id KDF
     # via argon2-cffi (m=2^17, t=3, p=1 per specs/trust-vault.md § Encryption).
     "cryptography>=44.0",
