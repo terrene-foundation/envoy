@@ -135,7 +135,7 @@ Cross-spec consumers (`specs/posture-ladder.md`, `specs/shared-household.md`, `s
 
 ### Authorship Score (§8, §14.7, §14.8 of source — see specs/authorship-score.md)
 
-- Count of authored constraints that pass (a) novelty de-dup (Jaccard < 0.85 on canonical AST + adversarial-wording classifier < 0.8), (b) minimum-impact check (dry-run corpus + user-recent Ledger history).
+- Count of authored constraints with `authored=true`. Per `specs/authorship-score.md § Re-derivation from the Ledger`, T-02-30 implements the count-only recompute over the 5 canonical dimensions.
 - Personal mode: N=3 for DELEGATING, N=5 for AUTONOMOUS.
 - Enterprise mode: N=5 DELEGATING; AUTONOMOUS requires per-employee envelope (not shared template).
 
@@ -165,11 +165,9 @@ Per doc 02 §11. Every error logged as Ledger entry with `content_trust_level: s
 | `SemanticCheckFailedError`               | Classifier ensemble vote crossed threshold for "block" or "block+grant_moment"                           | Surface Grant Moment OR refuse per ensemble action                                   | Manual after Grant          |
 | `LatencyBudgetExceededError`             | Per-check latency exceeded budget (5/5/1/50/500/10/20ms)                                                 | Refuse fail-closed; investigate classifier slowdown                                  | Auto after classifier ready |
 | `SubsetProofFailedError`                 | Sub-agent's SubsetProof failed `is_subset_envelope` against parent                                       | Sub-agent spawn refused; fix parent envelope or restrict sub-agent intent            | Never                       |
-| `NoveltyCheckFailedError`                | Authored constraint matched existing constraint (Jaccard ≥ 0.85 OR adversarial-wording ≥ 0.8)            | Re-author with substantive difference; or accept template attribution                | Manual                      |
-| `MinimumImpactCheckFailedError`          | Constraint's minimum-impact check failed (no dry-run effect on corpus + recent Ledger)                   | Re-author with broader applicability; or accept it as a permissive constraint        | Manual                      |
 | `EnterpriseDeploymentRecordInvalidError` | Enterprise-mode envelope cites `enterprise_deployment_record_hash` that fails verification               | Surface to enterprise admin; refuse all enterprise-mode actions                      | Never (T-024 defense)       |
 | `AuthorshipScoreDivergenceError`         | Cross-runtime authorship score disagreement (BET-2 violation)                                            | Halt posture ratchet; investigate runtime divergence                                 | Never                       |
-| `ClassifierRegistryMissError`            | `classifier_ref` not resolvable in `envoy-registry:*`                                                    | Refuse action per `unavailability_policy`; user re-prompts after registry sync       | Auto after registry sync    |
+| `ClassifierRegistryMissError`            | `classifier_ref` not resolvable in `envoy-registry:*` (Data Access dimension classifier ensemble)        | Refuse action per `unavailability_policy`; user re-prompts after registry sync       | Auto after registry sync    |
 | `IntersectConflictError`                 | Duplicate `constraint_id` or `composition_rule.order` collision during intersect                         | Surface conflict; user resolves via envelope edit                                    | Manual                      |
 | `ComposedRuleBudgetExceededError`        | Single composition_rule eval exceeded 5ms                                                                | Refuse rule fail-closed; flag rule for review                                        | Never (DSL bound)           |
 | `ComposedRuleTotalBudgetExceededError`   | Total composition_rule eval exceeded 10ms per tool-call                                                  | Refuse all rules fail-closed; reduce ruleset complexity                              | Never (DSL bound)           |
@@ -183,7 +181,7 @@ Per doc 02 §11. Every error logged as Ledger entry with `content_trust_level: s
 - **specs/trust-lineage.md** — RoleEnvelope + TaskEnvelope signed into Trust Vault; envelope_version binding.
 - **specs/ledger.md** — `envelope_edit` entries; Ledger records envelope version history.
 - **specs/runtime-abstraction.md** — `envelope_check()` + `envelope_canonical_form()` + `envelope_intersect()` + `envelope_re_read_checkpoint()`.
-- **specs/authorship-score.md** — novelty + minimum-impact algorithms in detail.
+- **specs/authorship-score.md** — count-only recompute + posture-ratchet gate in detail.
 - **specs/sub-agent-delegation.md** — SubsetProof schema + verifier.
 - **specs/grant-moment.md** — Grant Moment surfaces on envelope-check failures.
 - **specs/threat-model.md** — T-005, T-013, T-019, T-023, T-024, T-093, T-104 mitigations housed here.
@@ -210,9 +208,8 @@ Per doc 02 §11. Every error logged as Ledger entry with `content_trust_level: s
 
 ## Open questions
 
-1. Jaccard 0.85 threshold for novelty — empirical calibration needed post-Phase-01 user research.
-2. Classifier registry governance — Foundation-curated; community contributions via mint process.
-3. Composition DSL expressiveness — Phase 04 may relax some bounds based on user patterns.
-4. Migration cadence for algorithm-identifier — quarterly review vs on-demand.
-5. `goal_reconfirmation` schema is declared but no spec describes the algorithm consuming it (Round 1 R2-MED) — needs algorithm spec or removal.
-6. `sub_agent_session_inheritance: "transitive | isolated"` semantics owner — where does the transitive vs isolated runtime-decision algorithm live (Round 1 R2-MED).
+1. Classifier registry governance — Foundation-curated; community contributions via mint process.
+2. Composition DSL expressiveness — Phase 04 may relax some bounds based on user patterns.
+3. Migration cadence for algorithm-identifier — quarterly review vs on-demand.
+4. `goal_reconfirmation` schema is declared but no spec describes the algorithm consuming it (Round 1 R2-MED) — needs algorithm spec or removal.
+5. `sub_agent_session_inheritance: "transitive | isolated"` semantics owner — where does the transitive vs isolated runtime-decision algorithm live (Round 1 R2-MED).

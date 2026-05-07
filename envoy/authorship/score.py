@@ -113,15 +113,50 @@ class AuthorshipCounters:
         a wire payload missing one of the three top-level fields OR missing
         `template_id` / `template_hash` inside any provenance entry MUST
         fail loudly so the caller learns of the schema mismatch.
+
+        Type-validates every field per security review M-02: a malicious
+        wire payload `{"authored_count": "999", ...}` MUST be rejected at
+        deserialization, not silently coerced to a frozen dataclass that
+        downstream `stored == recomputed` comparisons handle non-deterministically.
         """
-        provenance = tuple(
-            (entry["template_id"], entry["template_hash"])
-            for entry in payload["template_provenance"]
-        )
+        authored_count = payload["authored_count"]
+        imported_count = payload["imported_count"]
+        if not isinstance(authored_count, int) or isinstance(authored_count, bool):
+            raise TypeError(f"authored_count must be int, got {type(authored_count).__name__}")
+        if not isinstance(imported_count, int) or isinstance(imported_count, bool):
+            raise TypeError(f"imported_count must be int, got {type(imported_count).__name__}")
+        if authored_count < 0:
+            raise ValueError(f"authored_count must be non-negative, got {authored_count}")
+        if imported_count < 0:
+            raise ValueError(f"imported_count must be non-negative, got {imported_count}")
+        raw_provenance = payload["template_provenance"]
+        if not isinstance(raw_provenance, list):
+            raise TypeError(
+                f"template_provenance must be list, got {type(raw_provenance).__name__}"
+            )
+        provenance_entries: list[tuple[str, str]] = []
+        for i, entry in enumerate(raw_provenance):
+            if not isinstance(entry, dict):
+                raise TypeError(
+                    f"template_provenance[{i}] must be dict, got {type(entry).__name__}"
+                )
+            tid = entry["template_id"]
+            thash = entry["template_hash"]
+            if not isinstance(tid, str):
+                raise TypeError(
+                    f"template_provenance[{i}].template_id must be str, "
+                    f"got {type(tid).__name__}"
+                )
+            if not isinstance(thash, str):
+                raise TypeError(
+                    f"template_provenance[{i}].template_hash must be str, "
+                    f"got {type(thash).__name__}"
+                )
+            provenance_entries.append((tid, thash))
         return cls(
-            authored_count=payload["authored_count"],
-            imported_count=payload["imported_count"],
-            template_provenance=provenance,
+            authored_count=authored_count,
+            imported_count=imported_count,
+            template_provenance=tuple(provenance_entries),
         )
 
 
@@ -250,17 +285,30 @@ def recompute_authorship_counters(
         dimension = getattr(envelope, dim_name)
 
         for c in dimension.authored_constraints:
-            if (
-                c.authored
-                and getattr(c, "novelty_check_passed", True)
-                and getattr(c, "minimum_impact_check_passed", True)
-            ):
+            # Strict-identity check (`is True`) defends against T-023 type-
+            # confusion inflation per security review H-02 + zero-tolerance
+            # Rule 2 fake-classification class. Any truthy non-bool value
+            # (`authored="yes"`, `authored=1`, `authored=[1]`) MUST NOT
+            # count — only an explicit boolean True does. Phase-04
+            # novelty + minimum-impact gates land via explicit dispatch
+            # (see Phase-04 dispatch note below); they are NOT consumed
+            # via `getattr` defaults here. Per security review H-01: a
+            # `getattr(c, "novelty_check_passed", True)` would silently
+            # weaken the T-023 defense on cross-version replay if a
+            # downgraded verifier received a flag-stripped envelope.
+            if c.authored is True:
                 authored_count += 1
 
         for c in dimension.imported_constraints:
             imported_count += 1
             template_origin = c.template_origin
-            template_hash = c.template_hash
+            # Normalize `template_hash` to "" for None per security review
+            # M-01 — `None` and `""` are semantically the same "no hash
+            # bound" state and MUST collapse to a single dedup key. Without
+            # this, an envelope crafted with two imports of the same
+            # `template_id` but `(None, "")` produces two provenance
+            # entries — provenance-inflation that diverges from spec intent.
+            template_hash = c.template_hash if c.template_hash else ""
             if template_origin:
                 key = (template_origin, template_hash)
                 if key not in seen_provenance:

@@ -183,11 +183,25 @@ class TestRecomputeFiveDimCanonicalOrder:
 
 
 class TestAuthoredCountingFlags:
-    """Phase 01 count-only: `authored=True` is the gate. Phase 04 extends
-    `AuthoredConstraint` with `novelty_check_passed` /
-    `minimum_impact_check_passed`; the recompute uses `getattr(..., True)`
-    so a Phase-04 dataclass extension automatically gates on the new flags
-    without changing this function."""
+    """Phase 01 count-only: `c.authored is True` is the SOLE gate.
+
+    Per security review (PR #14) H-01 + H-02 + reviewer M-2:
+    - `is True` strict-identity check (not `if c.authored`) defends against
+      T-023 type-confusion inflation: `authored="yes"`, `authored=1`,
+      `authored=[1]` MUST NOT count.
+    - The function does NOT consult Phase-04 `novelty_check_passed` /
+      `minimum_impact_check_passed` flags via `getattr`: those flags do
+      not exist on `AuthoredConstraint` today (verified at
+      `envoy/envelope/types.py`), and a `getattr(_, _, True)` default
+      would silently weaken the T-023 defense on a downgraded verifier
+      receiving a flag-stripped envelope.
+
+    Phase 04 will add the flags via schema extension AND extend this
+    recompute via explicit dispatch (NOT via `getattr` defaults) in the
+    same shard that lands the schema. The Phase-01-on-Phase-04-envelope
+    backward-compat path is documented as out-of-scope per
+    `specs/authorship-score.md § Out of scope (Phase 01)`.
+    """
 
     def test_recompute_only_counts_authored_when_authored_true(self) -> None:
         """`authored=False` does NOT count toward `authored_count`."""
@@ -197,11 +211,55 @@ class TestAuthoredCountingFlags:
         c = recompute_authorship_counters(env, ledger_slice=None)
         assert c.authored_count == 1
 
-    def test_recompute_forward_compat_novelty_flag_gates_when_present(self) -> None:
-        """Simulate Phase-04 dataclass extension: a constraint object with
-        `novelty_check_passed=False` MUST NOT count even though `authored=True`.
-        The recompute uses `getattr(c, "novelty_check_passed", True)` so a
-        Phase-04 extension flag is consumed when present."""
+    def test_recompute_strict_identity_rejects_truthy_string(self) -> None:
+        """Per security review H-02: `if c.authored is True` strict-identity
+        check rejects truthy non-bool values that previous `if c.authored`
+        would have accepted as authored. T-023 type-confusion defense.
+        """
+
+        @dataclass(frozen=True)
+        class TruthyAuthoredConstraint:
+            constraint_id: str
+            rule_ast: dict
+            authored: object  # type: ignore[assignment]
+
+        # Truthy non-bool values that `if c.authored:` would accept.
+        c_yes_string = TruthyAuthoredConstraint("a1", {}, "yes")
+        c_one_int = TruthyAuthoredConstraint("a2", {}, 1)
+        c_list_with_item = TruthyAuthoredConstraint("a3", {}, [1])
+        c_truthy_string_false = TruthyAuthoredConstraint("a4", {}, "false")  # truthy!
+        c_actually_true = TruthyAuthoredConstraint("a5", {}, True)
+        c_actually_false = TruthyAuthoredConstraint("a6", {}, False)
+
+        env = _make_envelope_config(
+            financial_authored=(  # type: ignore[arg-type]
+                c_yes_string,
+                c_one_int,
+                c_list_with_item,
+                c_truthy_string_false,
+                c_actually_true,
+                c_actually_false,
+            ),
+        )
+        c = recompute_authorship_counters(env, ledger_slice=None)
+        # Only c_actually_true (the literal True) counts. The 4 truthy non-bool
+        # values do NOT count, even though `if c.authored:` would accept them.
+        assert c.authored_count == 1
+
+    def test_recompute_phase04_flags_not_consumed_by_phase01(self) -> None:
+        """Per security review H-01 + reviewer M-2: T-02-30 (Phase 01)
+        does NOT consume Phase-04 `novelty_check_passed` /
+        `minimum_impact_check_passed` flags. Even if a future Phase-04
+        envelope is presented today (with the flags set to False), the
+        Phase 01 count-only gate counts every `authored is True`
+        constraint. Phase 04 will extend this function via explicit
+        dispatch when the schema lands; the deferral is documented in
+        `specs/authorship-score.md § Out of scope (Phase 01)`.
+
+        This test locks the Phase-01 contract: the spec edit removed
+        the novelty + minimum-impact algorithms; the implementation
+        matches what ships, no more.
+        """
 
         @dataclass(frozen=True)
         class Phase04AuthoredConstraint:
@@ -211,43 +269,18 @@ class TestAuthoredCountingFlags:
             novelty_check_passed: bool
             minimum_impact_check_passed: bool
 
-        # Construct envelope with a tuple containing the Phase-04 shape.
-        # The recompute MUST gate on novelty_check_passed / minimum_impact_check_passed.
-        c_true = Phase04AuthoredConstraint(
-            constraint_id="a-all-true",
-            rule_ast={},
-            authored=True,
-            novelty_check_passed=True,
-            minimum_impact_check_passed=True,
-        )
-        c_novelty_false = Phase04AuthoredConstraint(
-            constraint_id="a-novelty-false",
-            rule_ast={},
-            authored=True,
-            novelty_check_passed=False,
-            minimum_impact_check_passed=True,
-        )
-        c_min_impact_false = Phase04AuthoredConstraint(
-            constraint_id="a-min-impact-false",
-            rule_ast={},
-            authored=True,
-            novelty_check_passed=True,
-            minimum_impact_check_passed=False,
-        )
-        c_authored_false = Phase04AuthoredConstraint(
-            constraint_id="a-authored-false",
-            rule_ast={},
-            authored=False,
-            novelty_check_passed=True,
-            minimum_impact_check_passed=True,
-        )
+        c_all_true = Phase04AuthoredConstraint("a1", {}, True, True, True)
+        c_novelty_false = Phase04AuthoredConstraint("a2", {}, True, False, True)
+        c_min_impact_false = Phase04AuthoredConstraint("a3", {}, True, True, False)
+        c_authored_false = Phase04AuthoredConstraint("a4", {}, False, True, True)
 
         env = _make_envelope_config(
-            financial_authored=(c_true, c_novelty_false, c_min_impact_false, c_authored_false),  # type: ignore[arg-type]
+            financial_authored=(c_all_true, c_novelty_false, c_min_impact_false, c_authored_false),  # type: ignore[arg-type]
         )
         c = recompute_authorship_counters(env, ledger_slice=None)
-        # Only c_true (T-T-T) counts. Other 3 (F-T-T, T-F-T, T-T-F) excluded.
-        assert c.authored_count == 1
+        # All 3 with authored=True count (regardless of Phase-04 flags).
+        # Only c_authored_false is excluded.
+        assert c.authored_count == 3
 
 
 # ---------------------------------------------------------------------------
