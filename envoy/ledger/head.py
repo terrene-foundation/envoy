@@ -76,6 +76,13 @@ class HeadCommitment:
 class HaltedByRollbackRecord:
     """Forensic record minted when the runtime detects a rollback.
 
+    Naming note: the Python class name carries the `Record` suffix for
+    convention; the wire-form `entry_type` literal is the bare
+    `"HaltedByRollback"` per spec § Halted state. `EnvoyLedger._persist_halt_record`
+    constructs the EntryEnvelope with `type_="HaltedByRollback"` (no
+    suffix) when persisting. Audit-trail consumers grep the audit_store
+    for `action == "HaltedByRollback"`.
+
     Per specs/ledger.md § Halted state (lines 532-545): the runtime appends
     this entry BEFORE halting further Ledger writes when:
 

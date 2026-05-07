@@ -86,6 +86,9 @@ testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+markers = [
+    "regression: Permanent regression tests reproducing fixed bugs (rules/testing.md § Regression Testing); never deleted",
+]
 
 [tool.black]
 line-length = 100

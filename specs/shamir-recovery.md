@@ -28,6 +28,16 @@ Alternative: 5 in user's own safes (no human holders) — recommended for high-O
 24 BIP-39 words; Trezor-compatible.
 NO "Envoy" label; NO name. Distribution checklist persists only opaque slot labels in Trust Vault; real names optional + in hidden envelope (Phase 04) only (H-06 fix).
 
+### Slot label whitelist
+
+The renderer, persister, and `DistributionChecklist.__post_init__` each enforce a structural three-layer defense:
+
+1. Whitelist regex `^slot-\d+$` — labels MUST match the canonical opaque form `slot-0`..`slot-N`.
+2. ASCII-only — Unicode confusables (e.g. Cyrillic `s` U+0455) are rejected.
+3. Substring blacklist — `envoy` (case-insensitive) is forbidden anywhere in the label.
+
+A label that fails any layer raises `EnvoyLabelOnCardError` and the print is refused. The check is intentionally duplicated at all three sites so no construction path bypasses the whitelist (no cross-module coupling on a single check).
+
 ## Recovery flow
 
 Enter words from any 3 cards (any order). Per-card checksum validation at entry (L-03 fix). Reconstruction; vault unlock.
@@ -42,17 +52,17 @@ Per specs/trust-lineage.md — Genesis Record carries `shard_public_commitments:
 
 ## Error taxonomy
 
-| Error                                | Trigger                                                                              | User action                                                                        | Retry                   |
-| ------------------------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | ----------------------- |
-| `InsufficientSharesError`            | Recovery attempted with fewer than threshold (default 3) valid shards                | User retrieves additional shards from holders/safes; resume recovery               | Manual after retrieval  |
-| `ShardChecksumFailedError`           | Per-card BIP-39 checksum invalid at entry (L-03 fix)                                 | Re-enter card carefully; if persistent, card may be transcription-corrupted        | Manual after re-entry   |
-| `CommitmentVerificationFailedError`  | Reconstructed master key does not match `shard_public_commitments` in Genesis Record | Refuse unlock; investigate counterfeit-shard or social-engineering attack          | Never (security event)  |
-| `RecoveryRateLimitedError`           | Recovery attempts exceed rate ceiling (T-002 household-adversarial defense)          | Wait for rate-limit window expiry; consult lockout UX                              | Auto after window       |
-| `ShardSlotLabelMismatchError`        | Card-slot label entered does not match Distribution Checklist opaque slot label      | Surface as wrong-card; user retrieves correct slot OR investigates checklist drift | Manual after correction |
-| `RotationGracePeriodElapsedError`    | Pre-rotation card presented after 30-day grace period                                | Refuse card; user uses post-rotation card from refreshed 5-set                     | Never                   |
-| `EnvoyLabelOnCardWarning` (advisory) | User-supplied card carries "Envoy" or name label (H-06 violation)                    | UX advisory; user re-prints clean card per format spec                             | Manual after re-print   |
-| `CryptoLibAuditMissingError`         | Phase 00 crypto audit not landed for selected SLIP-0039 implementation               | Block recovery feature in production; complete audit before ship                   | Never (release gate)    |
-| `ShardPublicCommitmentMissingError`  | Genesis Record lacks `shard_public_commitments` (pre-Phase-01 vault)                 | Migrate vault to current Genesis Record schema; re-shard if necessary              | Manual after migration  |
+| Error                               | Trigger                                                                                                                                                                              | User action                                                                         | Retry                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------- |
+| `InsufficientSharesError`           | Recovery attempted with fewer than threshold (default 3) valid shards                                                                                                                | User retrieves additional shards from holders/safes; resume recovery                | Manual after retrieval  |
+| `ShardChecksumFailedError`          | Per-card BIP-39 checksum invalid at entry (L-03 fix)                                                                                                                                 | Re-enter card carefully; if persistent, card may be transcription-corrupted         | Manual after re-entry   |
+| `CommitmentVerificationFailedError` | Reconstructed master key does not match `shard_public_commitments` in Genesis Record                                                                                                 | Refuse unlock; investigate counterfeit-shard or social-engineering attack           | Never (security event)  |
+| `RecoveryRateLimitedError`          | Recovery attempts exceed rate ceiling (T-002 household-adversarial defense)                                                                                                          | Wait for rate-limit window expiry; consult lockout UX                               | Auto after window       |
+| `ShardSlotLabelMismatchError`       | Card-slot label entered does not match Distribution Checklist opaque slot label                                                                                                      | Surface as wrong-card; user retrieves correct slot OR investigates checklist drift  | Manual after correction |
+| `RotationGracePeriodElapsedError`   | Pre-rotation card presented after 30-day grace period                                                                                                                                | Refuse card; user uses post-rotation card from refreshed 5-set                      | Never                   |
+| `EnvoyLabelOnCardError`             | User-supplied slot label fails the opaque-label whitelist (`^slot-\d+$`, ASCII-only, no `envoy` substring) — H-06 hard rejection at renderer + persister + dataclass `__post_init__` | Refuse to render; user re-supplies a canonical `slot-N` label (N=0..total_shards-1) | Manual after re-supply  |
+| `CryptoLibAuditMissingError`        | Phase 00 crypto audit not landed for selected SLIP-0039 implementation                                                                                                               | Block recovery feature in production; complete audit before ship                    | Never (release gate)    |
+| `ShardPublicCommitmentMissingError` | Genesis Record lacks `shard_public_commitments` (pre-Phase-01 vault)                                                                                                                 | Migrate vault to current Genesis Record schema; re-shard if necessary               | Manual after migration  |
 
 ## Cross-references
 

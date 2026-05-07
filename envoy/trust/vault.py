@@ -299,8 +299,16 @@ class TrustVault:
             self._idle_timer_task.cancel()
             try:
                 await self._idle_timer_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except asyncio.CancelledError:
+                # Expected — we just cancelled it.
                 pass
+            except Exception:
+                # Per rules/zero-tolerance.md Rule 3: a non-cancellation
+                # failure in the idle-timer task is unexpected; log loudly
+                # so it surfaces in the operator's WARN+ scan, but proceed
+                # to lock — the security-critical path (zeroize + drop
+                # payload) MUST still run.
+                logger.exception("trust_vault.lock.idle_timer_cleanup_failed")
         self._idle_timer_task = None
 
         if self._master_key is not None:
@@ -427,8 +435,24 @@ class TrustVault:
             return {}
         try:
             envelope = _json.loads(payload.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            # Legacy opaque-bytes payload — no metadata envelope present.
+        except (ValueError, UnicodeDecodeError) as parse_exc:
+            # The payload exists but cannot be JSON-decoded as a metadata
+            # envelope. This is either (a) a legacy opaque-bytes payload
+            # whose owner never wrote a metadata envelope (intentional
+            # passthrough) OR (b) corruption / tamper that survived the
+            # AES-GCM tag check (extremely unlikely; the tag covers the
+            # full payload). We cannot distinguish the two from inside the
+            # vault, so we WARN — operators that grep for
+            # `trust_vault.read_metadata.parse_failed` see both cases and
+            # can investigate. Returning {} preserves the legacy-payload
+            # semantics.
+            logger.warning(
+                "trust_vault.read_metadata.parse_failed",
+                extra={
+                    "error_type": type(parse_exc).__name__,
+                    "payload_len": len(payload),
+                },
+            )
             return {}
         if not isinstance(envelope, dict):
             return {}
@@ -689,14 +713,24 @@ class TrustVault:
                 pass
             raise
         os.replace(tmp_path, self._vault_path)
-        # Best-effort restrictive permissions per
+        # Restrictive permissions per
         # rules/trust-plane-security.md MUST Rule 6 (database file permissions).
-        try:
-            os.chmod(self._vault_path, 0o600)
-        except OSError:
-            # Windows / non-POSIX may refuse chmod — Phase 02 platform
-            # abstraction handles per-OS permission models.
-            pass
+        # The tmp file was opened with mode 0o600, but `os.replace` does NOT
+        # copy permissions across filesystems on every POSIX implementation
+        # — explicit chmod on the final path is the structural guard.
+        if os.name == "posix":
+            try:
+                os.chmod(self._vault_path, 0o600)
+            except OSError:
+                # Disk-full / immutable-bit / FS-without-chmod: log loudly
+                # so the operator notices the vault may be world-readable.
+                # Per rules/zero-tolerance.md Rule 3 and rules/observability.md
+                # Rule 5, silent swallow on a security-critical permission
+                # set is BLOCKED.
+                logger.warning(
+                    "trust_vault.write.chmod_failed",
+                    extra={"path_repr": repr(str(self._vault_path))},
+                )
 
     # ------------------------------------------------------------------
     # Shamir export / import hooks (T-01-14)

@@ -23,10 +23,13 @@ from envoy.trust.types import (
     PrincipalId,
     SeedResult,
 )
+from envoy.trust.vault import DEFAULT_IDLE_TTL_SECONDS, TrustVault
 
 __all__ = [
     # Facade
     "TrustStoreAdapter",
+    "TrustVault",
+    "DEFAULT_IDLE_TTL_SECONDS",
     # Errors (re-exported per package skeleton § 2.2 typed-error import contract)
     "GenesisAlreadySeededError",
     "PrincipalRequiredError",
