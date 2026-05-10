@@ -1,6 +1,6 @@
 ---
 name: co-reference
-description: "CARE/EATP/CO/COC framework family reference. Use when discussing governance philosophy, trust protocols, methodology, or codegen architecture. Covers Dual Plane Model, Mirror Thesis, trust lineage, five-layer architecture, three fault lines, or framework relationships."
+description: "CARE/EATP/CO/COC reference — governance, trust protocols, Dual Plane, Mirror Thesis."
 allowed-tools:
   - Read
   - Glob
@@ -60,7 +60,6 @@ CARE (Philosophy: What is the human for?)
 | --------- | -------------------------------------------------------------------------------------------------------------------- |
 | EATP      | [26-eatp-reference/](../26-eatp-reference/SKILL.md) — TrustPlane SDK, BudgetTracker, PostureStore, security patterns |
 | PACT      | [29-pact/](../29-pact/SKILL.md) — GovernanceEngine, D/T/R addressing, envelopes, clearance                           |
-| COC       | [28-coc-reference/](../28-coc-reference/SKILL.md) — Template implementation details                                  |
 
 ## Central Insight
 

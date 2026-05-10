@@ -1,6 +1,6 @@
 ---
 name: governance
-description: Load governance patterns for trust-enforced agents, verification gradient, delegation chains, human intervention, and compliance reports. Use when building governed agents, configuring trust postures, or generating compliance reports.
+description: "Governance (Rust) — trust enforcement, verification gradient, delegation, human intervention."
 ---
 
 # Governance Patterns

@@ -1,0 +1,46 @@
+# Allowlist of files that legitimately reference src/kailash/ source paths
+# (the kailash-py SDK). These are global COC files that guide developers
+# through provenance, compliance, and cross-SDK navigation. They legitimately
+# reference kailash-py source paths even though this template serves
+# Python/Ruby binding consumers of kailash-rs.
+#
+# CI validates .claude/ content doesn't contain src/kailash/ contamination
+# EXCEPT in files listed here. One file path per line, relative to repo root.
+# Lines starting with # are comments, blank lines ignored.
+#
+# This file is AUTO-MAINTAINED by loom's coc-sync agent (Gate 2 Step 7.5).
+# Manual edits are preserved — auto-refresh only APPENDS new entries under a
+# date-stamped block. Removals require human action.
+#
+# Add a path here manually only if a new skill/agent legitimately needs to
+# reference kailash-py source (e.g., cross-SDK provenance, spec-compliance
+# tracking).
+
+# ─── seeded 2026-04-28 from loom v2.9.3 (multi-CLI rs template) ──────
+# Cross-SDK navigation, provenance, and compliance files.
+.claude/guides/co-setup/07-sync-flow.md
+.claude/hooks/session-start.js
+.claude/rules/build-repo-release-discipline.md
+.claude/rules/dataflow-identifier-safety.md
+.claude/skills/02-dataflow/cache-cas-fail-closed.md
+.claude/skills/10-deployment-git/multi-package-release-wave.md
+.claude/skills/29-pact/pact-conformance-features.md
+.claude/skills/29-pact/pact-governance-engine.md
+.claude/skills/30-claude-code-patterns/parallel-merge-workflow.md
+.claude/skills/30-claude-code-patterns/sdk-upstream-donation.md
+
+# ─── auto-extended 2026-04-30 from loom v2.11.0 ──────
+# Files newly distributed in this sync that contain legitimate
+# src/kailash/ references. Auto-appended by coc-sync Step 7.5.
+.claude/commands/cc-audit.md
+
+# ─── auto-extended 2026-05-01 from loom v2.13.0 ──────
+# Files newly distributed in this sync that contain legitimate
+# src/kailash/ references. Auto-appended by coc-sync Step 7.5.
+.claude/skills/12-testing-strategies/SKILL.md
+
+# ─── auto-extended 2026-05-09 from loom v2.28.2 (7bbc13b) ──────
+# Files newly distributed in this sync that contain legitimate
+# src/kailash/ references. Auto-appended by coc-sync Step 7.5.
+.claude/skills/15-enterprise-infrastructure/durability-patterns.md
+.claude/skills/15-enterprise-infrastructure/scheduler-patterns.md

@@ -1,17 +1,24 @@
 {
-  "version": "2.19.0",
+  "version": "2.22.3",
   "type": "coc-project",
-  "description": "COC downstream project for Python/Ruby developers using Rust-backed Kailash bindings",
-  "updated": "2026-05-06",
+  "description": "COC downstream project for Python/Ruby developers using Rust-backed Kailash bindings (multi-CLI: Claude+Codex+Gemini)",
+  "updated": "2026-05-11",
   "upstream": {
-    "template": "kailash-coc-claude-rs",
-    "template_repo": "terrene-foundation/kailash-coc-claude-rs",
-    "template_version": "2.19.0",
-    "synced_at": "2026-05-06T00:00:00Z",
-    "build_version": "2.19.0",
-    "source_commit": "18e6f3f",
+    "template": "kailash-coc-rs",
+    "template_repo": "terrene-foundation/kailash-coc-rs",
+    "template_version": "2.22.3",
+    "synced_at": "2026-05-11T00:00:00Z",
+    "build_version": "2.22.3",
+    "source_commit": "b50f869",
+    "loom_version": "2.29.4",
+    "loom_sha": "b50f869",
+    "migrated_from": {
+      "template": "kailash-coc-claude-rs",
+      "template_version": "2.19.0",
+      "migrated_at": "2026-05-11T00:00:00Z"
+    },
     "sdk_packages": {
-      "kailash-rs (workspace)": "3.25.0",
+      "kailash-rs (workspace)": "3.27.0",
       "eatp": "0.1.0",
       "kailash-governance": "0.1.0",
       "kailash-pact": "0.1.0"
