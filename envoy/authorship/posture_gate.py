@@ -61,12 +61,19 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import Optional, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
 
 # Module-scope import (security-reviewer F-5): the prior local-import inside
 # the divergence branch was unnecessary defensive — `score.py` does NOT import
 # from `posture_gate.py`, so module-scope import is structurally safe.
 from envoy.authorship.score import AuthorshipScoreDivergenceError
+
+if TYPE_CHECKING:
+    # `bet12_emitter` imports `PostureLevel` from THIS module, so the forward
+    # reference here is required to break the static-import cycle. Runtime
+    # access is via the DI-supplied instance (`self._bet12_emitter`); no
+    # runtime import of the class is needed.
+    from envoy.authorship.bet12_emitter import BET12CadenceEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -532,13 +539,17 @@ class PostureGate:
         *,
         ledger: _LedgerProtocol,
         revoke_hook: _RevokeHook,
+        bet12_emitter: "BET12CadenceEmitter",
     ) -> None:
         if ledger is None:
             raise ValueError("ledger is required (no None default)")
         if revoke_hook is None:
             raise ValueError("revoke_hook is required (no None default)")
+        if bet12_emitter is None:
+            raise ValueError("bet12_emitter is required (no None default)")
         self._ledger = ledger
         self._revoke_hook = revoke_hook
+        self._bet12_emitter = bet12_emitter
 
     async def request_transition(
         self,
@@ -546,8 +557,10 @@ class PostureGate:
         current: PostureLevel,
         target: PostureLevel,
         evidence: PostureEvidence,
+        principal_id: str,
         trigger: str = "user_request",
         revoke_on_demotion: tuple[str, ...] = (),
+        days_at_current_posture: float = 0.0,
     ) -> PostureChangeResult:
         """Request a posture transition; raises on any failed gate.
 
@@ -557,6 +570,9 @@ class PostureGate:
             target: requested posture level.
             evidence: `PostureEvidence` carrying authorship counts, mode,
                 grant + cooling-off flags.
+            principal_id: subject of the transition; hashed by
+                `BET12CadenceEmitter` per `rules/event-payload-classification.md`
+                Rule 2 before the cohort cadence event is emitted (T-02-32).
             trigger: one of `_VALID_TRIGGERS`. Per `specs/ledger.md`
                 § posture_change schema.
             revoke_on_demotion: tuple of `agent_id` strings the cascade-revoke
@@ -570,6 +586,10 @@ class PostureGate:
                 `TrustStoreAdapter.revoke` is itself idempotent (dedup by
                 cached `RevocationResult` per agent_id) so retry is safe at
                 the Trust Store layer.
+            days_at_current_posture: time at `current` level for the BET-12
+                cadence event. Phase 03 Weekly Posture Review computes from
+                PostureStore history; Phase 01 callers may pass 0.0 if not
+                tracked (the emitter rejects negative values).
 
         Returns:
             `PostureChangeResult(new_level, ledger_entry_id)` on success.
@@ -726,6 +746,24 @@ class PostureGate:
                 "trigger": trigger,
                 "ledger_entry_id": entry_id,
             },
+        )
+
+        # ----- STEP 5+: BET-12 cadence emission (T-02-32) -----
+        # Per `01-analysis/09-authorship-score-implementation.md` § 3.3 +
+        # `briefs/00-phase-01-mvp-scope.md` § Phase 01 invariants #3,
+        # the BET-12 emitter fires on every transition the gate accepts.
+        # Per `rules/orphan-detection.md` Rule 1, this IS the production
+        # call site that prevents the emitter from being an orphan facade.
+        # Cohort cadence carries (from, to, hashed principal_id, days at
+        # current posture, authored count at transition) — NOT envelope
+        # hash, NOT authored_constraints names, per
+        # `rules/event-payload-classification.md` Rule 3.
+        await self._bet12_emitter.emit(
+            principal_id=principal_id,
+            from_level=current,
+            to_level=target,
+            days_at_current_posture=days_at_current_posture,
+            authored_count_at_transition=evidence.authorship_score_recomputed,
         )
 
         return PostureChangeResult(

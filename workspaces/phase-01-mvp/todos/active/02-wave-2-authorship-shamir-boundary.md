@@ -50,19 +50,28 @@
 
 ---
 
-## T-02-32 — Build envoy/authorship/bet12_emitter
+## T-02-32 — Build envoy/authorship/bet12_emitter ✅ CLOSED 2026-05-11
+
+**Status:** Shipped. `BET12CadenceEmitter` primitive + `BET12Sink` Protocol + `BET12CadencePayload` frozen dataclass landed at `envoy/authorship/bet12_emitter.py` (~150 LOC); wired as required DI surface on `PostureGate.__init__` and emitted at Step 5+ post-Ledger in `request_transition` per `rules/orphan-detection.md` Rule 1 production-call-site contract. 17 new Tier 1 tests in `tests/tier1/test_bet12_cadence_emitter.py` + 6 new wiring tests in `tests/tier1/test_posture_gate_5_step_fail_closed.py::TestStep5PlusBET12Emission` + 1 new `test_bet12_emitter_required` (construction discipline). Full suite 566/566 pass.
+
+**Privacy contract enforced (per `rules/event-payload-classification.md` Rules 2 + 3):** `principal_id` hashed via `f"sha256:{sha256(pid)[:8]}"` byte-identity with kailash-py `format_record_id_for_event`; payload schema is exactly `{bet_id, principal_id_hash, from_level, to_level, days_at_current_posture, authored_count_at_transition}` — no envelope hash, no authored_constraints names, no field names. Defense-in-depth: `TestPrivacyContract::test_payload_fields_are_only_cohort_safe` AST-locks the dataclass field set; `test_emit_signature_only_accepts_cohort_safe_kwargs` AST-locks the `emit()` signature against Rule-3-blocked kwargs (`envelope_hash`, `authored_constraints`, `field_name`, etc.).
+
+**Deferred to T-02-33 (Tier 2 wiring), out of T-02-32 scope:**
+
+- The concrete Phase-01 default sink writing ritual-style Ledger entries with `bet_id="BET-12"` requires `specs/ledger.md` schema disposition (extend `ritual_completion` `ritual_kind` enum vs introduce `posture_transition_cadence` entry type) — that decision lives at Tier 2 wiring time per `rules/specs-authority.md` MUST Rule 5. T-02-32 ships the Protocol-typed sink; T-02-33 ships the concrete `LocalLedgerBET12Sink` + the spec edit.
+- `days_at_current_posture` Phase 01 default is 0.0 (callers may omit); Phase 03 Weekly Posture Review ritual computes from PostureStore history. T-02-33 wires the WPR ritual call site; until then the BET dataset honestly records 0.0 entries rather than fabricating values.
 
 **Implements:** BET-12 falsifiability per `briefs/00-phase-01-mvp-scope.md` § Phase 01 invariants #3.
 
-**Source:** Shard 9 § 3 step 3.
+**Source:** Shard 9 § 3 step 3 (`01-analysis/09-authorship-score-implementation.md` § 3.3).
 
-**Action:** `BET12CadenceEmitter` — cohort-level posture-transition Ledger emit (Phase 01 sink: local-only `ritual_completion` entries with `bet_id="BET-12"`).
+**Action:** `BET12CadenceEmitter` — cohort-level posture-transition emitter; sink Protocol-typed for Phase 02 Foundation Health Heartbeat aggregation per `specs/foundation-health-heartbeat.md`.
 
-**Capacity check:** ~80 LOC; 2 invariants (bet_id tag canonical; emit on every posture-transition); 1 call-graph hop.
+**Capacity check:** ~150 LOC load-bearing logic (within ≤500 LOC threshold); 2 invariants (`bet_id` tag canonical via module constant `_BET_ID_CANONICAL` + AST-lock on `emit()` signature; emit on every posture-transition the gate accepts via Step 5+ wiring + `test_failed_gate_does_not_emit_bet12` regression); 1 call-graph hop (PostureGate.request_transition → BET12CadenceEmitter.emit → BET12Sink.write).
 
-**Blocks on:** T-02-31.
+**Blocks on:** T-02-31. ✓
 
-**Estimate:** 0.25 session.
+**Estimate:** 0.25 session. Actual: ~0.3 session including signature-change patches (41 `request_transition` call sites + `_make_gate` factory).
 
 ---
 
