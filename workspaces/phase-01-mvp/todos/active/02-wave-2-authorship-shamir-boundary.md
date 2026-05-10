@@ -74,6 +74,8 @@
 
 **Estimate:** 0.25 session.
 
+**Carry-forward from T-02-31 (per `journal/0020-DECISION-envelope-edit-deferred-to-tier-2.md`):** T-02-33 wires the paired `envelope_edit` Ledger entry on ratchet-up (currently absent in T-02-31's `posture_change`-only emission per spec line 41). Tier 2 acceptance MUST assert: (a) on every ratchet-up, BOTH a `posture_change` entry AND a paired `envelope_edit` entry are appended in order; (b) the `envelope_edit` carries the new envelope's content_hash + version bump per `specs/envelope-model.md` § envelope_edit schema; (c) the envelope's `metadata.posture_level` field reflects the new level. Test class: `TestEnvelopeEditPairingOnRatchetUp` (≥3 cases: PSEUDO→TOOL, TOOL→SUPERVISED, multi-step PSEUDO→DELEGATING). The PostureGate signature MAY require extension with an `_EnvelopeProtocol` DI surface OR an `envelope` parameter on `request_transition`; the disposition is for this shard to choose.
+
 ---
 
 ## T-02-34 — Build envoy/shamir/ritual ✅ CLOSED 2026-05-07 (PR #13)

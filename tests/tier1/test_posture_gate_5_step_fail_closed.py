@@ -256,6 +256,49 @@ class TestPostureEvidencePostInit:
                 envelope_id_hash=None,  # type: ignore[arg-type]
             )
 
+    def test_envelope_id_hash_length_capped(self):
+        # security-reviewer F-2: defends against log-volume amplification
+        # via attacker-controlled extra= keys.
+        with pytest.raises(ValueError, match="envelope_id_hash length"):
+            PostureEvidence(
+                authorship_score_recomputed=0,
+                authorship_score_stored=0,
+                envelope_id_hash="x" * 129,
+            )
+
+    def test_envelope_id_hash_charset_enforced(self):
+        # security-reviewer F-2: defends against log-injection via
+        # control-character / whitespace in structured-log extra= keys.
+        for bad in (
+            "sha256:abc def",  # space
+            "sha256:abc\nlog-injection",  # newline
+            "sha256:abc;DROP",  # semicolon
+            "sha256:abc<script>",  # angle brackets
+            "sha256:abc\x00null",  # null byte
+        ):
+            with pytest.raises(ValueError, match="envelope_id_hash must match"):
+                PostureEvidence(
+                    authorship_score_recomputed=0,
+                    authorship_score_stored=0,
+                    envelope_id_hash=bad,
+                )
+
+    def test_envelope_id_hash_canonical_shape_accepted(self):
+        # Canonical sha256 + base64-style + alphanumeric all pass.
+        for ok in (
+            "sha256:abc123",
+            "sha256:" + "f" * 64,
+            "envelope_v1-12345",
+            "x" * 128,  # exactly at the cap
+            "",  # explicitly permitted (callers without envelope context)
+        ):
+            ev = PostureEvidence(
+                authorship_score_recomputed=0,
+                authorship_score_stored=0,
+                envelope_id_hash=ok,
+            )
+            assert ev.envelope_id_hash == ok
+
     def test_evidence_is_frozen(self):
         from dataclasses import FrozenInstanceError
 
@@ -340,6 +383,29 @@ class TestThresholdMultiStepPathIndependence:
             )
             == 5
         )
+
+
+class TestThresholdDefensiveUnreachableGuard:
+    """security-reviewer F-4: the `_required_authorship` defensive raise on
+    structurally-unreachable inputs (target <= current invariant) MUST fire
+    when the precondition is violated. Without this test, a future refactor
+    that accidentally widens the precondition silently swallows the assertion."""
+
+    def test_target_pseudo_unreachable_raises(self):
+        # target=PSEUDO is impossible under the `target > current` precondition
+        # because PSEUDO is integer-value 0 (the lowest level). Calling the
+        # helper directly with target=PSEUDO bypasses the precondition; the
+        # defensive raise MUST fire.
+        with pytest.raises(ValueError, match="unreachable"):
+            _required_authorship(PostureLevel.PSEUDO, PostureLevel.PSEUDO, PostureMode.PERSONAL)
+
+    def test_target_tool_multistep_unreachable_raises(self):
+        # target=TOOL via a multi-step path is impossible — only PSEUDO->TOOL
+        # reaches TOOL, and that's a single-step branch handled at the top.
+        # Calling with (TOOL, TOOL) (target == current) is not >=current, but
+        # the helper has no precondition guard; the defensive raise fires.
+        with pytest.raises(ValueError, match="unreachable"):
+            _required_authorship(PostureLevel.TOOL, PostureLevel.TOOL, PostureMode.PERSONAL)
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +826,75 @@ class TestStep4CascadeRevoke:
             )
         assert rev.calls == []
         assert led.appends == []
+
+    def _attempt_revoke(self, gate, agent_id):
+        """Helper: invoke a demotion with a single agent_id; return the
+        raise context for subsequent assertions."""
+        return _run(
+            gate.request_transition(
+                current=PostureLevel.DELEGATING,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(),
+                revoke_on_demotion=(agent_id,),
+            )
+        )
+
+    def test_revoke_agent_id_too_long_rejected(self):
+        # security-reviewer F-1: defense-in-depth at the gate boundary
+        # (do not rely on TrustStoreAdapter.revoke as the sole guard).
+        gate, led, rev = _make_gate()
+        with pytest.raises(ValueError, match="length .* exceeds"):
+            self._attempt_revoke(gate, "x" * 257)
+        assert rev.calls == []
+        assert led.appends == []
+
+    def test_revoke_agent_id_null_byte_rejected(self):
+        gate, led, rev = _make_gate()
+        with pytest.raises(ValueError, match="null byte"):
+            self._attempt_revoke(gate, "agent\x00bypass")
+        assert rev.calls == []
+        assert led.appends == []
+
+    def test_revoke_agent_id_control_char_rejected(self):
+        gate, led, rev = _make_gate()
+        with pytest.raises(ValueError, match="control character"):
+            self._attempt_revoke(gate, "agent\nlog-injection")
+        assert rev.calls == []
+        assert led.appends == []
+
+    def test_revoke_agent_id_path_separator_rejected(self):
+        gate, led, rev = _make_gate()
+        for bad in ("agent/../etc/passwd", "agent\\windows", "../escape"):
+            rev.calls.clear()
+            led.appends.clear()
+            with pytest.raises(ValueError):
+                self._attempt_revoke(gate, bad)
+            assert rev.calls == []
+            assert led.appends == []
+
+    def test_revoke_agent_id_leading_dot_rejected(self):
+        gate, led, rev = _make_gate()
+        with pytest.raises(ValueError, match="hidden-file shape"):
+            self._attempt_revoke(gate, ".hidden-agent")
+        assert rev.calls == []
+        assert led.appends == []
+
+    def test_revoke_agent_id_legitimate_pseudonym_accepted(self):
+        # Mirrors envoy/trust/store.py::_validate_id_safety contract:
+        # pseudonyms can contain @, ., +, -, _ — not slug-only.
+        gate, led, rev = _make_gate()
+        for ok in ("alice@example", "agent.42+ci", "agent_42-prod", "a"):
+            rev.calls.clear()
+            led.appends.clear()
+            self._attempt_revoke(gate, ok)
+            assert rev.calls == [
+                {
+                    "agent_id": ok,
+                    "reason": "posture_demotion:DELEGATING->TOOL",
+                    "revoked_by": "posture_gate",
+                }
+            ]
+            assert len(led.appends) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,16 @@ Phase 01 narrow scope:
 - Shared Household composition per `specs/posture-ladder.md` § Shared Household
   semantics is OUT OF SCOPE — that's `effective_posture_for_composition` (a
   separate function, Phase 03+).
+- **`envelope_edit` Ledger entry pairing deferred to T-02-33 (Tier 2 wiring).**
+  Spec line 41 mandates that ratchet-up writes BOTH a `posture_change` entry
+  AND an `envelope_edit` entry (because new posture is part of the envelope
+  schema). Phase 01 PostureGate emits ONLY the `posture_change` entry —
+  `envelope_edit` requires the EnvoyLedger envelope-version chain to be wired
+  against a real `EnvelopeCompiler` consumer, which lands at T-02-33. The
+  deferral is documented at `specs/posture-ladder.md` § Out of scope (this
+  phase) per `rules/spec-accuracy.md` Exception 1 + `rules/specs-authority.md`
+  Rule 6 (deviation acknowledgment), and at `journal/0020-DECISION-envelope-
+  edit-deferred-to-tier-2.md`.
 
 Rule mapping:
 - `rules/zero-tolerance.md` Rule 2 — every typed error has a real raise site;
@@ -48,11 +58,71 @@ Rule mapping:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import Optional, Protocol
 
+# Module-scope import (security-reviewer F-5): the prior local-import inside
+# the divergence branch was unnecessary defensive — `score.py` does NOT import
+# from `posture_gate.py`, so module-scope import is structurally safe.
+from envoy.authorship.score import AuthorshipScoreDivergenceError
+
 logger = logging.getLogger(__name__)
+
+
+# Bounds on `envelope_id_hash` per security-reviewer F-2 — the field is
+# attacker-controlled (flows from a wire-form envelope's metadata) and lands
+# in `extra=` keys on every divergence WARN + recompute DEBUG log line. Cap
+# length to defend against log-volume amplification; restrict charset to
+# alphanumeric + `:_-` to defend against log-injection / aggregator-side
+# parser confusion. Matches the canonical hash shapes the project uses
+# (`sha256:<hex>` family).
+_ENVELOPE_ID_HASH_MAX_LEN = 128
+_ENVELOPE_ID_HASH_PATTERN = re.compile(r"^[a-zA-Z0-9:_-]*$")
+
+
+# Agent-id safety bounds for `revoke_on_demotion` per security-reviewer F-1 —
+# matches the canonical defense `_validate_id_safety` at
+# `envoy/trust/store.py:55` (intentionally NOT imported because that helper is
+# `_`-prefixed module-private; replicating the contract here keeps PostureGate
+# the boundary-of-record per `rules/security.md` § Multi-Site Kwarg Plumbing).
+# Threats blocked: path traversal (`..`, `/`, `\`), null-byte truncation,
+# control-character log injection, hidden-file shape (leading `.`), DoS via
+# oversize identifier.
+_AGENT_ID_MAX_LEN = 256
+
+
+def _validate_agent_id(agent_id: str) -> None:
+    """Reject agent_id strings that could enable path-traversal, null-byte,
+    or log-injection attacks against the cascade-revoke hook surface.
+
+    Mirrors `envoy/trust/store.py::_validate_id_safety` contract; replicated
+    here because PostureGate is the gate boundary per `rules/security.md`
+    § Multi-Site Kwarg Plumbing — defense-in-depth requires the gate to NOT
+    rely on the downstream `_RevokeHook` implementation to validate. Any
+    future caller wiring an alternative `_RevokeHook` (Tier 1 fakes,
+    audit-only proxies, alternative Trust Stores) inherits the boundary
+    check unconditionally.
+    """
+    if not isinstance(agent_id, str):
+        raise ValueError(f"revoke_on_demotion entry must be str, got {type(agent_id).__name__}")
+    if not agent_id:
+        raise ValueError("revoke_on_demotion entry must be non-empty str")
+    if len(agent_id) > _AGENT_ID_MAX_LEN:
+        raise ValueError(
+            f"revoke_on_demotion entry length {len(agent_id)} exceeds " f"max {_AGENT_ID_MAX_LEN}"
+        )
+    if agent_id.startswith("."):
+        raise ValueError("revoke_on_demotion entry must not start with '.' (hidden-file shape)")
+    if "\x00" in agent_id:
+        raise ValueError("revoke_on_demotion entry contains null byte")
+    if any(ord(ch) < 0x20 or 0x7F <= ord(ch) < 0xA0 for ch in agent_id):
+        raise ValueError("revoke_on_demotion entry contains control character")
+    if "/" in agent_id or "\\" in agent_id:
+        raise ValueError("revoke_on_demotion entry contains path separator")
+    if ".." in agent_id:
+        raise ValueError("revoke_on_demotion entry contains '..' (path traversal)")
 
 
 __all__ = [
@@ -198,6 +268,20 @@ class PostureEvidence:
         if not isinstance(self.envelope_id_hash, str):
             raise TypeError(
                 f"envelope_id_hash must be str, got {type(self.envelope_id_hash).__name__}"
+            )
+        # Bounds + charset check per security-reviewer F-2: prevents log-volume
+        # amplification + log-injection through the structured `extra=` keys
+        # at the divergence WARN + recompute DEBUG sites. Empty string remains
+        # permitted (callers without an envelope context — e.g. annual decay).
+        if len(self.envelope_id_hash) > _ENVELOPE_ID_HASH_MAX_LEN:
+            raise ValueError(
+                f"envelope_id_hash length {len(self.envelope_id_hash)} exceeds "
+                f"max {_ENVELOPE_ID_HASH_MAX_LEN}"
+            )
+        if self.envelope_id_hash and not _ENVELOPE_ID_HASH_PATTERN.fullmatch(self.envelope_id_hash):
+            raise ValueError(
+                "envelope_id_hash must match [a-zA-Z0-9:_-]+ "
+                "(canonical hash shape, e.g. 'sha256:<hex>')"
             )
 
 
@@ -478,7 +562,14 @@ class PostureGate:
             revoke_on_demotion: tuple of `agent_id` strings the cascade-revoke
                 hook will revoke on demotion. Empty tuple is permitted (caller
                 may decide no delegations need explicit revocation, e.g.
-                annual decay where no standing delegations exist).
+                annual decay where no standing delegations exist). Per
+                security-reviewer F-3: caller MUST treat retry as idempotent —
+                if the revoke hook raises mid-iteration, prior agent_ids in
+                the tuple have ALREADY been revoked (no rollback). On retry,
+                those agent_ids will be revoked again. The downstream
+                `TrustStoreAdapter.revoke` is itself idempotent (dedup by
+                cached `RevocationResult` per agent_id) so retry is safe at
+                the Trust Store layer.
 
         Returns:
             `PostureChangeResult(new_level, ledger_entry_id)` on success.
@@ -519,9 +610,6 @@ class PostureGate:
         # envelope-sign time MUST match runtime recompute; mismatch is an
         # audit alert, never auto-recovered.
         if evidence.authorship_score_stored != evidence.authorship_score_recomputed:
-            # Local import to avoid circular dependency at module import.
-            from envoy.authorship.score import AuthorshipScoreDivergenceError
-
             logger.warning(
                 "authorship.divergence",
                 extra={
@@ -592,10 +680,10 @@ class PostureGate:
         # itself (TrustStoreAdapter.revoke) cascades to descendants.
         if target < current:
             for agent_id in revoke_on_demotion:
-                if not isinstance(agent_id, str) or not agent_id:
-                    raise ValueError(
-                        f"revoke_on_demotion entries must be non-empty str, " f"got {agent_id!r}"
-                    )
+                # Identifier-safety check at the gate boundary per
+                # security-reviewer F-1 — defense-in-depth: do NOT rely on
+                # the downstream `_RevokeHook` implementation to validate.
+                _validate_agent_id(agent_id)
                 await self._revoke_hook(
                     agent_id=agent_id,
                     reason=f"posture_demotion:{current.name}->{target.name}",
