@@ -3,7 +3,7 @@
 **Document role:** Lean lookup table for every Phase 01 todo. /implement reads this manifest first, then reads the topical file for the current todo, then reads the per-todo section. Per `rules/specs-authority.md` MUST Rule 1: this is a manifest, not the work itself; the work lives in the linked files.
 
 **Date:** 2026-05-05 (/todos opening; produced after /analyze closure at 1cfd78f).
-**Status:** DRAFT — awaiting human approval at the /todos structural gate before /implement opens.
+**Status:** APPROVED — /todos structural gate cleared 2026-05-05 per `journal/0006-CONNECTION-todos-approved-handoff-to-implement.md`. /implement open since 2026-05-05; wave 1 + wave 2 primitive layer (T-02-30/31/32/34/35) closed as of 2026-05-11 (R8 convergence at HEAD `df188e7`).
 **Source authority:**
 
 - `briefs/00-phase-01-mvp-scope.md` — what Phase 01 must ship (15 primitives + 8 channels + 9 ECs)
