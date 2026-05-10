@@ -30,7 +30,13 @@
 
 ---
 
-## T-02-31 — Build envoy/authorship/posture_gate
+## T-02-31 — Build envoy/authorship/posture_gate ✅ CLOSED 2026-05-10 (PR #19)
+
+**Status:** Shipped. `PostureGate.request_transition()` 5-step fail-closed gate (commits `74d66d0` feat + `84c1d0f` fix + merge `694ceb2`). Public surface: `PostureLevel`, `PostureMode`, `PostureEvidence`, `PostureChangeResult`, `PostureGate`, `PostureGateError` + 5 typed subclasses. 80/80 Tier 1 tests green; full suite 542/542 pass.
+
+**Gate-review surfaced findings (all resolved in same PR per autonomous-execution.md Rule 4):** security-reviewer M-1 (revoke*on_demotion agent_id needs gate-boundary `_validate_agent_id` defense — added local helper mirroring `envoy/trust/store.py:_validate_id_safety` contract), security-reviewer M-2 (envelope_id_hash needs length+charset bounds — added 128-char cap + `[a-zA-Z0-9:*-]+`regex on`PostureEvidence.**post_init**`), security-reviewer L-3 (revoke_on_demotion idempotency-on-retry docstring), security-reviewer L-4 (`\_required_authorship`defensive raise test), security-reviewer L-5 (hoist`AuthorshipScoreDivergenceError` from local-import to module scope), reviewer M-1 (envelope_edit deferral — see below).
+
+**Deferred to T-02-33 (per `journal/0020-DECISION-envelope-edit-deferred-to-tier-2.md`):** `envelope_edit` Ledger entry pairing on ratchet-up (spec line 41 mandate). PostureGate Phase 01 emits ONLY `posture_change`; the paired `envelope_edit` requires `_EnvelopeProtocol` DI surface + envelope-mutation contract that is out of T-02-31's primitive substrate. T-02-33 acceptance bullet now binds Tier 2 wiring to add the pairing.
 
 **Implements:** `specs/posture-ladder.md` + `specs/authorship-score.md` § Posture gate
 
@@ -38,13 +44,9 @@
 
 **Action:** `PostureGate.request_transition()` — 5-step fail-closed enforcement; cascade-revoke hook on demotion (calls into envoy/trust/cascade T-01-14).
 
-**Tests added:** `tests/tier1/test_posture_gate_5_step_fail_closed.py`.
+**Tests added:** `tests/tier1/test_posture_gate_5_step_fail_closed.py` (80 cases, 19 test classes).
 
-**Capacity check:** ~150 LOC; 5 invariants (5-step gate sequence; fail-closed default; cascade-on-demotion; signed posture_change Ledger entry; posture-ratchet enforcement); 3 call-graph hops.
-
-**Blocks on:** T-02-30 + T-01-14 + T-01-18 (Ledger).
-
-**Estimate:** 0.5 session.
+**Capacity check:** ~190 LOC load-bearing logic (within ≤500 LOC threshold per `rules/autonomous-execution.md` MUST Rule 1); 5 invariants (5-step gate sequence; fail-closed default; cascade-on-demotion; signed posture_change Ledger entry; posture-ratchet enforcement); 3 call-graph hops (PostureGate → `_LedgerProtocol.append` OR PostureGate → `_RevokeHook` → kailash cascade_revoke).
 
 ---
 
