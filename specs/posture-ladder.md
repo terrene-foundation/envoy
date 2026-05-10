@@ -154,9 +154,39 @@ All errors become Ledger entries `content_trust_level: system`. Error messages M
 - **specs/sub-agent-delegation.md** — sub-agents inherit posture ≤ parent.
 - **specs/threat-model.md** — T-019, T-023, T-024.
 
-## Test location
+## Out of scope (this phase)
 
-`tests/integration/test_posture_ratchet.py` (Phase 01) exercises:
+Per `rules/spec-accuracy.md` Exception 1 (bounded out-of-scope sections) +
+`rules/specs-authority.md` Rule 6 (deviation acknowledgment). The Phase-01
+PostureGate (T-02-31, `envoy/authorship/posture_gate.py`) implements the
+5-step fail-closed gate against the spec's algorithm at § Algorithm. The
+following surfaces from the spec's other sections are explicitly NOT
+implemented in Phase 01 — each is named to a successor shard or phase:
+
+- **`envelope_edit` Ledger entry pairing on ratchet-up** (spec § Ratchet-up
+  requirement #3) — scheduled in T-02-33 (Tier 2 wiring), where the
+  `EnvoyLedger` envelope-version chain is wired against a real
+  `EnvelopeCompiler` consumer. PostureGate Phase 01 emits ONLY the
+  `posture_change` Ledger entry; the paired `envelope_edit` requires the
+  envelope's `metadata.posture_level` field write + `envelope_edit`
+  Ledger entry, which is not part of T-02-31's primitive substrate.
+  Documented at `journal/0020-DECISION-envelope-edit-deferred-to-tier-2.md`.
+- **Cooling-off TIMER + window calculation** (spec § Ratchet-up #4 +
+  `cooling_off_active` boolean) — scheduled in Phase 03 Weekly Posture
+  Review ritual. PostureGate Phase 01 ENFORCES `cooling_off_active=True`
+  by raising `PostureCoolingOffActiveError`; the WPR ritual owns the timer.
+- **Annual decay scheduler** (spec § Ratchet-down "Automatic on annual
+  decay") — scheduled in Phase 03. PostureGate accepts `trigger="annual_decay"`
+  in the wire-form taxonomy; the SCHEDULER that emits it is Phase 03.
+- **Per-dimension scope transitions** (spec § Ratchet-up #1 thresholds
+  per-dim) — Phase 03. T-02-31 ships `dimension_scope="global"` only.
+- **Shared Household composition** (`effective_posture_for_composition`,
+  spec § Shared Household semantics) — Phase 03+ separate function.
+- **`PostureAnnualDecayPendingError`** (spec § Error taxonomy) — Phase 03;
+  raised by the Phase-03 decay scheduler at session start, not by
+  PostureGate itself.
+
+## Test location
 
 - Ratchet-up insufficient authorship (all four transitions).
 - Ratchet-up Genesis-missing.
