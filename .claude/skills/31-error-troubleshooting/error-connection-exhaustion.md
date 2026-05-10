@@ -11,7 +11,7 @@ Database connection pool exhaustion in multi-worker deployments.
 > Category: `cross-cutting` (error-resolution)
 > Priority: `HIGH` (Production stability issue)
 > SDK Version: `0.9.0+` (AsyncSQLDatabaseNode)
-> Related Skills: [`asyncsql-advanced`](../../06-cheatsheets/asyncsql-advanced.md), [`production-deployment-guide`](../../07-development-guides/production-deployment-guide.md)
+> Related Skills: [`asyncsql-advanced`](../../06-cheatsheets/asyncsql-advanced.md)
 > Related Subagents: `dataflow-specialist`, `nexus-specialist`
 
 ## The Problem
@@ -70,7 +70,7 @@ from contextlib import asynccontextmanager
 from nexus import Nexus
 
 @asynccontextmanager
-async def lifespan(app: Nexus):
+async def lifespan(app):
     # ONE pool for the entire worker
     app.state.pool = await asyncpg.create_pool(
         os.environ["DATABASE_URL"],
@@ -128,7 +128,6 @@ Leave a buffer of ~20% for admin connections and migrations.
 ## Related Patterns
 
 - **Async SQL patterns**: [`asyncsql-advanced`](../../06-cheatsheets/asyncsql-advanced.md) for full external pool patterns
-- **Production deployment**: [`production-deployment-guide`](../../07-development-guides/production-deployment-guide.md) for multi-worker deployment
 - **Nexus basics**: [`nexus-quickstart`](../../03-nexus/nexus-quickstart.md)
 
 ## When to Escalate to Subagent

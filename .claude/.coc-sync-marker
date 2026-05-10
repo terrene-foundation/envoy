@@ -1,42 +1,64 @@
-last_synced: "2026-05-06T00:00:00Z"
-loom_version: "2.19.0"
-template_version: "2.19.0"
-template_full_caught_up: true
-sync_direction: "FULL sync from kailash-coc-claude-rs 2.19.0 (loom 2.19.0). Envoy is now an active Phase-01 implementation project (no longer docs-only Phase-00), so the full template is now relevant. Adopted the new trust-posture system (rules/trust-posture.md, skills/32-trust-posture/, agents/management/posture-auditor.md, hooks/posture-gate.js + detect-violations.js + libs), the cap-headroom remediation rule promotions/demotions (worktree-isolation path-scoped), the new BUILD-side discipline rules (coc-sync-landing.md path-scoped — only loads in workspaces/ contexts), the cumulative 2.12.0–2.19.0 rule additions (verify-resource-existence, sweep-completeness, repo-scope-discipline, spec-accuracy + the codebase-hygiene-markers skill), and the modern .claude/hooks/ canonical layout (replacing the obsoleted scripts/hooks/ per rules/cross-repo.md Rule 3)."
-scope: "Full sync minus 7 BUILD/loom-only artifacts (cross-cli-parity.md, variant-authoring.md, build-repo-release-discipline.md rules; cli-orchestrator.md, codex-architect.md, gemini-architect.md agents; cli-audit.md command). These remain BUILD/loom-only per the prior surgical adoption rationale: envoy is a downstream USE consumer, not a multi-CLI emission BUILD repo."
+template: kailash-coc-rs
+template_type: multi-cli
+template_version: 2.22.3
+template_repo: terrene-foundation/kailash-coc-rs
+clis:
+  - claude
+  - codex
+  - gemini
+variant: rs
+migrated_from:
+  template: kailash-coc-claude-rs
+  template_version: 2.19.0
+  migrated_at: "2026-05-11T00:00:00Z"
+last_synced: "2026-05-11T00:00:00Z"
+loom_version: 2.29.4
+loom_sha: b50f869
+sync_direction: "Multi-CLI migration from kailash-coc-claude-rs 2.19.0 (CC-only) to kailash-coc-rs 2.22.3 (multi-CLI: Claude+Codex+Gemini). Adopted .codex/, .codex-mcp-guard/, .gemini/, AGENTS.md, GEMINI.md top-level overlays. Refreshed .claude/ from sister (agents, commands, rules, skills, guides, hooks, audit-fixtures, bin, .coc-obsoleted, settings.json). Preserved CLAUDE.md (project-customized: 'envoy is a docs/specs project' framing kept; multi-CLI Per-CLI Baselines section NOT applied — envoy can adopt later). Preserved .claude/learning/ (per-repo state), .claude/settings.local.json, .claude/variants/rs/ (project-local rule overrides), workspaces/."
+scope: "Full multi-CLI migration. All loom 2.22.3 (rs multi-CLI) artifacts adopted including v2.20-v2.22 cumulative additions: state-file-write-guard rule + hook lib, value-prioritization updates, journal-classifier hook lib, audit-fixtures for session-end-hook + violation-patterns, .github/workflows from sister."
 files_adopted:
-  - .claude/hooks/  # NEW canonical hooks dir (18 scripts + 11 shared libs)
-  - .claude/settings.json  # UPDATED: hook paths now .claude/hooks/, posture-gate + detect-violations wirings, permissions.deny block for posture state files
-  - .claude/rules/  # ALL modified files updated; new files added (trust-posture.md, coc-sync-landing.md, sweep-completeness.md, verify-resource-existence.md, repo-scope-discipline.md, spec-accuracy.md)
-  - .claude/agents/  # ALL modified files updated; new agents/management/posture-auditor.md + agents/cc-architect.md (replaces obsoleted claude-code-architect.md)
-  - .claude/commands/  # ALL modified files updated; new commands/posture.md
-  - .claude/skills/  # ALL modified files updated; new skills/32-trust-posture/ (7 files); new sub-files in skills/16-validation-patterns/
-  - .claude/guides/  # ALL modified rule-extracts updated
-  - .claude/.coc-obsoleted  # UPDATED manifest reflecting current obsoletion list
-files_intentionally_skipped:
-  - .claude/rules/cross-cli-parity.md       # multi-CLI parity contract (BUILD/loom-only)
-  - .claude/rules/variant-authoring.md      # variant authoring (loom-only)
-  - .claude/rules/build-repo-release-discipline.md  # BUILD-only release discipline
-  - .claude/agents/cli-orchestrator.md      # multi-CLI orchestration (BUILD-only)
-  - .claude/agents/codex-architect.md       # multi-CLI emission target (BUILD-only)
-  - .claude/agents/gemini-architect.md      # multi-CLI emission target (BUILD-only)
-  - .claude/commands/cli-audit.md           # multi-CLI emission, requires bin/emit.mjs (BUILD-only)
-not_applied: []
-purged_per_obsoleted_manifest:
-  - scripts/hooks/                          # legacy hook location (pre-v2.8.31 layout)
-  - scripts/resolve-template.js             # legacy template resolver
-  - .claude/agents/claude-code-architect.md # renamed to cc-architect.md
-  - .claude/scheduled_tasks.lock            # legacy scheduled-tasks state
-unchanged_skipped:
-  - CLAUDE.md (NEVER overwritten — preserved per /sync rules)
-  - .claude/settings.local.json (NEVER overwritten — preserved per /sync rules)
-  - .claude/learning/ (per-repo state — preserved)
-  - workspaces/ (project-specific — preserved)
+  - .codex/                           # NEW: Codex config + prompts + skills
+  - .codex-mcp-guard/                 # NEW: Codex MCP policy enforcement
+  - .gemini/                          # NEW: Gemini agents + commands + settings
+  - AGENTS.md                         # NEW: Codex baseline (711 lines)
+  - GEMINI.md                         # NEW: Gemini baseline (711 lines)
+  - .claude/agents/                   # REFRESHED from sister
+  - .claude/commands/                 # REFRESHED from sister
+  - .claude/rules/                    # REFRESHED from sister (incl. NEW state-file-write-guard.md)
+  - .claude/skills/                   # REFRESHED from sister
+  - .claude/guides/                   # REFRESHED from sister
+  - .claude/hooks/                    # REFRESHED from sister (incl. NEW journal-classifier.js, state-file-write-guard.js)
+  - .claude/bin/                      # NEW: emit/compose/repin tooling
+  - .claude/audit-fixtures/           # NEW: hook regression fixtures
+  - .claude/.coc-obsoleted            # REFRESHED manifest
+  - .claude/settings.json             # REFRESHED from sister
+  - .github/workflows/auto-merge.yml  # NEW
+  - .github/workflows/validate.yml    # NEW
+  - .github/coc-sdk-refs-allowlist.txt # NEW
+preserved:
+  - CLAUDE.md                         # PROJECT-OWNED — local 'docs/specs project' framing kept
+  - .claude/settings.local.json       # PROJECT-LOCAL permissions
+  - .claude/learning/                 # PER-REPO STATE: violations.jsonl, observations.jsonl, posture state
+  - .claude/variants/rs/              # PROJECT-LOCAL variant overrides (build-speed, testing, release, agents, ci-runners, dataflow-null-typing, build cmd)
+  - workspaces/                       # PROJECT WORKSTREAMS
+purged_per_obsoleted_manifest: []
 sdk_pins:
-  kailash-rs (workspace): "3.25.0"
-  kailash-enterprise: ">=3.25.0"
+  kailash-rs (workspace): "3.27.0"
+  eatp: "0.1.0"
+  kailash-governance: "0.1.0"
+  kailash-pact: "0.1.0"
+stats:
+  baselines_emitted:
+    cc: false        # CLAUDE.md preserved (project-owned)
+    codex: true      # AGENTS.md (52956 bytes)
+    gemini: true     # GEMINI.md (52965 bytes)
+  cli_artifacts:
+    codex: true      # .codex/ tree copied from sister
+    gemini: true     # .gemini/ tree copied from sister
+  mcp_guard:
+    policies_populated: true  # .codex-mcp-guard/policies.json present
 hooks_verified:
   count: 18
   libs: 11
-  note: "Full hooks/ dir installed before settings.json update so next-tool-call hook resolution works. Verify integrity manually — every hook in settings.json must exist in .claude/hooks/."
-build_repo_changes: []
+  note: "Full hooks/ dir installed before settings.json update so next-tool-call hook resolution works."
+trust_posture_caveat: "Trust posture is per-CLI. `posture show` works on Claude Code today; Codex/Gemini posture surfaces are session-local until cross-CLI posture sync ships. See rules/trust-posture.md MUST Rule 1."
