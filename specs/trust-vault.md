@@ -72,24 +72,19 @@ All errors persisted to Ledger as `system_error` per specs/ledger.md §System er
 
 ## Test location
 
-- `tests/integration/test_argon2_parameter_round_trip.py` — m=2^17, t=3, p=1; mismatch rejected (Tier 2).
-- `tests/integration/test_aes256_gcm_outer_encryption.py` — outer encryption + MAC verification; tamper at file level rejected.
-- `tests/integration/test_hkdf_per_region_isolation.py` — region info-strings produce distinct keys; cross-region key reuse fails decryption.
-- `tests/integration/test_padding_bucket_size_indistinguishable.py` — file size lands in {1, 4, 16, 64} MiB regardless of contents.
-- `tests/integration/test_memory_hygiene_zeroize.py` — vault decrypted only for operation duration; zeroize on lock + shutdown.
-- `tests/integration/test_auto_lock_15min_idle.py` — idle timeout triggers lock; subsequent operation requires re-unlock.
-- `tests/integration/test_duress_passphrase_distinct_genesis.py` — duress unlocks honeypot Genesis; real Genesis inaccessible under duress passphrase.
-- `tests/integration/test_shadow_segment_real_only_key.py` — shadow segment encrypted under real-passphrase-only key; duress passphrase cannot read shadow segment.
-- `tests/integration/test_duress_segment_write_read.py` — `DuressUnlockEvent` writes shadow segment only; never appears in synced Ledger.
-- `tests/integration/test_key_destruction_irreversible.py` — `envoy vault destroy-keys` evicts platform-bound key + overwrites file + writes `KeyDestructionEvent`.
-- `tests/integration/test_hidden_envelope_phase04.py` — two passphrases + two Shamir sets + constant-write-rate (Phase 04 gate).
-- `tests/integration/test_shamir_recovery_threshold.py` — 3-of-5 default reconstruction (consumer of specs/shamir-recovery.md).
-- `tests/regression/test_t002_household_adversarial.py` — T-002 household-adversarial vault read defense.
-- `tests/regression/test_t019_visible_secret.py` — T-019 visible-secret rendering at unlock.
-- `tests/regression/test_t040_lost_stolen_device.py` — T-040 device loss recovery via Shamir.
-- `tests/regression/test_t041_duress_indistinguishability.py` — T-041 duress unlock indistinguishable from real unlock at Ledger level.
-- `tests/regression/test_t042_key_destruction.py` — T-042 key destruction + hidden envelope.
-- `tests/regression/test_t071_memory_disclosure.py` — T-071 in-memory secret hygiene under cold-boot / process-dump scenarios.
+- `tests/tier1/test_trust_vault_lifecycle.py::TestArgon2ParameterStrictMatch` — Argon2id m=2^17, t=3, p=1; non-canonical params rejected (Tier 1, shipped T-01-13).
+- `tests/tier1/test_trust_vault_lifecycle.py::TestFileFormatIntegrity` — AES-256-GCM outer encryption + MAC; truncation, magic-byte corruption, ciphertext byte-flip all rejected (Tier 1, shipped T-01-13).
+- `tests/tier1/test_trust_vault_lifecycle.py::TestIdleLock` — auto-lock fires after `idle_ttl_seconds` (default 15min); activity resets timer; post-timeout access raises `AutoLockIdleTimeoutError` (Tier 1, shipped T-01-13).
+- `tests/tier1/test_trust_vault_lifecycle.py::TestLock` — master-key zeroize on lock; idempotent (Tier 1, shipped T-01-13).
+- `tests/tier1/test_trust_vault_lifecycle.py` — vault metadata slot `read_metadata` / `write_metadata` round-trip across lock/unlock cycles; `O_EXCL | O_NOFOLLOW` atomic-write hardening (Tier 1, shipped T-02-35).
+
+## Out of scope (this phase)
+
+Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
+
+- 3-of-5 default reconstruction round-trip (Tier 2 vault ⇄ Shamir wiring) — scheduled in T-02-37 (`02-wave-2-authorship-shamir-boundary.md`).
+
+Phase-02+ hardening is out of Phase 01 scope: HKDF per-region key isolation, padding-bucket size obfuscation `{1, 4, 16, 64} MiB`, full memory-hygiene zeroize under cold-boot scenarios, `envoy vault destroy-keys` CLI for T-042 mitigation. Phase-04+ work is out of Phase 01 scope: duress passphrase + honeypot Genesis distinct-from-real, hidden envelope dual-passphrase + dual-Shamir + constant-write-rate, shadow-segment real-only-key separation, `DuressUnlockEvent` write-without-Ledger-sync, regressions T-002 / T-019 / T-040 / T-041 / T-042 / T-071. All Phase-04+ items tracked at `specs/threat-model.md`.
 
 ## Open questions
 

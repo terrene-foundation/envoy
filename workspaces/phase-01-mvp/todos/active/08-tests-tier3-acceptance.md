@@ -23,6 +23,8 @@
 
 **Estimate:** 0.5 session.
 
+**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** The `(scheduled in T-08-130)` entry in `specs/shamir-recovery.md` § Out of scope (full S8 ritual via Boundary Conversation Tier 3) closes at this shard's merge. Upgrade to a concrete `tests/...` citation under § Test location, OR delete the line if scope was cut. The citation audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/shamir-recovery.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
+
 ---
 
 ## T-08-131 — Acceptance EC-6: /redteam 2 consecutive rounds 0/0

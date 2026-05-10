@@ -139,6 +139,8 @@
 
 **Estimate:** 0.5 session.
 
+**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** When this shard ships the per-card BIP-39 checksum at recovery entry, upgrade the `(scheduled in T-02-36)` line in `specs/shamir-recovery.md` § Out of scope (per-card BIP-39 checksum / L-03 carry-forward) to a concrete `tests/...` citation under § Test location, OR delete the line if the L-03 surface is cut from this shard. Audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/shamir-recovery.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
+
 ---
 
 ## T-02-37 — Wire envoy/shamir/ (Tier 2 + cross-tool interop)
@@ -155,6 +157,13 @@
 **Blocks on:** T-02-34 through T-02-36.
 
 **Estimate:** 0.5 session.
+
+**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** Three `(scheduled in T-02-37)` entries close at this shard's merge:
+
+- `specs/shamir-recovery.md` § Out of scope: 3-of-5 SLIP-0039 reconstruct + vault unlock → upgrade to the Tier-2 wiring test path under § Test location.
+- `specs/shamir-recovery.md` § Out of scope: Genesis-Record commitment defeats counterfeit shards → upgrade to the commitments-bound-to-genesis test path.
+- `specs/trust-vault.md` § Out of scope: 3-of-5 default reconstruction round-trip → upgrade to the master-key export/import round-trip test path.
+  The citation audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/shamir-recovery.md specs/trust-vault.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
 
 ---
 
