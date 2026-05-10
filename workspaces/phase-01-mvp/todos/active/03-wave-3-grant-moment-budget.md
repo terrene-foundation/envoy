@@ -94,6 +94,14 @@
 
 **Estimate:** 0.5 session.
 
+**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** Three `(scheduled in T-03-50)` entries in `specs/ledger.md` § Out of scope close at this shard's merge:
+
+- Phase A → Phase B linkage by `intent_id` (two-phase signing).
+- T-004 streaming-LLM pre-sign defense.
+- T-008 Grant Moment replay defense via Phase A `intent_id`.
+
+Each upgrades to a concrete `tests/...` citation under § Test location, OR is deleted if scope was cut. The citation audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/ledger.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
+
 ---
 
 ## T-03-55 — Acceptance EC-2 Tier 3: 3 resolution shapes + cascade

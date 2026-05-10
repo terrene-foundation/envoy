@@ -74,15 +74,21 @@ Per specs/trust-lineage.md — Genesis Record carries `shard_public_commitments:
 
 ## Test location
 
-- `tests/integration/test_shamir_3_of_5_reconstruct.py` — 3-of-5 SLIP-0039 reconstruct + vault unlock (Tier 2).
-- `tests/integration/test_shamir_threshold_configurable.py` — 2-of-3 to 5-of-9 user-configurable thresholds.
-- `tests/regression/test_t002_household_adversarial_recovery.py` — T-002 defense; rate-limit + commitment verify.
-- `tests/regression/test_t006_shard_social_graph_default_safes.py` — T-006 defense; default-to-safes guidance + checklist.
-- `tests/integration/test_shard_per_card_checksum_l03.py` — L-03 fix; per-card BIP-39 checksum at entry.
-- `tests/integration/test_shamir_rotation_30_day_grace.py` — pre-rotation cards valid 30 days post-rotation.
-- `tests/integration/test_shard_distribution_checklist_h06.py` — H-06 fix; opaque slot labels; no real names in non-hidden envelope.
-- `tests/integration/test_shard_public_commitment_verify.py` — Genesis-Record commitment defeats counterfeit shards.
-- `tests/e2e/test_shamir_recovery_full_ritual.py` — full S8 ritual via Boundary Conversation (Tier 3).
+- `tests/tier1/test_shamir_commitments.py` — `compute_commitment` round-trip per `rules/orphan-detection.md` Rule 2a (Tier 1, shipped T-02-35).
+- `tests/tier1/test_shamir_paper_renderer.py` — paper-card render shape + plain-language output + dataclass invariants (Tier 1, shipped T-02-35).
+- `tests/tier1/test_shamir_distribution_checklist_persister.py` — H-06 fix; three-layer slot-label defense (whitelist regex + ASCII-only + substring blacklist); byte-level invariant on persisted checklist (Tier 1, shipped T-02-35).
+- `tests/tier1/test_shamir_ritual_coordinator_orchestration.py` — 6-step ritual, master-key zeroize, storage-only `CommitmentBinder` Protocol (Tier 1, shipped T-02-34 + T-02-35 L-2 re-arch).
+
+## Out of scope (this phase)
+
+Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
+
+- 3-of-5 SLIP-0039 reconstruct + vault unlock (Tier 2 wiring) — scheduled in T-02-37 (`02-wave-2-authorship-shamir-boundary.md`).
+- Per-card BIP-39 checksum at entry (L-03 carry-forward) — scheduled in T-02-36 (recovery CLI).
+- Genesis-Record commitment defeats counterfeit shards (Tier 2 wiring) — scheduled in T-02-37.
+- Full S8 ritual via Boundary Conversation (Tier 3 EC-5) — scheduled in T-08-130 (`08-tests-tier3-acceptance.md`).
+
+Phase-02+ hardening (configurable thresholds beyond 3-of-5 default, 30-day rotation grace window) is out of Phase 01 scope. Phase-04+ work (T-002 household-adversarial recovery defense, T-006 default-safes guidance) is out of Phase 01 scope; tracked at `specs/threat-model.md` for the future-phase audit.
 
 ## Open questions
 

@@ -107,6 +107,8 @@
 
 **Estimate:** 0.25 session.
 
+**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** The `(scheduled in T-06-104)` entry in `specs/ledger.md` § Out of scope (`envoy-ledger-verify` hash-chain verifier Phase 01 exit gate) closes at the merge of this shard OR T-08-131, whichever lands the verifier path test FIRST. Upgrade to a concrete `tests/...` citation under § Test location, OR delete the line if scope was cut. The citation audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/ledger.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
+
 ---
 
 ## T-06-105 — Acceptance EC-9 Tier 3: source-isolation gate (Python)

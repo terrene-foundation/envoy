@@ -621,24 +621,21 @@ All errors emitted as `system_error` Ledger entries per §System error when they
 
 ## Test location
 
-- `tests/integration/test_entry_type_producer_roundtrip.py` — every entry type in §Entry types: producer spec writes, ledger_query reads, schema_version round-trips (Tier 2).
-- `tests/integration/test_hash_chain_verifier_python.py` — `envoy-ledger-verify` independent verifier Phase 01 exit gate.
-- `tests/integration/test_two_phase_signing_intent_id_link.py` — Phase A → Phase B linkage by `intent_id` across devices.
-- `tests/integration/test_lamport_clock_three_field_merge.py` — `(lamport_time, device_id, local_seq)` ordering on CRDT merge.
-- `tests/integration/test_head_commitment_monotonic.py` — `head_sequence` monotonic non-decreasing across syncs.
-- `tests/integration/test_halted_by_rollback_record.py` — rollback detection writes `HaltedByRollback` before refusing further writes.
-- `tests/integration/test_per_entry_key_destruction.py` — `EntryKeyDestruction` + `destroyed_entries` set; metadata readable, content unrecoverable.
-- `tests/integration/test_master_key_destruction_event.py` — `KeyDestructionEvent` distinct from per-entry; final-act signing.
-- `tests/integration/test_segment_boundary_on_migration_announcement.py` — algorithm-identifier segment partition + per-segment chain verification.
-- `tests/integration/test_classification_aware_record_id_format.py` — `format_record_id_for_event` redaction across every entry-type emission per specs/classification-policy.md.
-- `tests/integration/test_post_quantum_migration_path.py` — Phase 04 PQ migration via `MigrationAnnouncement` + allowlist gate.
-- `tests/regression/test_t003_retention_gdpr.py` — T-003 retention + tombstone + per-entry key destruction.
-- `tests/regression/test_t004_two_phase_signing.py` — T-004 streaming-LLM pre-sign defense.
-- `tests/regression/test_t008_grant_moment_replay.py` — T-008 replay defense via Phase A intent_id.
-- `tests/regression/test_t013_reasoning_commit.py` — T-013 reasoning commit prevents goal drift.
-- `tests/regression/test_t100_rollback_detection.py` — T-100 head-commitment rollback halt.
-- `tests/regression/test_t101_conflict_flood.py` — T-101 CRDT conflict-flood rate-limit (20/principal/session).
-- `tests/regression/test_t104_version_binding.py` — T-104 envelope-version binding.
+- `tests/tier1/test_ledger_canonical_dumps_byte_pinning.py` — canonical-bytes byte-identity pinning across producer + verifier; covers `HaltedByRollbackRecord` `_SCHEMA_VERSION = "halt/1.0"` + sorted `runtime_identity.algorithm_identifier` tuple (Tier 1, shipped T-01-17 + /redteam Round 2).
+- `tests/tier1/test_format_record_id_for_event.py` — `format_record_id_for_event` redaction across every entry-type emission per `specs/classification-policy.md` (Tier 1, shipped T-01-17).
+- `tests/regression/test_haltedbyrollback_record_minted_on_rollback.py` — rollback detection writes `HaltedByRollbackRecord` before refusing further writes; covers T-100 head-commitment rollback halt (regression, shipped /redteam Round 2).
+- `tests/regression/test_round1_observability_log_keys.py` — round-1 WARN log-key contract pinned for halt-record + rollback-detected log lines (regression, shipped /redteam Round 2).
+
+## Out of scope (this phase)
+
+Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
+
+- `envoy-ledger-verify` independent verifier — Phase 01 exit gate, scheduled in T-06-104 + T-08-131 (`06-side-channel-verifier.md`, `08-tests-tier3-acceptance.md`).
+- Phase A → Phase B linkage by `intent_id` (two-phase signing) — scheduled in T-03-50 (`03-wave-3-grant-moment-budget.md`).
+- T-004 streaming-LLM pre-sign defense — scheduled in T-03-50.
+- T-008 Grant Moment replay defense via Phase A `intent_id` — scheduled in T-03-50.
+
+Phase-04+ work is out of Phase 01 scope: Lamport-clock 3-field merge ordering on CRDT (multi-device), `head_sequence` monotonicity across syncs, `EntryKeyDestruction` + `destroyed_entries`, `KeyDestructionEvent` distinct-from-per-entry, segment-boundary partition on `MigrationAnnouncement`, post-quantum migration path + allowlist gate, regressions T-003 / T-013 / T-101 / T-104. All Phase-04+ items tracked at `specs/threat-model.md` and `specs/ledger-merge.md`.
 
 ## Open questions
 
