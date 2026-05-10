@@ -28,6 +28,10 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from envoy.authorship.bet12_emitter import (
+    BET12CadenceEmitter,
+    BET12CadencePayload,
+)
 from envoy.authorship.posture_gate import (
     PostureAuthorshipInsufficientError,
     PostureChangeResult,
@@ -99,15 +103,31 @@ class _FakeRevokeHook:
         return object()
 
 
+@dataclass
+class _FakeBET12Sink:
+    """In-memory BET-12 sink fake. Records every cadence payload written."""
+
+    writes: list[BET12CadencePayload] = field(default_factory=list)
+    raise_on_write: BaseException | None = None
+
+    async def write(self, payload: BET12CadencePayload) -> None:
+        if self.raise_on_write is not None:
+            raise self.raise_on_write
+        self.writes.append(payload)
+
+
 def _make_gate(
     *,
     ledger: _FakeLedger | None = None,
     revoke_hook: _FakeRevokeHook | None = None,
-) -> tuple[PostureGate, _FakeLedger, _FakeRevokeHook]:
+    bet12_sink: _FakeBET12Sink | None = None,
+) -> tuple[PostureGate, _FakeLedger, _FakeRevokeHook, _FakeBET12Sink]:
     led = ledger or _FakeLedger()
     rev = revoke_hook or _FakeRevokeHook()
-    gate = PostureGate(ledger=led, revoke_hook=rev)
-    return gate, led, rev
+    sink = bet12_sink or _FakeBET12Sink()
+    emitter = BET12CadenceEmitter(sink=sink)
+    gate = PostureGate(ledger=led, revoke_hook=rev, bet12_emitter=emitter)
+    return gate, led, rev, sink
 
 
 def _evidence(
@@ -415,11 +435,12 @@ class TestThresholdDefensiveUnreachableGuard:
 
 class TestStep1DivergenceCheck:
     def test_divergence_raises_first_short_circuiting_other_steps(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         ev = _evidence(recomputed=2, stored=1)  # divergent
         with pytest.raises(AuthorshipScoreDivergenceError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=ev,
@@ -434,11 +455,12 @@ class TestStep1DivergenceCheck:
     def test_divergence_takes_priority_over_noop(self):
         # Divergence MUST be checked before the noop check — otherwise a
         # divergent envelope with target == current would skip the audit alert.
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         ev = _evidence(recomputed=5, stored=3)
         with pytest.raises(AuthorshipScoreDivergenceError):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.TOOL,  # noop target
                     evidence=ev,
@@ -449,11 +471,12 @@ class TestStep1DivergenceCheck:
     def test_divergence_takes_priority_over_demotion(self):
         # Demotion is "always permitted" — but divergence is the audit alert
         # and MUST fire first regardless of direction.
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         ev = _evidence(recomputed=0, stored=10)
         with pytest.raises(AuthorshipScoreDivergenceError):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.TOOL,
                     evidence=ev,
@@ -464,10 +487,11 @@ class TestStep1DivergenceCheck:
         assert rev.calls == []  # cascade-revoke ALSO short-circuits
 
     def test_matching_counts_pass_step_1(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         ev = _evidence(recomputed=1, stored=1)
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=ev,
@@ -484,10 +508,11 @@ class TestStep1DivergenceCheck:
 
 class TestStep2NoopCheck:
     def test_noop_target_equals_current(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         with pytest.raises(PostureNoopError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.SUPERVISED,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(),
@@ -498,10 +523,11 @@ class TestStep2NoopCheck:
         assert led.appends == []
 
     def test_noop_at_pseudo(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureNoopError):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.PSEUDO,
                     target=PostureLevel.PSEUDO,
                     evidence=_evidence(recomputed=0, stored=0),
@@ -516,10 +542,11 @@ class TestStep2NoopCheck:
 
 class TestStep3aEnterpriseAutonomousForbidden:
     def test_enterprise_autonomous_blocked_from_delegating(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         with pytest.raises(PostureEnterpriseAutonomousForbidden):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.AUTONOMOUS,
                     evidence=_evidence(recomputed=10, mode=PostureMode.ENTERPRISE),
@@ -529,10 +556,11 @@ class TestStep3aEnterpriseAutonomousForbidden:
 
     def test_enterprise_autonomous_blocked_from_pseudo(self):
         # Multi-step path: PSEUDO → AUTONOMOUS via enterprise mode also blocked.
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureEnterpriseAutonomousForbidden):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.PSEUDO,
                     target=PostureLevel.AUTONOMOUS,
                     evidence=_evidence(recomputed=10, stored=10, mode=PostureMode.ENTERPRISE),
@@ -540,9 +568,10 @@ class TestStep3aEnterpriseAutonomousForbidden:
             )
 
     def test_personal_autonomous_NOT_blocked_by_3a(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.AUTONOMOUS,
                 evidence=_evidence(recomputed=5, stored=5, mode=PostureMode.PERSONAL),
@@ -559,10 +588,11 @@ class TestStep3aEnterpriseAutonomousForbidden:
 
 class TestStep3bCoolingOff:
     def test_cooling_off_blocks_ratchet_up(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         with pytest.raises(PostureCoolingOffActiveError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(cooling_off_active=True),
@@ -575,9 +605,10 @@ class TestStep3bCoolingOff:
     def test_cooling_off_does_NOT_block_demotion(self):
         # Spec line 51: "Demotion NEVER requires authorship; it is always
         # permitted, always Genesis-signed". Cooling-off is a ratchet-UP gate.
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(cooling_off_active=True, genesis_signed_grant=False),
@@ -595,10 +626,11 @@ class TestStep3bCoolingOff:
 
 class TestStep3cGenesisGrantMissing:
     def test_promotion_without_genesis_grant_blocked(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         with pytest.raises(PostureGenesisGrantMissingError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(genesis_signed_grant=False),
@@ -609,9 +641,10 @@ class TestStep3cGenesisGrantMissing:
         assert led.appends == []
 
     def test_promotion_with_genesis_grant_passes_step_3c(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1, genesis_signed_grant=True),
@@ -627,10 +660,11 @@ class TestStep3cGenesisGrantMissing:
 
 class TestStep3dAuthorshipThreshold:
     def test_tool_to_supervised_requires_one(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureAuthorshipInsufficientError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(recomputed=0, stored=0),
@@ -640,10 +674,11 @@ class TestStep3dAuthorshipThreshold:
         assert exc.value.need == 1
 
     def test_supervised_to_delegating_personal_requires_three(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureAuthorshipInsufficientError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.SUPERVISED,
                     target=PostureLevel.DELEGATING,
                     evidence=_evidence(recomputed=2, stored=2),
@@ -653,10 +688,11 @@ class TestStep3dAuthorshipThreshold:
         assert exc.value.have == 2
 
     def test_supervised_to_delegating_enterprise_requires_five(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureAuthorshipInsufficientError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.SUPERVISED,
                     target=PostureLevel.DELEGATING,
                     evidence=_evidence(recomputed=4, stored=4, mode=PostureMode.ENTERPRISE),
@@ -666,10 +702,11 @@ class TestStep3dAuthorshipThreshold:
         assert exc.value.have == 4
 
     def test_delegating_to_autonomous_personal_requires_five(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureAuthorshipInsufficientError) as exc:
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.AUTONOMOUS,
                     evidence=_evidence(recomputed=4, stored=4),
@@ -679,9 +716,10 @@ class TestStep3dAuthorshipThreshold:
 
     def test_pseudo_to_tool_passes_with_zero_authorship(self):
         # Spec: PSEUDO → TOOL N=0 (default entry).
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.PSEUDO,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(recomputed=0, stored=0),
@@ -703,10 +741,11 @@ class TestStep3OrderingEnterpriseFirst:
         # `PostureAuthorshipInsufficientError` (3d). The 3a check is BEFORE
         # the threshold lookup so the spec's "AUTONOMOUS forbidden under
         # enterprise" is unconditional.
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureEnterpriseAutonomousForbidden):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.AUTONOMOUS,
                     evidence=_evidence(recomputed=100, stored=100, mode=PostureMode.ENTERPRISE),
@@ -716,10 +755,11 @@ class TestStep3OrderingEnterpriseFirst:
     def test_cooling_off_fires_before_genesis_check(self):
         # If both cooling-off active AND genesis grant missing, the
         # cooling-off error fires (the gate evaluates 3b before 3c).
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureCoolingOffActiveError):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(cooling_off_active=True, genesis_signed_grant=False),
@@ -729,10 +769,11 @@ class TestStep3OrderingEnterpriseFirst:
     def test_genesis_check_fires_before_authorship_check(self):
         # If genesis grant missing AND authorship insufficient, genesis
         # missing fires first.
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(PostureGenesisGrantMissingError):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.SUPERVISED,
                     target=PostureLevel.DELEGATING,
                     evidence=_evidence(recomputed=0, stored=0, genesis_signed_grant=False),
@@ -747,9 +788,10 @@ class TestStep3OrderingEnterpriseFirst:
 
 class TestStep4CascadeRevoke:
     def test_demotion_calls_revoke_per_agent_id(self):
-        gate, _led, rev = _make_gate()
+        gate, _led, rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(),
@@ -769,9 +811,10 @@ class TestStep4CascadeRevoke:
     def test_demotion_with_empty_revoke_list_succeeds(self):
         # Annual decay path: posture demotes but no standing delegations
         # to revoke (e.g. user was on TOOL anyway).
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.SUPERVISED,
                 target=PostureLevel.PSEUDO,
                 evidence=_evidence(),
@@ -783,9 +826,10 @@ class TestStep4CascadeRevoke:
         assert len(led.appends) == 1
 
     def test_promotion_path_NEVER_calls_revoke(self):
-        gate, _led, rev = _make_gate()
+        gate, _led, rev, _sink = _make_gate()
         _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
@@ -799,12 +843,13 @@ class TestStep4CascadeRevoke:
         # Per `rules/zero-tolerance.md` Rule 3 (no silent fallbacks): if the
         # revoke hook raises, the Ledger entry MUST NOT write — the demotion
         # is structurally incomplete.
-        gate, led, rev = _make_gate(
+        gate, led, rev, _sink = _make_gate(
             revoke_hook=_FakeRevokeHook(raise_on_call=RuntimeError("revoke failed"))
         )
         with pytest.raises(RuntimeError, match="revoke failed"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.TOOL,
                     evidence=_evidence(),
@@ -814,10 +859,11 @@ class TestStep4CascadeRevoke:
         assert led.appends == []
 
     def test_revoke_invalid_agent_id_rejected(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="non-empty str"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.TOOL,
                     evidence=_evidence(),
@@ -832,6 +878,7 @@ class TestStep4CascadeRevoke:
         raise context for subsequent assertions."""
         return _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(),
@@ -842,28 +889,28 @@ class TestStep4CascadeRevoke:
     def test_revoke_agent_id_too_long_rejected(self):
         # security-reviewer F-1: defense-in-depth at the gate boundary
         # (do not rely on TrustStoreAdapter.revoke as the sole guard).
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="length .* exceeds"):
             self._attempt_revoke(gate, "x" * 257)
         assert rev.calls == []
         assert led.appends == []
 
     def test_revoke_agent_id_null_byte_rejected(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="null byte"):
             self._attempt_revoke(gate, "agent\x00bypass")
         assert rev.calls == []
         assert led.appends == []
 
     def test_revoke_agent_id_control_char_rejected(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="control character"):
             self._attempt_revoke(gate, "agent\nlog-injection")
         assert rev.calls == []
         assert led.appends == []
 
     def test_revoke_agent_id_path_separator_rejected(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         for bad in ("agent/../etc/passwd", "agent\\windows", "../escape"):
             rev.calls.clear()
             led.appends.clear()
@@ -873,7 +920,7 @@ class TestStep4CascadeRevoke:
             assert led.appends == []
 
     def test_revoke_agent_id_leading_dot_rejected(self):
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="hidden-file shape"):
             self._attempt_revoke(gate, ".hidden-agent")
         assert rev.calls == []
@@ -882,7 +929,7 @@ class TestStep4CascadeRevoke:
     def test_revoke_agent_id_legitimate_pseudonym_accepted(self):
         # Mirrors envoy/trust/store.py::_validate_id_safety contract:
         # pseudonyms can contain @, ., +, -, _ — not slug-only.
-        gate, led, rev = _make_gate()
+        gate, led, rev, _sink = _make_gate()
         for ok in ("alice@example", "agent.42+ci", "agent_42-prod", "a"):
             rev.calls.clear()
             led.appends.clear()
@@ -911,9 +958,10 @@ class TestRatchetDownAlwaysPermitted:
     """
 
     def test_demotion_with_zero_authorship_succeeds(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.PSEUDO,
                 evidence=_evidence(recomputed=0, stored=0),
@@ -923,9 +971,10 @@ class TestRatchetDownAlwaysPermitted:
         assert led.appends[0]["content"]["from_posture"] == "DELEGATING"
 
     def test_demotion_without_genesis_grant_succeeds(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.AUTONOMOUS,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=10, stored=10, genesis_signed_grant=False),
@@ -935,9 +984,10 @@ class TestRatchetDownAlwaysPermitted:
         assert len(led.appends) == 1
 
     def test_demotion_during_cooling_off_succeeds(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(cooling_off_active=True),
@@ -956,9 +1006,10 @@ class TestStep5LedgerEntrySchema:
     """Wire shape per `specs/ledger.md` § posture_change schema."""
 
     def test_happy_path_writes_posture_change_entry(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
@@ -974,9 +1025,10 @@ class TestStep5LedgerEntrySchema:
 
     def test_ledger_content_matches_spec_schema(self):
         # Exact-key check against spec lines 243-253.
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.SUPERVISED,
                 target=PostureLevel.DELEGATING,
                 evidence=_evidence(recomputed=3, stored=3),
@@ -1002,9 +1054,10 @@ class TestStep5LedgerEntrySchema:
         assert content["signed_by"] == "genesis_key"
 
     def test_demotion_emits_posture_change_with_correct_direction(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.AUTONOMOUS,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(),
@@ -1017,10 +1070,11 @@ class TestStep5LedgerEntrySchema:
         assert content["trigger"] == "weekly_review"
 
     def test_invalid_trigger_rejected_at_input(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         with pytest.raises(ValueError, match="trigger must be one of"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence=_evidence(),
@@ -1038,9 +1092,10 @@ class TestStep5LedgerEntrySchema:
             "weekly_review",
             "authorship_threshold",
         ):
-            gate, led, _rev = _make_gate()
+            gate, led, _rev, _sink = _make_gate()
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.SUPERVISED,
                     target=PostureLevel.TOOL,  # demotion path (no auth gates)
                     evidence=_evidence(),
@@ -1058,17 +1113,34 @@ class TestStep5LedgerEntrySchema:
 class TestConstructionDiscipline:
     def test_ledger_required(self):
         with pytest.raises(ValueError, match="ledger is required"):
-            PostureGate(ledger=None, revoke_hook=_FakeRevokeHook())  # type: ignore[arg-type]
+            PostureGate(
+                ledger=None,  # type: ignore[arg-type]
+                revoke_hook=_FakeRevokeHook(),
+                bet12_emitter=BET12CadenceEmitter(sink=_FakeBET12Sink()),
+            )
 
     def test_revoke_hook_required(self):
         with pytest.raises(ValueError, match="revoke_hook is required"):
-            PostureGate(ledger=_FakeLedger(), revoke_hook=None)  # type: ignore[arg-type]
+            PostureGate(
+                ledger=_FakeLedger(),
+                revoke_hook=None,  # type: ignore[arg-type]
+                bet12_emitter=BET12CadenceEmitter(sink=_FakeBET12Sink()),
+            )
+
+    def test_bet12_emitter_required(self):
+        with pytest.raises(ValueError, match="bet12_emitter is required"):
+            PostureGate(
+                ledger=_FakeLedger(),
+                revoke_hook=_FakeRevokeHook(),
+                bet12_emitter=None,  # type: ignore[arg-type]
+            )
 
     def test_request_transition_rejects_non_postureLevel_current(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(TypeError, match="current must be PostureLevel"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=2,  # type: ignore[arg-type]
                     target=PostureLevel.DELEGATING,
                     evidence=_evidence(),
@@ -1076,10 +1148,11 @@ class TestConstructionDiscipline:
             )
 
     def test_request_transition_rejects_non_postureLevel_target(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(TypeError, match="target must be PostureLevel"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target="SUPERVISED",  # type: ignore[arg-type]
                     evidence=_evidence(),
@@ -1087,10 +1160,11 @@ class TestConstructionDiscipline:
             )
 
     def test_request_transition_rejects_non_evidence(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         with pytest.raises(TypeError, match="evidence must be PostureEvidence"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.TOOL,
                     target=PostureLevel.SUPERVISED,
                     evidence={"authorship_score_recomputed": 1},  # type: ignore[arg-type]
@@ -1098,7 +1172,7 @@ class TestConstructionDiscipline:
             )
 
     def test_request_transition_rejects_non_tuple_revoke_list(self):
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         # Deliberately pass a list to verify runtime rejection — bypass static
         # type-check via cast so the runtime guard is exercised.
         from typing import cast
@@ -1107,6 +1181,7 @@ class TestConstructionDiscipline:
         with pytest.raises(TypeError, match="revoke_on_demotion must be tuple"):
             _run(
                 gate.request_transition(
+                    principal_id="agent-test",
                     current=PostureLevel.DELEGATING,
                     target=PostureLevel.TOOL,
                     evidence=_evidence(),
@@ -1116,16 +1191,138 @@ class TestConstructionDiscipline:
 
 
 # ---------------------------------------------------------------------------
+# Step 5+ BET-12 cadence emission (T-02-32 wiring invariant)
+# ---------------------------------------------------------------------------
+
+
+class TestStep5PlusBET12Emission:
+    """Per `01-analysis/09-...md` § 3.3 + T-02-32 capacity check invariant 2:
+    BET-12 emit fires on every posture-transition the gate accepts. This is
+    the production call site that prevents `BET12CadenceEmitter` from being
+    an orphan facade per `rules/orphan-detection.md` Rule 1."""
+
+    def test_ratchet_up_emits_bet12_after_ledger(self):
+        gate, led, _rev, sink = _make_gate()
+        _run(
+            gate.request_transition(
+                principal_id="agent-A",
+                current=PostureLevel.TOOL,
+                target=PostureLevel.SUPERVISED,
+                evidence=_evidence(recomputed=1, stored=1),
+                days_at_current_posture=4.5,
+            )
+        )
+        # Ledger AND emitter both fire; ledger fires first (Step 5),
+        # emitter fires second (Step 5+).
+        assert len(led.appends) == 1
+        assert len(sink.writes) == 1
+        payload = sink.writes[0]
+        assert payload.bet_id == "BET-12"
+        assert payload.from_level is PostureLevel.TOOL
+        assert payload.to_level is PostureLevel.SUPERVISED
+        assert payload.days_at_current_posture == 4.5
+        assert payload.authored_count_at_transition == 1
+
+    def test_ratchet_down_emits_bet12(self):
+        # Ratchet-down (annual decay / user-initiated demotion) MUST also
+        # emit: the cohort-cadence dataset needs demotion data to falsify
+        # BET-12. Trigger `annual_decay` is the canonical demotion trigger.
+        gate, _led, _rev, sink = _make_gate()
+        _run(
+            gate.request_transition(
+                principal_id="agent-A",
+                current=PostureLevel.DELEGATING,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=5, stored=5),
+                trigger="annual_decay",
+                days_at_current_posture=14.0,
+            )
+        )
+        assert len(sink.writes) == 1
+        assert sink.writes[0].from_level is PostureLevel.DELEGATING
+        assert sink.writes[0].to_level is PostureLevel.TOOL
+
+    def test_failed_gate_does_not_emit_bet12(self):
+        # Fail-closed default: every step's failure mode MUST short-circuit
+        # before Ledger AND before BET-12 emission. The cohort-cadence
+        # dataset records ACCEPTED transitions only.
+        gate, led, _rev, sink = _make_gate()
+        with pytest.raises(PostureAuthorshipInsufficientError):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-A",
+                    current=PostureLevel.SUPERVISED,
+                    target=PostureLevel.DELEGATING,
+                    evidence=_evidence(recomputed=2, stored=2),  # below N=3
+                )
+            )
+        assert led.appends == []  # Step 5 never wrote
+        assert sink.writes == []  # Step 5+ never wrote
+
+    def test_principal_id_hashed_in_bet12_payload(self):
+        # The PostureGate principal_id flows through to the emitter; the
+        # emitter hashes it. Verify byte-identity: principal_id never
+        # appears raw in the cadence payload.
+        gate, _led, _rev, sink = _make_gate()
+        principal = "user-secret-001"
+        _run(
+            gate.request_transition(
+                principal_id=principal,
+                current=PostureLevel.PSEUDO,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=0, stored=0),
+            )
+        )
+        assert len(sink.writes) == 1
+        h = sink.writes[0].principal_id_hash
+        assert h.startswith("sha256:")
+        assert principal not in repr(sink.writes[0])
+
+    def test_authored_count_pulled_from_evidence_recomputed(self):
+        # The wiring takes `evidence.authorship_score_recomputed` for the
+        # cadence payload's `authored_count_at_transition` field — Phase 01
+        # narrow scope (the recomputed-vs-stored divergence at Step 1 has
+        # already raised if they diverge).
+        gate, _led, _rev, sink = _make_gate()
+        _run(
+            gate.request_transition(
+                principal_id="agent-A",
+                current=PostureLevel.SUPERVISED,
+                target=PostureLevel.DELEGATING,
+                evidence=_evidence(recomputed=3, stored=3),
+            )
+        )
+        assert sink.writes[0].authored_count_at_transition == 3
+
+    def test_default_days_zero_when_caller_omits(self):
+        # Phase 01 callers that don't yet track days-at-current-posture
+        # may omit the kwarg; the gate's default is 0.0. This is honest:
+        # the BET dataset will have many 0.0 entries until Phase 03 WPR
+        # ritual computes actual days from PostureStore history.
+        gate, _led, _rev, sink = _make_gate()
+        _run(
+            gate.request_transition(
+                principal_id="agent-A",
+                current=PostureLevel.PSEUDO,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=0, stored=0),
+            )
+        )
+        assert sink.writes[0].days_at_current_posture == 0.0
+
+
+# ---------------------------------------------------------------------------
 # PostureChangeResult shape
 # ---------------------------------------------------------------------------
 
 
 class TestPostureChangeResult:
     def test_result_carries_new_level_and_entry_id(self):
-        gate, led, _rev = _make_gate()
+        gate, led, _rev, _sink = _make_gate()
         led.next_entry_id = "sha256:specific-id"
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
@@ -1138,9 +1335,10 @@ class TestPostureChangeResult:
     def test_result_is_frozen(self):
         from dataclasses import FrozenInstanceError
 
-        gate, _led, _rev = _make_gate()
+        gate, _led, _rev, _sink = _make_gate()
         result = _run(
             gate.request_transition(
+                principal_id="agent-test",
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
