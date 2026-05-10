@@ -115,9 +115,9 @@ class TestHaltedByRollbackForensicRecordMinted:
         assert halt_content["last_known_good_head"]["entry_id"] == future_head.head_entry_id
         assert halt_content["detected_head"]["sequence"] == 2
         assert halt_content["detection_reason"] == "sequence_decrease"
-        # `detected_at` is canonical-format ISO 8601; just confirm it's there.
-        assert "detected_at" in halt_content
-        assert halt_content["detected_at"].endswith("Z")
+        # `halted_at` is canonical-format ISO 8601; just confirm it's there.
+        assert "halted_at" in halt_content
+        assert halt_content["halted_at"].endswith("Z")
 
         # Step 5 — verify ledger is halted; subsequent appends raise
         # LedgerHaltedError (NOT LedgerRollbackDetectedError — the halt-gate
@@ -154,6 +154,62 @@ class TestHaltedByRollbackForensicRecordMinted:
         assert ledger._last_entry_id != first_entry_id
         assert ledger._last_entry_id.startswith("sha256:")
         assert ledger._sequence == 2  # halt record occupies the rejected slot
+
+    async def test_halt_record_wire_form_carries_schema_version_and_runtime_identity(
+        self, ledger: EnvoyLedger, audit_store: InMemoryAuditStore
+    ) -> None:
+        """Per `specs/ledger.md` § Halted state JSON shape (lines 537-548): the
+        inner halt content MUST carry both `schema_version="halt/1.0"` and
+        `runtime_identity={device_id, signing_key_id, algorithm_identifier}`
+        so external verifiers can bind the halt event to a specific runtime
+        instance and re-derive canonical bytes byte-identically.
+
+        Round-2 redteam finding R2-H-1 + R2-H-2: prior to this regression
+        coverage, `to_dict()` emitted only 4 keys (last_known_good_head,
+        detected_head, detection_reason, detected_at) — the spec mandate
+        for both spec-required wire-form fields was unmet. This test
+        guards the post-fix wire-form contract."""
+        await ledger.append(entry_type="ritual_completion", content={"phase": 1})
+        head = await ledger.head_commitment()
+        assert head is not None
+        ledger._head = HeadCommitment(
+            head_sequence=10,
+            head_entry_id="sha256:" + "f" * 64,
+            signed_at=head.signed_at,
+            signature_hex=head.signature_hex,
+        )
+        with pytest.raises(LedgerRollbackDetectedError):
+            await ledger.append(entry_type="ritual_completion", content={"phase": 2})
+
+        events = await audit_store.query(AuditFilter(limit=100))
+        halt_events = [e for e in events if e.action == "HaltedByRollback"]
+        assert len(halt_events) == 1
+        halt_content = halt_events[0].metadata[_ENVELOPE_METADATA_KEY]["content"]
+
+        # R2-H-1 — schema_version literal "halt/1.0" per spec line 539.
+        assert halt_content["schema_version"] == "halt/1.0"
+
+        # R2-H-2 — runtime_identity carries the runtime attestation triple.
+        runtime_identity = halt_content["runtime_identity"]
+        assert isinstance(runtime_identity, dict)
+        assert runtime_identity["device_id"] == DEVICE_ID
+        assert runtime_identity["signing_key_id"] == SIGNING_KEY_ID
+        assert runtime_identity["algorithm_identifier"] == VALID_ALGO_ID
+
+        # Spec rename — field is `halted_at`, not `detected_at` per spec line 544.
+        assert "halted_at" in halt_content
+        assert "detected_at" not in halt_content
+
+        # Wire-form ordering matches spec JSON shape lines 537-548 (top-level
+        # keys are inserted in spec order; canonical_dumps respects insertion).
+        assert list(halt_content.keys()) == [
+            "schema_version",
+            "last_known_good_head",
+            "detected_head",
+            "detection_reason",
+            "runtime_identity",
+            "halted_at",
+        ]
 
     async def test_halt_record_includes_canonical_detection_reason(
         self, ledger: EnvoyLedger, audit_store: InMemoryAuditStore

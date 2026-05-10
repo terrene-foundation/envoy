@@ -61,7 +61,7 @@ from envoy.ledger.errors import (
     LedgerVerificationFailedError,
 )
 from envoy.ledger.hash_chain import EntryEnvelope, HashChainBuilder
-from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment
+from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment, RuntimeIdentity
 from envoy.ledger.lamport import LamportClock
 
 logger = logging.getLogger(__name__)
@@ -618,13 +618,20 @@ class EnvoyLedger:
         - `head_signature_mismatch` — HeadCommitment signature failed (Phase 02+)
         - `algorithm_identifier_downgrade` — entry algorithm regressed (Phase 02+)
         """
+        runtime_identity = RuntimeIdentity.from_runtime(
+            device_id=self._device_id,
+            signing_key_id=self._signing_key_id,
+            algorithm_identifier=self._algorithm_identifier,
+        )
         halt_record = HaltedByRollbackRecord(
             last_known_good_sequence=last_known_good_sequence,
             last_known_good_entry_id=last_known_good_entry_id,
             detected_sequence=detected_sequence,
             detected_entry_id=detected_entry_id,
             detection_reason=detection_reason,
-            detected_at=_now_canonical(),
+            halted_at=_now_canonical(),
+            schema_version=HaltedByRollbackRecord._SCHEMA_VERSION,
+            runtime_identity=runtime_identity,
         )
 
         halt_content = halt_record.to_dict()
@@ -635,7 +642,7 @@ class EnvoyLedger:
             device_id=self._device_id,
             local_seq=self._local_seq + 1,
         )
-        halt_timestamp = halt_record.detected_at
+        halt_timestamp = halt_record.halted_at
 
         canonical_bytes, halt_entry_id = self._builder.build_unsigned(
             prev_entry_id=self._last_entry_id,
