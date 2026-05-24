@@ -626,12 +626,26 @@ inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols
 
 ---
 
-## T-01-24 — Build envoy/connection_vault/ (keyring + per-principal isolation) ✅ CLOSED 2026-05-24
+## T-01-24 — Build envoy/connection_vault/ (keyring + per-principal isolation) ✅ CLOSED 2026-05-25 (/redteam convergence MET)
 
-**Status:** SHIPPED on `feat/phase-01-T-01-24-connection-vault`. Convergent same-shard sweep landed in two commits per `rules/autonomous-execution.md` MUST Rule 4 (fix-immediately):
+**Status:** SHIPPED + CONVERGED on `feat/phase-01-T-01-24-connection-vault`. Gate-review sweep + 6 /redteam rounds; convergence MET (Round 5 + Round 6 both CLEAN at HEAD `f3d73d0`). Durable convergence receipt: `journal/0027-DISCOVERY-t-01-24-connection-vault-convergence.md` (round-by-round trajectory + commit trail per `rules/verify-resource-existence.md` MUST-4). Every NOT-CLEAN round was same-bug-class fix-immediately per `rules/autonomous-execution.md` MUST Rule 4.
 
-- Origin commit `1e3c0df` — adapter + schema + errors + env_import + envelope scope-membership predicate + 50 Tier 1 tests.
-- Fix commit (this PR's second SHA) — closes parallel gate-review findings: security-reviewer M2 (`CorruptedRecordError` typed raise on JSON decode / shape failures across `_deserialize_record` + `_read_index`), M3 (`validate_principal_genesis_id` enforces sha256-hex `^[0-9a-f]{64}$` at constructor + dataclass `__post_init__`), L3 (env_import `unset` vs `empty_after_strip` skip-reason granularity); code-reviewer HIGH-1 (spec § Error taxonomy + Change log extended to cover 4 new error rows), MED-1 (`RecordSchemaVersionError` 10th class — distinct from `EntryNotFoundError`), MED-4 (observability logs on `get` / `delete` / `list_by_principal` with hashed-prefix identity per Rule 8), MED-5 (`ActiveEnvelope` consolidated to canonical home in `envoy.envelope.scope`).
+| Round | HEAD      | Verdict   | Closure SHA     |
+| ----- | --------- | --------- | --------------- |
+| gate  | `1e3c0df` | NOT CLEAN | `b334dce`       |
+| R1    | `b334dce` | NOT CLEAN | `1095a32`       |
+| R2    | `1095a32` | NOT CLEAN | `4f7ad5d`       |
+| R3    | `4f7ad5d` | NOT CLEAN | `6425f81`       |
+| R4    | `6425f81` | NOT CLEAN | `f3d73d0`       |
+| R5    | `f3d73d0` | CLEAN     | (1st of 2)      |
+| R6    | `f3d73d0` | CLEAN     | convergence MET |
+
+- Origin `1e3c0df` — adapter + schema + errors + env_import + envelope scope-membership predicate + 50 Tier 1 tests.
+- Gate sweep `b334dce` — sec M2 (`CorruptedRecordError` typed raise), M3 (`validate_principal_genesis_id` sha256-hex), L3 (env_import skip-reason granularity); rev HIGH-1 (spec Error taxonomy + change-log), MED-1 (`RecordSchemaVersionError`), MED-4 (get/delete/list observability), MED-5 (`ActiveEnvelope` canonical home).
+- R1 sweep `1095a32` — F2/F5 (validator-leak + scope-payload type checks → `CorruptedRecordError`), F4 (denylist veto), F1/F7 (symmetric error logs + coverage), F6 (`__all__` consistency).
+- R2 sweep `4f7ad5d` — H1 (`channel_denylist` field, distinct from `recipient_denylist`), H2 (spec § Envelope-scope membership semantics), N1/N2.
+- R3 sweep `6425f81` — H1 (`channel_denylist` in `specs/envelope-model.md`), H2 (phantom-citation fix), M1 (immutability parametrize + adjacent `recipient_denylist`).
+- R4 sweep `f3d73d0` — H1 (phantom-citation chain swept across source + test comments), M1 (citation-load strengthened to `specs/envelope-model.md § Algorithms`).
 
 Final surface (`envoy.connection_vault.__all__`):
 
