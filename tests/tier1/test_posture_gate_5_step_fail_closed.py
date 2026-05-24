@@ -1811,3 +1811,125 @@ class TestStep5bMutationInvariantChecks:
         from envoy.authorship.posture_gate import PostureGateError
 
         assert issubclass(PostureEnvelopeMutationInvariantError, PostureGateError)
+
+
+# ---------------------------------------------------------------------------
+# Envelope kwarg structural Protocol check (Round 1 /redteam F-1)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeKwargProtocolCheck:
+    """Per Round 1 /redteam F-1 (MED): _PostureCarryingEnvelope is a
+    structural Protocol; Python doesn't enforce it at runtime. A caller
+    passing a wrong-shape object (string, dict, arbitrary value) would
+    otherwise produce a deep AttributeError at Step 5b's mutate call
+    site. The kwarg-boundary check converts that into a loud TypeError.
+
+    The check is opt-in for `envelope=None` (legitimate on ratchet-
+    down per spec § Ratchet-down lines 47-52). It fires only when a
+    non-None value is supplied that doesn't satisfy the Protocol shape.
+    """
+
+    def test_string_envelope_raises_type_error(self):
+        gate, _led, _rev, _sink = _make_gate()
+        with pytest.raises(TypeError, match="envelope must conform"):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope="not-an-envelope",  # type: ignore[arg-type]
+                )
+            )
+
+    def test_dict_envelope_raises_type_error(self):
+        gate, _led, _rev, _sink = _make_gate()
+        # A dict has neither attributes nor a callable mutate method.
+        with pytest.raises(TypeError, match="envelope must conform"):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope={"envelope_id": "x"},  # type: ignore[arg-type]
+                )
+            )
+
+    def test_partial_envelope_raises_type_error(self):
+        # Object with SOME but not all required attributes still rejects.
+        @dataclass
+        class _Partial:
+            envelope_id: str = "sha256:partial"
+            prior_version: int = 1
+            # Missing prior_content_hash, prior_posture_level, mutate_*
+
+        gate, _led, _rev, _sink = _make_gate()
+        with pytest.raises(TypeError, match="envelope must conform"):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=_Partial(),  # type: ignore[arg-type]
+                )
+            )
+
+    def test_envelope_with_non_callable_mutate_raises_type_error(self):
+        # Object with mutate_for_posture_level as a non-callable attribute
+        # (e.g., a string) MUST be rejected — the gate calls it at Step 5b.
+        @dataclass
+        class _NonCallableMutate:
+            envelope_id: str = "sha256:fake"
+            prior_version: int = 1
+            prior_content_hash: str = "sha256:prior"
+            prior_posture_level: str = "PSEUDO"
+            mutate_for_posture_level: str = "not-callable"  # type: ignore[assignment]
+
+        gate, _led, _rev, _sink = _make_gate()
+        with pytest.raises(TypeError, match="envelope must conform"):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=_NonCallableMutate(),  # type: ignore[arg-type]
+                )
+            )
+
+    def test_envelope_none_accepted_on_ratchet_down(self):
+        # envelope=None remains legitimate on demotion paths — the kwarg
+        # check skips the Protocol-conformance branch entirely when None.
+        gate, led, _rev, _sink = _make_gate()
+        result = _run(
+            gate.request_transition(
+                principal_id="agent-test",
+                current=PostureLevel.DELEGATING,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=5, stored=5),
+                envelope=None,
+            )
+        )
+        assert result.new_level is PostureLevel.TOOL
+        assert len(led.appends) == 1
+        assert led.appends[0]["entry_type"] == "posture_change"
+
+    def test_fail_closed_on_kwarg_check(self):
+        # Type-check failure fires at the kwarg boundary BEFORE Step 1.
+        # No Ledger writes, no BET-12 emissions, no envelope mutation.
+        gate, led, _rev, sink = _make_gate()
+        with pytest.raises(TypeError, match="envelope must conform"):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=12345,  # type: ignore[arg-type]
+                )
+            )
+        assert led.appends == []
+        assert sink.writes == []

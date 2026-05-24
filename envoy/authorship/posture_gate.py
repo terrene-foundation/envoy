@@ -616,6 +616,34 @@ class _PostureMutationResult(Protocol):
     def new_envelope(self) -> object: ...
 
 
+def _is_posture_carrying_envelope(obj: object) -> bool:
+    """Structural Protocol conformance check for the `envelope` kwarg per
+    Round 1 /redteam F-1 (MED).
+
+    `_PostureCarryingEnvelope` is a structural (PEP-544) Protocol — any
+    duck-typed object that exposes the read state + mutate operation
+    satisfies it at static-checking time, but Python's runtime never
+    enforces structural Protocols by default. A caller that hands the
+    gate a wrong-shape object (a string, a dict, an arbitrary value
+    missing the required attributes) would otherwise produce a deep
+    `AttributeError` at Step 5b's `envelope.mutate_for_posture_level(...)`
+    call site — blocking the request mid-Ledger-sequence with an opaque
+    stack trace.
+
+    The runtime check converts that into a loud `TypeError` raised at
+    the kwarg boundary BEFORE any of the 5-step sequence runs. Same
+    failure-mode class as the existing `PostureEvidence.__post_init__`
+    type validation (`rules/security.md` § Multi-Site Kwarg Plumbing).
+    """
+    return (
+        hasattr(obj, "envelope_id")
+        and hasattr(obj, "prior_version")
+        and hasattr(obj, "prior_content_hash")
+        and hasattr(obj, "prior_posture_level")
+        and callable(getattr(obj, "mutate_for_posture_level", None))
+    )
+
+
 class _PostureCarryingEnvelope(Protocol):
     """Minimum envelope surface PostureGate consumes on ratchet-up.
 
@@ -815,6 +843,18 @@ class PostureGate:
             raise TypeError(
                 f"revoke_on_demotion must be tuple of str, got "
                 f"{type(revoke_on_demotion).__name__}"
+            )
+
+        # Round 1 /redteam F-1 (MED): _PostureCarryingEnvelope is a structural
+        # Protocol; Python doesn't enforce it at runtime. A duck-typed object
+        # missing required attributes would otherwise crash mid-Step-5b with
+        # an opaque AttributeError. Reject at the kwarg boundary instead.
+        if envelope is not None and not _is_posture_carrying_envelope(envelope):
+            raise TypeError(
+                "envelope must conform to _PostureCarryingEnvelope Protocol "
+                "(must expose envelope_id, prior_version, prior_content_hash, "
+                "prior_posture_level, and a callable mutate_for_posture_level); "
+                f"got {type(envelope).__name__}"
             )
 
         # ----- STEP 1: divergence check (T-023 defense) -----
