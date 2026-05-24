@@ -75,9 +75,31 @@
 
 ---
 
-## T-02-33 — Wire envoy/authorship/ (Tier 2) ✅ CLOSED 2026-05-24
+## T-02-33 — Wire envoy/authorship/ (Tier 2) ✅ CLOSED 2026-05-24 (RT-1 + RT-2 convergent)
 
-**Status:** Shipped. `tests/tier2/test_posture_gate_wiring.py` (8 cases) exercises `PostureGate` against real `EnvoyLedger` + real Ed25519 + real `EnvelopeCompiler` canonical-bytes pipeline. NO mocking. Plus paired envelope_edit pairing on ratchet-up. Commits: planning `1e6b256`, RED BAR test `7a8d62a`, GREEN BAR production fix `fe1b982`, spec sweep `71199d4`. 88 Tier 1 + 8 Tier 2 pass; full suite 579/579.
+**Status:** Shipped through 4 merged PRs + 2 consecutive clean /redteam rounds. Wave-2 PostureGate surface (T-02-30/31/32/33) is convergence-clean at `2264ae2`.
+
+**Convergence chain:**
+
+- **PR #23 (origin, merge `641dd2d`)** — Tier 2 wiring + envelope_edit pairing on ratchet-up. 5 commits, 579/579 tests, 8 Tier 2 cases at `tests/tier2/test_posture_gate_wiring.py::TestEnvelopeEditPairingOnRatchetUp`.
+- **PR #25 (Shard 1, merge `ebf01f4`)** — closes Round 1 F-1 (MED kwarg type/shape) + F-2 (HIGH mutation invariants) + F-3 (MED defensive guard) + F-4 (HIGH mint-state interpretation) + F-6 (MED audit-only field) + F-002 (LOW unreachable guard). 599/599 tests. Spec edit: `specs/envelope-model.md` § Schema mint-state field-semantics for `metadata.posture_level`.
+- **PR #26 (Shard 2, merge `e89914b`)** — F-5 (HIGH) determined FALSE-POSITIVE per `rules/verify-resource-existence.md` MUST-3 (threat target — re-canonicalization path — does not exist in codebase). Ships journal/0023-DISCOVERY + `tests/tier2/test_envelope_hash_mint_time_cached.py` (6 probe-driven tests pinning the single-point-mint-time-hash invariant). 605/605 tests.
+- **PR #27 (Shard 3, merge `2264ae2`)** — closes Round 2 R2-F1 (HIGH same-class regression of Round 1 F-3 reintroduced by Shard 1's invariant raises) + R2-F2 (MED Protocol side-effect contract) + R2-F3 (LOW cross-spec drift). 609/609 tests. The R2-F1 fix promotes F-2 mutation invariants from postconditions-of-Step-5a to PRECONDITIONS — on any invariant violation, ZERO Ledger entries land (application-level atomic fail-closed).
+
+**/redteam round-by-round trajectory:**
+
+| Round | HIGH | MED | LOW | Verdict   | Closure                               |
+| ----- | ---: | --: | --: | --------- | ------------------------------------- |
+| 1     |    3 |   4 |   2 | NOT CLEAN | Shard 1 + Shard 2 + issue #24 (F-001) |
+| 2     |    1 |   1 |   1 | NOT CLEAN | Shard 3                               |
+| 3     |    0 |   0 |   0 | CLEAN     | (first of 2 consecutive)              |
+| 4     |    0 |   0 |   0 | CLEAN     | (convergence MET)                     |
+
+Round 1 audit artifacts committed at `7598578`; Round 2-4 audit artifacts committed at `d780f89`.
+
+**Open follow-up:** GH issue #24 — Phase 03 Ledger transactional / compensating-entry primitive for F-001 transient-failure class (distinct bug class from R2-F1 which was closed in Shard 3 as application-level).
+
+**Original test counts (PR #23):** `tests/tier2/test_posture_gate_wiring.py` 8 cases exercising `PostureGate` against real `EnvoyLedger` + real Ed25519 + real `EnvelopeCompiler` canonical-bytes pipeline. NO mocking. Plus paired envelope_edit pairing on ratchet-up.
 
 **DI design choice (per `journal/0021-DECISION-t-02-33-envelope-edit-pairing-design.md`):** picked option (b) — `envelope` kwarg on `request_transition()` over `_EnvelopeProtocol` DI surface. Keeps PostureGate stateless; envelope is per-transition data; avoids inventing a `_RoleEnvelopeStore` primitive; updates zero existing Tier 1 fixtures structurally (only the 13 ratchet-up tests gain `envelope=_FakePostureCarryingEnvelope()`). Runtime-contract weakness closed by typed `PostureRatchetEnvelopeMissingError` raised at Step 3e when `target > current` and `envelope is None`.
 
