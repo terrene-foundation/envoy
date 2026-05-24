@@ -33,8 +33,9 @@ def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -
        if also allow-listed via template override).
     2. `scope.service_identifier` ∈ `envelope.operational.tool_allowlist`.
     3. If `scope.channel` is set, `scope.channel` ∉
-       `envelope.communication.recipient_denylist` (deny-veto on the
-       communication axis).
+       `envelope.communication.channel_denylist` (deny-veto on the
+       channel-transport axis per /redteam R2-H1 — distinct from
+       `recipient_denylist` which gates the entity being communicated with).
     4. If `scope.channel` is set, `scope.channel` ∈
        `envelope.communication.channel_allowlist`.
 
@@ -57,7 +58,7 @@ def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -
     if scope.service_identifier not in envelope.operational.tool_allowlist:
         return False
     if scope.channel is not None:
-        if scope.channel in envelope.communication.recipient_denylist:
+        if scope.channel in envelope.communication.channel_denylist:
             return False
         if scope.channel not in envelope.communication.channel_allowlist:
             return False

@@ -64,6 +64,12 @@ per-platform OS keychain entries are keyed by this string + the entry_id."""
 
 _RECORD_SCHEMA_VERSION = 1
 
+# Sentinel for `_log_error` calls on the set / list_by_principal paths
+# that raise BEFORE an entry_id is generated or when no specific entry
+# is responsible (e.g. the index payload itself is corrupted). Centralized
+# per /redteam R2-N1 (2026-05-24) so log readers grep one symbol.
+_NIL_ENTRY_ID = UUID(int=0)
+
 logger = logging.getLogger("envoy.connection_vault")
 
 
@@ -397,12 +403,11 @@ class ConnectionVault:
         # NIL_ENTRY_ID sentinel below stands in for "raised before
         # entry_id was generated" so the log line still carries a hint
         # field per `rules/observability.md` Rule 1.
-        nil_entry_id = UUID(int=0)
         try:
             validate_service_identifier(service_identifier)
             validate_service_identifier(entry_envelope_scope.service_identifier)
         except InvalidServiceIdentifierError:
-            self._log_error("set", nil_entry_id, "invalid_service_identifier")
+            self._log_error("set", _NIL_ENTRY_ID, "invalid_service_identifier")
             raise
 
         if expires_at is not None:
@@ -586,14 +591,13 @@ class ConnectionVault:
         # on the index-read path must emit a symmetric warning log before
         # propagating. UUID(int=0) sentinel because no specific entry_id
         # caused the failure — the index itself did.
-        nil_entry_id = UUID(int=0)
         try:
             index_ids = self._read_index()
         except KeychainUnavailableError:
-            self._log_error("list_by_principal", nil_entry_id, "keychain_unavailable")
+            self._log_error("list_by_principal", _NIL_ENTRY_ID, "keychain_unavailable")
             raise
         except CorruptedRecordError:
-            self._log_error("list_by_principal", nil_entry_id, "corrupted_index")
+            self._log_error("list_by_principal", _NIL_ENTRY_ID, "corrupted_index")
             raise
         out: list[CredentialEntry] = []
         stale_count = 0

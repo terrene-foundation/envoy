@@ -19,6 +19,7 @@ keychain. The Tier 2 wire-up (T-01-25) exercises real keyring backends.
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -1007,7 +1008,6 @@ class TestObservability:
     def test_get_emits_start_and_ok(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         entry = vault.set(
@@ -1026,7 +1026,6 @@ class TestObservability:
     def test_get_emits_warning_on_entry_not_found(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
@@ -1039,7 +1038,6 @@ class TestObservability:
     def test_delete_emits_start_and_ok(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         entry = vault.set(
@@ -1058,7 +1056,6 @@ class TestObservability:
     def test_list_by_principal_emits_start_and_ok(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
@@ -1072,7 +1069,6 @@ class TestObservability:
     ) -> None:
         """Per `rules/observability.md` Rule 8: schema-revealing identifiers
         at WARN/INFO MUST be hashed-prefix only, not raw."""
-        import logging
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
@@ -1105,7 +1101,6 @@ class TestEnvImportSkipReason:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         monkeypatch.delenv("ENVOY_TEST_GRANULAR_UNSET", raising=False)
         scope = EnvelopeScopeRef(service_identifier="openai")
@@ -1129,7 +1124,6 @@ class TestEnvImportSkipReason:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         monkeypatch.setenv("ENVOY_TEST_GRANULAR_EMPTY", "   ")
         scope = EnvelopeScopeRef(service_identifier="openai")
@@ -1212,9 +1206,7 @@ class TestCorruptedRecordValidatorLeakClosed:
         try:
             _deserialize_record(blob)
         except InvalidServiceIdentifierError:
-            pytest.fail(
-                "InvalidServiceIdentifierError leaked past CorruptedRecordError wrap"
-            )
+            pytest.fail("InvalidServiceIdentifierError leaked past CorruptedRecordError wrap")
         except CorruptedRecordError:
             pass
 
@@ -1225,9 +1217,7 @@ class TestCorruptedRecordValidatorLeakClosed:
         blob = self._make_payload(
             entry_envelope_scope={"service_identifier": 12345, "channel": None},
         )
-        with pytest.raises(
-            CorruptedRecordError, match="service_identifier must be str"
-        ):
+        with pytest.raises(CorruptedRecordError, match="service_identifier must be str"):
             _deserialize_record(blob)
 
     def test_scope_channel_wrong_type_raises_corrupted(self) -> None:
@@ -1248,9 +1238,11 @@ class TestCorruptedRecordValidatorLeakClosed:
 
 class TestEnvelopeScopeDenylistVeto:
     """Per R1-F4 (2026-05-24): `envelope_contains_scope` MUST honor
-    operational.tool_denylist AND communication.recipient_denylist. The
+    operational.tool_denylist AND communication.channel_denylist. The
     deny axis is the structural defense against template-import override
     scenarios where a sibling envelope library re-allows a denied tool.
+    Per /redteam R2-H1 (2026-05-24): channel-axis deny is `channel_denylist`,
+    NOT `recipient_denylist` (which gates recipient ENTITIES, not transports).
     """
 
     def test_tool_denylist_vetoes_even_when_in_allowlist(self) -> None:
@@ -1266,27 +1258,44 @@ class TestEnvelopeScopeDenylistVeto:
         scope = EnvelopeScopeRef(service_identifier="openai")
         assert envelope_contains_scope(env, scope) is False
 
-    def test_recipient_denylist_vetoes_channel_even_when_in_allowlist(self) -> None:
+    def test_channel_denylist_vetoes_channel_even_when_in_allowlist(self) -> None:
+        """Per /redteam R2-H1: channel_denylist (transport axis) is the
+        correct deny-veto for the communication channel."""
         from envoy.envelope import envelope_contains_scope
 
         env = EnvelopeConfigInput(
             operational=OperationalDimension(tool_allowlist=["telegram-bot"]),
             communication=CommunicationDimension(
                 channel_allowlist=["telegram", "slack"],
-                recipient_denylist=["telegram"],  # explicit deny
+                channel_denylist=["telegram"],  # explicit deny on transport axis
             ),
         )
         scope = EnvelopeScopeRef(service_identifier="telegram-bot", channel="telegram")
         assert envelope_contains_scope(env, scope) is False
+
+    def test_recipient_denylist_does_NOT_veto_channel(self) -> None:
+        """Per /redteam R2-H1: recipient_denylist gates RECIPIENTS, NOT
+        channel transports. A telegram channel allow-listed must pass even
+        if a recipient name "telegram" appears in recipient_denylist —
+        these are separate semantic axes."""
+        from envoy.envelope import envelope_contains_scope
+
+        env = EnvelopeConfigInput(
+            operational=OperationalDimension(tool_allowlist=["telegram-bot"]),
+            communication=CommunicationDimension(
+                channel_allowlist=["telegram"],
+                recipient_denylist=["telegram"],  # different axis; must NOT veto channel
+            ),
+        )
+        scope = EnvelopeScopeRef(service_identifier="telegram-bot", channel="telegram")
+        assert envelope_contains_scope(env, scope) is True
 
     def test_allow_without_deny_still_returns_true(self) -> None:
         """Sanity: the new code path must not regress the existing allow-list test."""
         from envoy.envelope import envelope_contains_scope
 
         env = EnvelopeConfigInput(
-            operational=OperationalDimension(
-                tool_allowlist=["openai"], tool_denylist=["claude"]
-            ),
+            operational=OperationalDimension(tool_allowlist=["openai"], tool_denylist=["claude"]),
             communication=CommunicationDimension(),
         )
         scope = EnvelopeScopeRef(service_identifier="openai")
@@ -1297,9 +1306,7 @@ class TestEnvelopeScopeDenylistVeto:
         from envoy.envelope import envelope_contains_scope
 
         env = EnvelopeConfigInput(
-            operational=OperationalDimension(
-                tool_allowlist=["openai"], tool_denylist=["openai"]
-            ),
+            operational=OperationalDimension(tool_allowlist=["openai"], tool_denylist=["openai"]),
             communication=CommunicationDimension(),
         )
         scope = EnvelopeScopeRef(service_identifier="openai")
@@ -1319,7 +1326,6 @@ class TestSetErrorObservability:
     def test_set_emits_start_and_ok(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         caplog.clear()
@@ -1337,7 +1343,6 @@ class TestSetErrorObservability:
     def test_set_emits_warning_on_invalid_service_identifier(
         self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        import logging
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         caplog.clear()
@@ -1350,9 +1355,7 @@ class TestSetErrorObservability:
                     secret="sk-test",
                 )
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any(
-            getattr(r, "reason", None) == "invalid_service_identifier" for r in warns
-        )
+        assert any(getattr(r, "reason", None) == "invalid_service_identifier" for r in warns)
 
     def test_set_emits_warning_on_keychain_unavailable(
         self,
@@ -1360,7 +1363,6 @@ class TestSetErrorObservability:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         vault = ConnectionVault(
             principal_genesis_id=principal_id,
@@ -1390,7 +1392,6 @@ class TestListByPrincipalErrorObservability:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
 
@@ -1400,9 +1401,7 @@ class TestListByPrincipalErrorObservability:
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
-        backend.set_password(
-            KEYRING_SERVICE_NAMESPACE, f"__index__:{principal_id}", "{not json"
-        )
+        backend.set_password(KEYRING_SERVICE_NAMESPACE, f"__index__:{principal_id}", "{not json")
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
             with pytest.raises(CorruptedRecordError):
@@ -1416,7 +1415,6 @@ class TestListByPrincipalErrorObservability:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
 
@@ -1477,11 +1475,8 @@ class TestGetErrorObservabilityBranches:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
-        vault, entry, _backend = self._setup_with_entry(
-            principal_id, envelope_openai_cli
-        )
+        vault, entry, _backend = self._setup_with_entry(principal_id, envelope_openai_cli)
         vault_no_env = ConnectionVault(
             principal_genesis_id=principal_id,
             active_envelope=None,
@@ -1501,20 +1496,15 @@ class TestGetErrorObservabilityBranches:
         envelope_telegram: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
-        vault, entry, _backend = self._setup_with_entry(
-            principal_id, envelope_openai_cli
-        )
+        vault, entry, _backend = self._setup_with_entry(principal_id, envelope_openai_cli)
         vault_tg = vault.with_active_envelope(envelope_telegram)
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
             with pytest.raises(EnvelopeScopeMismatchError):
                 vault_tg.get(entry.entry_id)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any(
-            getattr(r, "reason", None) == "envelope_scope_mismatch" for r in warns
-        )
+        assert any(getattr(r, "reason", None) == "envelope_scope_mismatch" for r in warns)
 
     def test_get_entry_expired_logs_reason(
         self,
@@ -1522,7 +1512,6 @@ class TestGetErrorObservabilityBranches:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         past = datetime.now(timezone.utc) - timedelta(seconds=1)
         vault, entry, _backend = self._setup_with_entry(
@@ -1540,7 +1529,6 @@ class TestGetErrorObservabilityBranches:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         backend = _MemBackend()
         vault_a = ConnectionVault(
@@ -1567,9 +1555,7 @@ class TestGetErrorObservabilityBranches:
             with pytest.raises(CrossPrincipalAccessRefusedError):
                 vault_b.get(entry_a.entry_id)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any(
-            getattr(r, "reason", None) == "cross_principal_refused" for r in warns
-        )
+        assert any(getattr(r, "reason", None) == "cross_principal_refused" for r in warns)
 
     def test_get_usage_counter_overflow_logs_reason(
         self,
@@ -1577,7 +1563,6 @@ class TestGetErrorObservabilityBranches:
         envelope_openai_cli: EnvelopeConfigInput,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging
 
         from envoy.connection_vault.adapter import (
             KEYRING_SERVICE_NAMESPACE,
@@ -1614,9 +1599,7 @@ class TestGetErrorObservabilityBranches:
             with pytest.raises(UsageCounterOverflowError):
                 vault.get(eid)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any(
-            getattr(r, "reason", None) == "usage_counter_overflow" for r in warns
-        )
+        assert any(getattr(r, "reason", None) == "usage_counter_overflow" for r in warns)
 
 
 # ---------------------------------------------------------------------------

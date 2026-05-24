@@ -223,6 +223,12 @@ class CommunicationDimension:
     recipient_denylist: list[str] = field(default_factory=list)
     domain_allowlist: list[str] = field(default_factory=list)
     channel_allowlist: list[str] = field(default_factory=list)
+    # Per /redteam R2-H1 (2026-05-24): `channel_denylist` is the deny-veto
+    # twin of `channel_allowlist`. Distinct from `recipient_denylist` —
+    # recipients are entities communicated WITH; channels are the transport.
+    # Consumed by `envoy.envelope.envelope_contains_scope` so a denylisted
+    # channel cannot be reached even when allow-listed via template override.
+    channel_denylist: list[str] = field(default_factory=list)
     content_rules: list[dict[str, Any]] = field(default_factory=list)
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
