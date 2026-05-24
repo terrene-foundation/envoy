@@ -48,7 +48,7 @@ Third-party credential storage (API keys, channel tokens, OAuth refresh) — OS 
 3. If `scope.channel` is set: `scope.channel` ∉ `envelope.communication.channel_denylist`, AND
 4. If `scope.channel` is set: `scope.channel` ∈ `envelope.communication.channel_allowlist`.
 
-Explicit deny dominates implicit allow per `rules/security.md` § "Fail-Closed Security Defaults" — a denylisted service or channel is refused even when re-allowed via template-import override. The membership predicate is implemented at `envoy/envelope/scope.py::envelope_contains_scope`; full envelope-intersection semantics (per `kailash.trust.pact.envelopes.intersect_envelopes`) ship in Phase 02 (deferred at T-01-10 per `envoy/envelope/compiler.py:296-308`). Phase 01 is narrow set-membership with deny-veto.
+Explicit deny dominates implicit allow per `rules/pact-governance.md` § "Fail-Closed Decisions" — a denylisted service or channel is refused even when re-allowed via template-import override. The membership predicate is implemented at `envoy/envelope/scope.py::envelope_contains_scope`; full envelope-intersection semantics (per `kailash.trust.pact.envelopes.intersect_envelopes`) ship in Phase 02 (deferred at T-01-10 per `envoy/envelope/compiler.py:296-308`). Phase 01 is narrow set-membership with deny-veto.
 
 ## Per-principal isolation (Phase 03)
 

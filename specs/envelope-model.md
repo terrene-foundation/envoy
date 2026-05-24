@@ -63,7 +63,7 @@ Top-level `EnvelopeConfig` JSON wire format per doc 02 §2.2:
   },
   "communication": {
     "recipient_allowlist": [...], "recipient_denylist": [...],
-    "domain_allowlist": [...], "channel_allowlist": [...],
+    "domain_allowlist": [...], "channel_allowlist": [...], "channel_denylist": [...],
     "content_rules": [{"rule_id": <str>, "order": <int>, "when_ast": {...}, "content_types_forbidden": [...]}],
     "authored_constraints": [...], "imported_constraints": [{"constraint_id": <str>, "rule_ast": {...}, "authored": false, "template_origin": <str>, "template_hash": <sha256>}]
   },
@@ -207,6 +207,10 @@ Per doc 02 §11. Every error logged as Ledger entry with `content_trust_level: s
 - `tests/regression/test_t093_budget_velocity.py` — T-093 budget-exhaustion-fraud.
 - `tests/regression/test_t104_envelope_version_binding.py` — T-104 envelope_version + composed-action binding.
 - `tests/regression/test_t105_subset_proof_schema.py` — T-105 sub-agent envelope-downgrade defense.
+
+## §X Change log
+
+- 2026-05-24 — Added `channel_denylist: list[<str>]` field to `communication` block (line 66). Per /redteam Round 3 (T-01-24 Connection Vault) sibling re-derivation: `envoy.envelope.envelope_contains_scope` checks `channel_denylist` as a deny-veto distinct from `recipient_denylist` (channels are transports; recipients are entities). The schema-level addition aligns `specs/envelope-model.md` with `specs/connection-vault.md` § "Envelope-scope membership semantics" landed in the same PR.
 
 ## Open questions
 
