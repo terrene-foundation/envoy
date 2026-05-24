@@ -928,16 +928,18 @@ class PostureGate:
         # entries are application-signed by the delegation key (the gate's
         # entry envelope itself is device-signed by EnvoyLedger.append).
         if target > current:
-            # MyPy can't narrow `envelope` past the Step 3e raise above;
-            # the runtime invariant is: if we reach here on ratchet-up,
-            # envelope is non-None. Assert defensively (pre-condition the
-            # raise above already proved) so a future refactor that
-            # accidentally drops Step 3e fails loudly at this site rather
-            # than producing a NoneType.mutate_for_posture_level() crash
-            # downstream — per `rules/zero-tolerance.md` Rule 3a (typed
-            # delegate guards for None backing objects).
-            if envelope is None:
-                raise PostureRatchetEnvelopeMissingError(current=current, target=target)
+            # F-3 + F-002 closure (Round 1 /redteam): the defensive
+            # `if envelope is None` guard previously here was unreachable
+            # (Step 3e raises BEFORE any side-effect) AND mis-ordered
+            # (it fired AFTER Step 5a's posture_change append, so a
+            # future refactor that dropped Step 3e would have left an
+            # orphan posture_change with no paired envelope_edit). The
+            # correct structural defense is Step 3e raising before ANY
+            # Ledger write — moved earlier in this function. Removing
+            # the redundant guard here ALSO closes the orphan-
+            # posture_change risk per `rules/zero-tolerance.md` Rule 3.
+            # MyPy narrows `envelope` to non-None via the Step 3e raise.
+            assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces
             mutation = envelope.mutate_for_posture_level(target)
             envelope_edit_content: dict = {
                 "schema_version": _ENVELOPE_EDIT_SCHEMA_VERSION,
