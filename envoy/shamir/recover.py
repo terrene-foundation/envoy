@@ -264,8 +264,11 @@ def _recover_master_key_impl(
 ) -> bytes:
     """Implementation half of `recover_master_key` — runs the 6 validation
     steps + reconstruction. Split from the public surface so the public
-    function owns the start/error/ok log triple (rules/observability.md
-    MUST Rule 1) and this half stays focused on the validation algebra.
+    function owns start + error logging (rules/observability.md MUST
+    Rule 1); the ok log lives HERE in the impl because it needs the
+    post-reconstruct `secret` bytes length (which the public wrapper
+    cannot see without re-importing the return value). Together both
+    halves emit the start/error/ok triple per the rule.
     Per /redteam Round 1 F-2: the kailash lazy import moves to Step 6 so
     the cheapest preconditions (Steps 1-5) fire FIRST as the docstring
     claims — matching the spec's "validation order" contract.
