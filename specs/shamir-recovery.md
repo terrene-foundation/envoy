@@ -77,13 +77,14 @@ Per specs/trust-lineage.md — Genesis Record carries `shard_public_commitments:
 - `tests/tier1/test_shamir_distribution_checklist_persister.py` — H-06 fix; three-layer slot-label defense (whitelist regex + ASCII-only + substring blacklist); byte-level invariant on persisted checklist (Tier 1, shipped T-02-35).
 - `tests/tier1/test_shamir_ritual_coordinator_orchestration.py` — 6-step ritual, master-key zeroize, storage-only `CommitmentBinder` Protocol (Tier 1, shipped T-02-34 + T-02-35 L-2 re-arch).
 - `tests/tier1/test_shamir_recover_cli.py` — recovery primitive + `envoy shamir recover` CLI: per-card SLIP-0039 checksum validation at entry (L-03 fix), commitment-verify against `Genesis.shard_public_commitments` (counterfeit defense), threshold reconstruction, CLI surface AST-lock, `del recovered` memory-hygiene AST-lock (Tier 1, shipped T-02-36).
+- `tests/tier2/test_shamir_ritual_coordinator_wiring.py` — ShamirRitualCoordinator end-to-end against real `kailash.trust.vault.shamir.generate` + real `PaperShardRenderer` + real `TrustVaultChecklistPersister` against real TrustVault. Covers 3-of-5 SLIP-0039 reconstruct + checklist persistence round-trip across vault lock/unlock (Tier 2, shipped T-02-37).
+- `tests/tier2/test_shamir_commitments_bound_to_genesis.py` — Genesis-Record commitment defeats counterfeit shards: real SLIP-0039 generates two parallel rituals (authentic + counterfeit) with valid per-card checksums; commitment verification at recovery time MUST raise `CommitmentVerificationFailedError` on counterfeit-shard swap into the 3-of-5 quorum (Tier 2, shipped T-02-37).
+- `tests/tier2/test_shamir_vault_recovery_end_to_end.py` — full Shamir vault-recovery end-to-end: original vault → ritual → 3-of-5 reconstruct → fresh TrustVault imports the reconstructed master key and unlocks WITHOUT the original passphrase, recovering the persisted metadata envelope (Tier 2, shipped T-02-37).
 
 ## Out of scope (this phase)
 
 Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
 
-- 3-of-5 SLIP-0039 reconstruct + vault unlock (Tier 2 wiring) — scheduled in T-02-37 (`02-wave-2-authorship-shamir-boundary.md`).
-- Genesis-Record commitment defeats counterfeit shards (Tier 2 wiring) — scheduled in T-02-37.
 - Full S8 ritual via Boundary Conversation (Tier 3 EC-5) — scheduled in T-08-130 (`08-tests-tier3-acceptance.md`).
 - Error taxonomy rows for Phase-04 hardening (NOT in Phase 01 surface): `RecoveryRateLimitedError` (T-002 household-adversarial defense), `RotationGracePeriodElapsedError` (30-day rotation grace), `CryptoLibAuditMissingError` (Phase-00 release gate) — rows re-land in § Error taxonomy when each error class ships per `rules/spec-accuracy.md` MUST Rule 5 (incremental spec extension: spec content describes ONLY shipped behavior).
 

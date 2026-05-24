@@ -181,19 +181,42 @@ Round 1 audit artifacts committed at `7598578`; Round 2-4 audit artifacts commit
 
 ---
 
-## T-02-36 — Build envoy/shamir/reconstruct (CLI)
+## T-02-36 — Build envoy/shamir/reconstruct (CLI) ✅ CLOSED 2026-05-24 (PR #28)
+
+**Status:** Shipped. `envoy shamir recover` CLI + `envoy.shamir.recover.recover_master_key` primitive + 7 typed recovery errors (`ShamirRecoveryError` base + `ShardChecksumFailedError`, `InsufficientSharesError`, `TooManySharesError`, `CommitmentVerificationFailedError`, `ShardSlotLabelMismatchError`, `ShardPublicCommitmentMissingError`) at merge `9c7c306`. 28 new Tier 1 tests at `tests/tier1/test_shamir_recover_cli.py`. Full suite 637/637 pass.
+
+**Convergence chain:**
+
+- **PR #28 (origin commit `35019b5`, merge `9c7c306`)** — CLI + primitive + 24 Tier 1 tests + spec citation upgrade.
+- **Fix commit `47123ae`** — same-shard sweep closing 9 findings from parallel gate-review (reviewer + security-reviewer) + /redteam Round 1: dependency declaration (shamir-mnemonic), error-path observability, Exception base-message hygiene (whitelist tuple leak), `_render_error` assert, DEFAULT_THRESHOLD consolidation, lazy-import reordering, spec accuracy (3 pre-existing unimplemented errors moved to § Out of scope), docstring past-tense fix. 4 new regression tests pin every fix.
+- **Doc commit `cba2556`** — Round 2 LOW (docstring drift introduced by `47123ae`'s public/private split): impl docstring now correctly describes the start+error/ok split per `rules/observability.md` MUST Rule 1.
+
+**/redteam round-by-round trajectory:**
+
+| Round | CRIT | HIGH | MED | LOW | Verdict | Closure                                  |
+| ----- | ---: | ---: | --: | --: | ------- | ---------------------------------------- |
+| 1     |    0 |    0 |   0 |   2 | CLEAN   | F-1 + F-2 closed in fix commit `47123ae` |
+| 2     |    0 |    0 |   0 |   1 | CLEAN   | F-1 docstring closed in `cba2556`        |
+
+Convergence MET per `briefs/00-phase-01-mvp-scope.md` § Exit criteria (2 consecutive clean rounds: R1 + R2 both 0 CRIT/HIGH/MED).
+
+**Spec edits acknowledged + closed (per `rules/specs-authority.md` Rule 6):**
+
+- `specs/shamir-recovery.md` § Out of scope — L-03 carry-forward bullet REMOVED (closed by this shard). Added `tests/tier1/test_shamir_recover_cli.py` citation under § Test location.
+- `specs/shamir-recovery.md` § Error taxonomy — added `TooManySharesError` row (T-02-36 implementation discovered SLIP-0039's strict-count contract; typed envoy error translates the opaque library `MnemonicError` per `rules/communication.md`).
+- `specs/shamir-recovery.md` § Error taxonomy — REMOVED 3 pre-existing rows (`RecoveryRateLimitedError`, `RotationGracePeriodElapsedError`, `CryptoLibAuditMissingError`) per `rules/spec-accuracy.md` MUST Rule 5 + `rules/zero-tolerance.md` Rule 1a (scanner-surface symmetry). Tracked in § Out of scope for Phase-04 hardening.
+
+**Implements:** `specs/shamir-recovery.md` § Recovery flow + L-03 fix (per-card BIP-39 checksum at entry) + counterfeit-shard defense via commitment verification against `Genesis.shard_public_commitments`.
+
+**Blocks on:** T-02-34 ✓ (PR #13, ritual coordinator) + T-02-35 ✓ (PR #15, paper/commitments/distribution_checklist). All satisfied.
 
 **Source:** Shard 15 § 3 step 3.
 
-**Action:** `envoy shamir recover` CLI; commitment-verify against `Genesis.shard_public_commitments`.
+**Capacity check (actual):** ~470 LOC across recover.py (~340) + cli/{**init**,**main**,main,shamir}.py (~310) + errors.py extension (~110); 3 invariants pinned (commitment verification; threshold reconstruction; CLI surface stability); 2 call-graph hops (CLI → recover_master_key → kailash reconstruct + verify_commitment). Slightly above the 150-LOC estimate due to recovery-side error taxonomy + click group infrastructure, but within shard budget (≤500 LOC) per `rules/autonomous-execution.md` MUST Rule 1.
 
-**Capacity check:** ~150 LOC; 3 invariants (commitment verification; threshold reconstruction; CLI surface stability); 2 call-graph hops.
+**Memory hygiene per `rules/trust-plane-security.md` MUST NOT Rule 3:** recovered master-key bytes dropped via `del recovered` in CLI `finally` clause. AST-locked by `TestMemoryHygiene::test_recover_command_dels_recovered_bytes` walking `ast.Try.finalbody` for `ast.Delete` naming `recovered` — refuses a future refactor that drops the `finally`.
 
-**Blocks on:** T-02-34 + T-02-35.
-
-**Estimate:** 0.5 session.
-
-**Phase B citation upgrade (per `12-spec-citation-hygiene.md`):** When this shard ships the per-card BIP-39 checksum at recovery entry, upgrade the `(scheduled in T-02-36)` line in `specs/shamir-recovery.md` § Out of scope (per-card BIP-39 checksum / L-03 carry-forward) to a concrete `tests/...` citation under § Test location, OR delete the line if the L-03 surface is cut from this shard. Audit `grep -hoE 'tests/[a-z0-9_/]+\.py' specs/shamir-recovery.md | while read p; do [ -f "$p" ] || echo MISSING; done` MUST exit 0 at this shard's PR merge.
+**Open follow-up:** T-02-37 (Tier 2 cross-tool interop wiring) — next-in-chain, exercises real `kailash.trust.vault.shamir` + real `python-shamir-mnemonic` end-to-end via the primitive shipped here.
 
 ---
 

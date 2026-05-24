@@ -77,12 +77,11 @@ All errors persisted to Ledger as `system_error` per specs/ledger.md §System er
 - `tests/tier1/test_trust_vault_lifecycle.py::TestIdleLock` — auto-lock fires after `idle_ttl_seconds` (default 15min); activity resets timer; post-timeout access raises `AutoLockIdleTimeoutError` (Tier 1, shipped T-01-13).
 - `tests/tier1/test_trust_vault_lifecycle.py::TestLock` — master-key zeroize on lock; idempotent (Tier 1, shipped T-01-13).
 - `tests/tier1/test_trust_vault_lifecycle.py` — vault metadata slot `read_metadata` / `write_metadata` round-trip across lock/unlock cycles; `O_EXCL | O_NOFOLLOW` atomic-write hardening (Tier 1, shipped T-02-35).
+- `tests/tier2/test_shamir_vault_recovery_end_to_end.py::TestVaultShamirRecoveryEndToEnd::test_payload_recovered_via_shamir_without_passphrase` — 3-of-5 default reconstruction round-trip: vault.export_master_key_for_shamir → ShamirRitualCoordinator (real SLIP-0039) → recover_master_key (3 of 5 cards) → vault.import_master_key_from_shamir → fresh vault unlocks WITHOUT original passphrase + read_metadata round-trips user-side state (Tier 2, shipped T-02-37).
 
 ## Out of scope (this phase)
 
 Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
-
-- 3-of-5 default reconstruction round-trip (Tier 2 vault ⇄ Shamir wiring) — scheduled in T-02-37 (`02-wave-2-authorship-shamir-boundary.md`).
 
 Phase-02+ hardening is out of Phase 01 scope: HKDF per-region key isolation, padding-bucket size obfuscation `{1, 4, 16, 64} MiB`, full memory-hygiene zeroize under cold-boot scenarios, `envoy vault destroy-keys` CLI for T-042 mitigation. Phase-04+ work is out of Phase 01 scope: duress passphrase + honeypot Genesis distinct-from-real, hidden envelope dual-passphrase + dual-Shamir + constant-write-rate, shadow-segment real-only-key separation, `DuressUnlockEvent` write-without-Ledger-sync, regressions T-002 / T-019 / T-040 / T-041 / T-042 / T-071. All Phase-04+ items tracked at `specs/threat-model.md`.
 
