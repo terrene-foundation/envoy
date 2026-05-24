@@ -70,6 +70,7 @@ envoy-ledger/
 # Never tracked publicly. Preserved across /sync per template convention.
 **/.claude/learning/
 **/.claude/scheduled_tasks.lock
+**/.claude/worktrees/
 
 # Internal research — pulled back into the repo for working speed + clarity
 # (per user decision 2026-04-21). Everything under workspaces/internal/ is
