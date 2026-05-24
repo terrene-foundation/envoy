@@ -48,7 +48,7 @@ Third-party credential storage (API keys, channel tokens, OAuth refresh) — OS 
 3. If `scope.channel` is set: `scope.channel` ∉ `envelope.communication.channel_denylist`, AND
 4. If `scope.channel` is set: `scope.channel` ∈ `envelope.communication.channel_allowlist`.
 
-Explicit deny dominates implicit allow per `rules/pact-governance.md` § "Fail-Closed Decisions" — a denylisted service or channel is refused even when re-allowed via template-import override. The membership predicate is implemented at `envoy/envelope/scope.py::envelope_contains_scope`; full envelope-intersection semantics (per `kailash.trust.pact.envelopes.intersect_envelopes`) ship in Phase 02 (deferred at T-01-10 per `envoy/envelope/compiler.py:296-308`). Phase 01 is narrow set-membership with deny-veto.
+Explicit deny dominates implicit allow per `specs/envelope-model.md` § Algorithms (`intersect_envelopes` rule: "denylists UNION; allowlists INTERSECTION") and `rules/pact-governance.md` § "Fail-Closed Decisions" — a denylisted service or channel is refused even when re-allowed via template-import override. The membership predicate is implemented at `envoy/envelope/scope.py::envelope_contains_scope`; full envelope-intersection semantics (per `kailash.trust.pact.envelopes.intersect_envelopes`) ship in Phase 02 (deferred at T-01-10 per `envoy/envelope/compiler.py:296-308`). Phase 01 is narrow set-membership with deny-veto.
 
 ## Per-principal isolation (Phase 03)
 
@@ -82,6 +82,7 @@ Grant Moment dialogs that capture credentials use secure-text-field inputs (bypa
 
 - 2026-05-24 — Added 4 defensive error rows (`PrincipalRequiredError`, `InvalidServiceIdentifierError`, `RecordSchemaVersionError`, `CorruptedRecordError`) per code-reviewer HIGH-1 + security-reviewer M2/M3 (T-01-24 gate-review). `PrincipalRequiredError` mirrors `envoy/trust/errors.py` contract (`rules/tenant-isolation.md` Rule 2). `InvalidServiceIdentifierError` formalises shard 14 § 7.2 disposition. `RecordSchemaVersionError` distinguishes "present-but-unparseable-version" from `EntryNotFoundError` ("absent"). `CorruptedRecordError` translates raw stdlib decode/key/value exceptions into the typed taxonomy per `rules/zero-tolerance.md` Rule 3a.
 - 2026-05-24 — Added § "Envelope-scope membership semantics" pinning the 4-condition fail-closed predicate (tool_denylist veto + tool_allowlist + channel_denylist veto + channel_allowlist) per /redteam Round 2 R2-H2. Phase 01 narrow set-membership with deny-veto; full intersection semantics deferred to Phase 02. New `channel_denylist` field added to `CommunicationDimension` per R2-H1 (distinct from `recipient_denylist` — channels are transports, recipients are entities).
+- 2026-05-24 — Strengthened citation chain in § "Envelope-scope membership semantics" per /redteam Round 4 R4-M1: the load-bearing claim "explicit deny dominates implicit allow" now cites `specs/envelope-model.md` § Algorithms (the `intersect_envelopes` lemma "denylists UNION; allowlists INTERSECTION" at line 119) AS PRIMARY rationale + `rules/pact-governance.md` § "Fail-Closed Decisions" as supporting fail-closed mindset. The pact-governance section covers fail-closed on exception; envelope-model covers deny-priority within successful evaluation — both halves needed.
 
 ## Cross-references
 

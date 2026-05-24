@@ -51,8 +51,9 @@ def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -
     a service via template SHALL NOT override the active envelope's deny.
     """
     # Deny axis FIRST — if the active envelope denies, no allowlist match
-    # rescues it. Per `rules/security.md` § "Fail-Closed Security Defaults":
-    # explicit deny dominates implicit allow.
+    # rescues it. Per `rules/pact-governance.md` § "Fail-Closed Decisions"
+    # + `specs/envelope-model.md` § Algorithms (denylists UNION; allowlists
+    # INTERSECTION): explicit deny dominates implicit allow.
     if scope.service_identifier in envelope.operational.tool_denylist:
         return False
     if scope.service_identifier not in envelope.operational.tool_allowlist:

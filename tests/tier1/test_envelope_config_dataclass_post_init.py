@@ -58,7 +58,7 @@ class TestConfidentialityLevelEnum:
             ConfidentialityLevel("highly_classified")
 
     def test_data_access_default_is_public(self) -> None:
-        # Fail-closed default per `rules/security.md` § "Fail-Closed Security Defaults".
+        # Fail-closed default per `rules/pact-governance.md` § "Fail-Closed Decisions".
         d = DataAccessDimension()
         assert d.classification_clearance == ConfidentialityLevel.PUBLIC
 
