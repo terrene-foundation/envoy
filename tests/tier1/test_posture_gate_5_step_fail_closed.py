@@ -1624,20 +1624,32 @@ class _MutationOverrideEnvelope:
 
 
 class TestStep5bMutationInvariantChecks:
-    """Per Round 1 /redteam F-2 (HIGH): Step 5b validates the mutation
-    result BEFORE the gate signs the envelope_edit Ledger entry. Without
-    these checks, a buggy or malicious `_PostureCarryingEnvelope` adapter
-    could inject a swapped envelope_id, a regressed/skipped version, or
-    a malformed diff_hash into the device-signed audit trail.
+    """Per Round 1 /redteam F-2 (HIGH) + Round 2 /redteam F-1 (HIGH):
+    Step 5 validates the mutation result BEFORE either paired Ledger
+    entry appends. Without these checks, a buggy or malicious
+    `_PostureCarryingEnvelope` adapter could inject a swapped
+    envelope_id, a regressed/skipped version, or a malformed diff_hash
+    into the device-signed audit trail.
+
+    R2-F1 closure: the invariant checks now run as PRECONDITIONS
+    BEFORE Step 5a's posture_change append. On any invariant violation
+    ZERO Ledger entries land — the paired-emission contract is atomic
+    and fail-closed at the application level. The prior behavior (raise
+    BETWEEN Step 5a and Step 5b) left an orphan posture_change entry,
+    a same-bug-class regression of Round 1 F-3.
 
     Each test exercises ONE invariant violation and confirms:
     - `PostureEnvelopeMutationInvariantError` raised with a descriptive
       reason
-    - posture_change was already appended at Step 5a (the failure is
-      detected BEFORE Step 5b's append — invariant check is the gate
-      between mutate and append)
-    - envelope_edit is NOT appended
+    - NEITHER posture_change NOR envelope_edit appended — both halves
+      of the pairing are blocked by the precondition gate
     - BET-12 is NOT emitted (Step 5+ never reached)
+
+    Note: this contract addresses APPLICATION-level invariant
+    violations (mutation result shape). TRANSIENT Ledger failures
+    BETWEEN Step 5a and Step 5b (e.g. the second append raises
+    mid-pair) are a different bug class — see the F-001 follow-up
+    issue for Ledger-level transactional support.
     """
 
     def test_envelope_id_mismatch_raises(self):
@@ -1662,9 +1674,14 @@ class TestStep5bMutationInvariantChecks:
                 )
             )
         assert "envelope_id mismatch" in exc.value.reason
-        # posture_change was appended at Step 5a; envelope_edit MUST NOT have landed.
+        # R2-F1 closure: precondition fires BEFORE Step 5a — zero entries land.
         types = [a["entry_type"] for a in led.appends]
-        assert types == ["posture_change"]
+        assert types == [], (
+            "R2-F1 fail-closed broken — invariant violation appended "
+            f"{len(types)} entries: {types}. Per the precondition contract, "
+            "neither posture_change nor envelope_edit may land when a "
+            "mutation invariant fails."
+        )
         # BET-12 emission is Step 5+ (after envelope_edit); MUST NOT fire.
         assert sink.writes == []
 
@@ -1690,8 +1707,12 @@ class TestStep5bMutationInvariantChecks:
                 )
             )
         assert "new_version must be prior_version+1" in exc.value.reason
+        # R2-F1 closure: precondition fires BEFORE Step 5a — zero entries land.
         types = [a["entry_type"] for a in led.appends]
-        assert types == ["posture_change"]
+        assert types == [], (
+            "R2-F1 fail-closed broken — invariant violation appended "
+            f"{len(types)} entries: {types}."
+        )
         assert sink.writes == []
 
     def test_new_version_skip_raises(self):
@@ -1719,8 +1740,12 @@ class TestStep5bMutationInvariantChecks:
         # Confirm the descriptive reason carries both prior and new for triage
         assert "prior=3" in exc.value.reason
         assert "new=5" in exc.value.reason
+        # R2-F1 closure: precondition fires BEFORE Step 5a — zero entries land.
         types = [a["entry_type"] for a in led.appends]
-        assert types == ["posture_change"]
+        assert types == [], (
+            "R2-F1 fail-closed broken — invariant violation appended "
+            f"{len(types)} entries: {types}."
+        )
         assert sink.writes == []
 
     def test_malformed_diff_hash_raises(self):
@@ -1745,8 +1770,12 @@ class TestStep5bMutationInvariantChecks:
                 )
             )
         assert "diff_hash must match 'sha256:<64-hex>'" in exc.value.reason
+        # R2-F1 closure: precondition fires BEFORE Step 5a — zero entries land.
         types = [a["entry_type"] for a in led.appends]
-        assert types == ["posture_change"]
+        assert types == [], (
+            "R2-F1 fail-closed broken — invariant violation appended "
+            f"{len(types)} entries: {types}."
+        )
         assert sink.writes == []
 
     def test_diff_hash_wrong_prefix_raises(self):
