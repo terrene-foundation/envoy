@@ -953,6 +953,80 @@ class PostureGate:
                     revoked_by="posture_gate",
                 )
 
+        # ----- STEP 5-PRECONDITIONS (ratchet-up only, R2-F1 closure) -----
+        # Per Round 2 /redteam F-1 (HIGH): the F-2 trust-boundary invariant
+        # checks were previously interleaved BETWEEN Step 5a's posture_change
+        # append and Step 5b's envelope_edit append. On any invariant
+        # violation the posture_change committed to the Ledger while the
+        # paired envelope_edit never appended — an orphan entry violating
+        # `specs/posture-ladder.md` § Ratchet-up requirement #3 ("any
+        # posture change is an `envelope_edit`") and `rules/zero-tolerance.md`
+        # Rule 3 (no silent fallbacks at the contract level). Same failure
+        # mode class as Round 1 F-3, reintroduced when the F-2 invariants
+        # landed.
+        #
+        # Structural defense: compute the mutation AND validate every F-2
+        # invariant BEFORE Step 5a appends anything. On invariant violation
+        # zero Ledger entries land — the application-level pairing
+        # contract is atomic and fail-closed.
+        #
+        # Note: this closure addresses APPLICATION-level invariant
+        # violations (mutation result shape). TRANSIENT Ledger failures
+        # BETWEEN Step 5a and Step 5b (e.g. the second append raises
+        # mid-pair) are a different bug class and require Ledger-level
+        # transactional support; tracked at the F-001 follow-up issue.
+        mutation = None
+        envelope_edit_content: Optional[dict] = None
+        if target > current:
+            # MyPy narrows `envelope` to non-None via the Step 3e raise.
+            assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces
+            mutation = envelope.mutate_for_posture_level(target)
+            # Trust-boundary invariants per Round 1 /redteam F-2: PostureGate
+            # device-signs the envelope_edit Ledger entry by consuming the
+            # mutation fields verbatim. Without these checks, a malicious
+            # `_PostureCarryingEnvelope` adapter could inject (a) a swapped
+            # envelope_id, (b) a regressed/skipped version, OR (c) a
+            # malformed diff_hash — all forwarded straight into the
+            # device-signed entry. Validation BEFORE Step 5a's posture_change
+            # append closes both the forge window AND the orphan-
+            # posture_change window per `rules/zero-tolerance.md` Rule 3.
+            if mutation.envelope_id != envelope.envelope_id:
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.envelope_id mismatch: "
+                        f"expected {envelope.envelope_id!r}, "
+                        f"got {mutation.envelope_id!r}"
+                    )
+                )
+            if mutation.new_version != envelope.prior_version + 1:
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.new_version must be prior_version+1: "
+                        f"prior={envelope.prior_version}, "
+                        f"new={mutation.new_version}"
+                    )
+                )
+            if not _SHA256_HEX_PATTERN.fullmatch(mutation.diff_hash):
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.diff_hash must match 'sha256:<64-hex>' per "
+                        f"specs/ledger.md § envelope_edit, got "
+                        f"{mutation.diff_hash!r}"
+                    )
+                )
+            # Build the envelope_edit content NOW (before any append) so
+            # Step 5b is purely a Ledger write with no further computation
+            # between the paired appends.
+            envelope_edit_content = {
+                "schema_version": _ENVELOPE_EDIT_SCHEMA_VERSION,
+                "envelope_id": envelope.envelope_id,
+                "prior_version": envelope.prior_version,
+                "new_version": mutation.new_version,
+                "diff_hash": mutation.diff_hash,
+                "rollback_grace_window_seconds": _DEFAULT_ROLLBACK_GRACE_WINDOW_SECONDS,
+                "signed_by": "delegation_key",
+            }
+
         # ----- STEP 5a: signed posture_change Ledger entry -----
         # Wire shape per `specs/ledger.md` § posture_change schema (lines 243-253):
         # `{type, schema_version, from_posture, to_posture, dimension_scope,
@@ -997,71 +1071,22 @@ class PostureGate:
         # t-02-33-envelope-edit-pairing-design.md`. The pairing is asymmetric:
         # envelope_edit fires ONLY on ratchet-up. Demotion paths skip Step 5b
         # cleanly because envelope is None (and the gate already raised Step
-        # 3e if a caller passed envelope=None on a ratchet-up). Step 5b
-        # mints the new envelope via the `_PostureCarryingEnvelope` adapter
-        # (the adapter owns the canonical-bytes recompute; the gate stays out
-        # of envelope-mutation math per journal/0021's "envelope-kwarg" pick).
+        # 3e if a caller passed envelope=None on a ratchet-up).
         #
         # Wire shape per spec L107-114: {type, schema_version, envelope_id,
         # prior_version, new_version, diff_hash, rollback_grace_window_seconds,
         # signed_by}. signed_by="delegation_key" per spec L113 — envelope_edit
         # entries are application-signed by the delegation key (the gate's
         # entry envelope itself is device-signed by EnvoyLedger.append).
+        #
+        # R2-F1 closure: the mutation compute + F-2 invariant validation
+        # ran as PRECONDITIONS above (Step 5-PRECONDITIONS). By the time
+        # control reaches here, `envelope_edit_content` is fully built and
+        # Step 5b is purely the paired Ledger append.
         if target > current:
-            # F-3 + F-002 closure (Round 1 /redteam): the defensive
-            # `if envelope is None` guard previously here was unreachable
-            # (Step 3e raises BEFORE any side-effect) AND mis-ordered
-            # (it fired AFTER Step 5a's posture_change append, so a
-            # future refactor that dropped Step 3e would have left an
-            # orphan posture_change with no paired envelope_edit). The
-            # correct structural defense is Step 3e raising before ANY
-            # Ledger write — moved earlier in this function. Removing
-            # the redundant guard here ALSO closes the orphan-
-            # posture_change risk per `rules/zero-tolerance.md` Rule 3.
-            # MyPy narrows `envelope` to non-None via the Step 3e raise.
-            assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces
-            mutation = envelope.mutate_for_posture_level(target)
-            # Trust-boundary invariants per Round 1 /redteam F-2: PostureGate
-            # device-signs the envelope_edit Ledger entry by consuming the
-            # mutation fields verbatim. Without these checks, a malicious
-            # `_PostureCarryingEnvelope` adapter could inject (a) a swapped
-            # envelope_id, (b) a regressed/skipped version, OR (c) a
-            # malformed diff_hash — all forwarded straight into the
-            # device-signed entry. Validation BEFORE append closes the
-            # forge window per `rules/zero-tolerance.md` Rule 3.
-            if mutation.envelope_id != envelope.envelope_id:
-                raise PostureEnvelopeMutationInvariantError(
-                    reason=(
-                        f"mutation.envelope_id mismatch: "
-                        f"expected {envelope.envelope_id!r}, "
-                        f"got {mutation.envelope_id!r}"
-                    )
-                )
-            if mutation.new_version != envelope.prior_version + 1:
-                raise PostureEnvelopeMutationInvariantError(
-                    reason=(
-                        f"mutation.new_version must be prior_version+1: "
-                        f"prior={envelope.prior_version}, "
-                        f"new={mutation.new_version}"
-                    )
-                )
-            if not _SHA256_HEX_PATTERN.fullmatch(mutation.diff_hash):
-                raise PostureEnvelopeMutationInvariantError(
-                    reason=(
-                        f"mutation.diff_hash must match 'sha256:<64-hex>' per "
-                        f"specs/ledger.md § envelope_edit, got "
-                        f"{mutation.diff_hash!r}"
-                    )
-                )
-            envelope_edit_content: dict = {
-                "schema_version": _ENVELOPE_EDIT_SCHEMA_VERSION,
-                "envelope_id": envelope.envelope_id,
-                "prior_version": envelope.prior_version,
-                "new_version": mutation.new_version,
-                "diff_hash": mutation.diff_hash,
-                "rollback_grace_window_seconds": _DEFAULT_ROLLBACK_GRACE_WINDOW_SECONDS,
-                "signed_by": "delegation_key",
-            }
+            assert envelope is not None  # nosec — narrowing, Step 3e enforces
+            assert mutation is not None  # nosec — set in the preconditions block
+            assert envelope_edit_content is not None  # nosec — set in preconditions
             envelope_edit_entry_id = await self._ledger.append(
                 entry_type="envelope_edit",
                 content=envelope_edit_content,
