@@ -1146,3 +1146,496 @@ class TestEnvImportSkipReason:
                 ),
             )
         assert any(getattr(r, "reason", None) == "empty_after_strip" for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 15. Round 1 /redteam — typed-taxonomy completeness (R1-F2 + R1-F5)
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptedRecordValidatorLeakClosed:
+    """Per R1-F2 (2026-05-24): a tampered keychain payload with a malformed
+    principal_genesis_id or service_identifier triggers PrincipalRequiredError /
+    InvalidServiceIdentifierError inside CredentialEntry.__post_init__.
+    Without the explicit catch in _deserialize_record those validator errors
+    leak past the CorruptedRecordError contract the spec § Change log
+    advertises. These regressions pin the wrap.
+    """
+
+    def _make_payload(self, **overrides) -> str:
+        import json as _json
+
+        defaults = {
+            "schema_version": 1,
+            "entry_id": str(uuid4()),
+            "principal_genesis_id": _PRINCIPAL_ABC,
+            "credential_type": "api_key",
+            "service_identifier": "openai",
+            "entry_envelope_scope": {
+                "service_identifier": "openai",
+                "channel": None,
+            },
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_used_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": None,
+            "usage_counter": 0,
+            "rotation_policy": "never",
+            "secret": "sk-test",
+        }
+        defaults.update(overrides)
+        return _json.dumps(defaults)
+
+    def test_malformed_principal_in_payload_raises_corrupted_not_principal_required(
+        self,
+    ) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        blob = self._make_payload(principal_genesis_id="not-sha256-hex")
+        with pytest.raises(CorruptedRecordError, match="validator-rejected"):
+            _deserialize_record(blob)
+        # Negative assertion: the leak path is closed
+        try:
+            _deserialize_record(blob)
+        except PrincipalRequiredError:
+            pytest.fail("PrincipalRequiredError leaked past CorruptedRecordError wrap")
+        except CorruptedRecordError:
+            pass
+
+    def test_malformed_service_in_payload_raises_corrupted_not_invalid_service(
+        self,
+    ) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        blob = self._make_payload(service_identifier="UPPERCASE-rejected")
+        with pytest.raises(CorruptedRecordError, match="validator-rejected"):
+            _deserialize_record(blob)
+        try:
+            _deserialize_record(blob)
+        except InvalidServiceIdentifierError:
+            pytest.fail(
+                "InvalidServiceIdentifierError leaked past CorruptedRecordError wrap"
+            )
+        except CorruptedRecordError:
+            pass
+
+    def test_scope_service_identifier_wrong_type_raises_corrupted(self) -> None:
+        """Per R1-F5: tampered scope_payload['service_identifier'] must raise typed."""
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        blob = self._make_payload(
+            entry_envelope_scope={"service_identifier": 12345, "channel": None},
+        )
+        with pytest.raises(
+            CorruptedRecordError, match="service_identifier must be str"
+        ):
+            _deserialize_record(blob)
+
+    def test_scope_channel_wrong_type_raises_corrupted(self) -> None:
+        """Per R1-F5: tampered scope_payload['channel'] must raise typed."""
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        blob = self._make_payload(
+            entry_envelope_scope={"service_identifier": "openai", "channel": 99},
+        )
+        with pytest.raises(CorruptedRecordError, match="channel must be str or null"):
+            _deserialize_record(blob)
+
+
+# ---------------------------------------------------------------------------
+# 16. Round 1 /redteam — denylist enforcement (R1-F4)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeScopeDenylistVeto:
+    """Per R1-F4 (2026-05-24): `envelope_contains_scope` MUST honor
+    operational.tool_denylist AND communication.recipient_denylist. The
+    deny axis is the structural defense against template-import override
+    scenarios where a sibling envelope library re-allows a denied tool.
+    """
+
+    def test_tool_denylist_vetoes_even_when_in_allowlist(self) -> None:
+        from envoy.envelope import envelope_contains_scope
+
+        env = EnvelopeConfigInput(
+            operational=OperationalDimension(
+                tool_allowlist=["openai", "claude"],
+                tool_denylist=["openai"],  # explicit deny dominates
+            ),
+            communication=CommunicationDimension(channel_allowlist=["cli"]),
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        assert envelope_contains_scope(env, scope) is False
+
+    def test_recipient_denylist_vetoes_channel_even_when_in_allowlist(self) -> None:
+        from envoy.envelope import envelope_contains_scope
+
+        env = EnvelopeConfigInput(
+            operational=OperationalDimension(tool_allowlist=["telegram-bot"]),
+            communication=CommunicationDimension(
+                channel_allowlist=["telegram", "slack"],
+                recipient_denylist=["telegram"],  # explicit deny
+            ),
+        )
+        scope = EnvelopeScopeRef(service_identifier="telegram-bot", channel="telegram")
+        assert envelope_contains_scope(env, scope) is False
+
+    def test_allow_without_deny_still_returns_true(self) -> None:
+        """Sanity: the new code path must not regress the existing allow-list test."""
+        from envoy.envelope import envelope_contains_scope
+
+        env = EnvelopeConfigInput(
+            operational=OperationalDimension(
+                tool_allowlist=["openai"], tool_denylist=["claude"]
+            ),
+            communication=CommunicationDimension(),
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        assert envelope_contains_scope(env, scope) is True
+
+    def test_denylist_takes_precedence_when_both_lists_share_entry(self) -> None:
+        """Deny-veto ordering test: deny check runs BEFORE allow check."""
+        from envoy.envelope import envelope_contains_scope
+
+        env = EnvelopeConfigInput(
+            operational=OperationalDimension(
+                tool_allowlist=["openai"], tool_denylist=["openai"]
+            ),
+            communication=CommunicationDimension(),
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        assert envelope_contains_scope(env, scope) is False
+
+
+# ---------------------------------------------------------------------------
+# 17. Round 1 /redteam — symmetric set/list error logs (R1-F1 + R1-F7)
+# ---------------------------------------------------------------------------
+
+
+class TestSetErrorObservability:
+    """Per R1-F1: every typed-error raise on the set path must emit a warning
+    log symmetric with the get/delete paths. Per R1-F7: each branch needs
+    explicit coverage."""
+
+    def test_set_emits_start_and_ok(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
+            vault.set(
+                credential_type=CredentialType.API_KEY,
+                service_identifier="openai",
+                entry_envelope_scope=scope,
+                secret="sk-set-observ",
+            )
+        msgs = [r.message for r in caplog.records]
+        assert any("connection_vault.set.start" in m for m in msgs)
+        assert any("connection_vault.set.ok" in m for m in msgs)
+
+    def test_set_emits_warning_on_invalid_service_identifier(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(InvalidServiceIdentifierError):
+                vault.set(
+                    credential_type=CredentialType.API_KEY,
+                    service_identifier="UPPERCASE-rejected",
+                    entry_envelope_scope=scope,
+                    secret="sk-test",
+                )
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            getattr(r, "reason", None) == "invalid_service_identifier" for r in warns
+        )
+
+    def test_set_emits_warning_on_keychain_unavailable(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=_FailingBackend(),
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(KeychainUnavailableError):
+                vault.set(
+                    credential_type=CredentialType.API_KEY,
+                    service_identifier="openai",
+                    entry_envelope_scope=scope,
+                    secret="sk-test",
+                )
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(getattr(r, "reason", None) == "keychain_unavailable" for r in warns)
+
+
+class TestListByPrincipalErrorObservability:
+    """Per R1-F1: list_by_principal must emit error logs on read failures."""
+
+    def test_list_emits_warning_on_corrupted_index(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE, f"__index__:{principal_id}", "{not json"
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(CorruptedRecordError):
+                vault.list_by_principal()
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(getattr(r, "reason", None) == "corrupted_index" for r in warns)
+
+    def test_list_emits_warning_on_stale_index_entries(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        # Inject a stale entry_id into the index — the entry itself is absent
+        ghost_id = uuid4()
+        import json as _json
+
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE,
+            f"__index__:{principal_id}",
+            _json.dumps([str(ghost_id)]),
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            result = vault.list_by_principal()
+        assert result == ()
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            "stale_index_entries" in r.message for r in warns
+        ), "expected stale_index_entries warning"
+
+
+class TestGetErrorObservabilityBranches:
+    """Per R1-F7: assert every reason name in the get() error taxonomy."""
+
+    def _setup_with_entry(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        expires_at=None,
+    ):
+        """Helper: build a vault, set one entry, return (vault, entry, backend)."""
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        entry = vault.set(
+            credential_type=CredentialType.API_KEY,
+            service_identifier="openai",
+            entry_envelope_scope=scope,
+            secret="sk-test",
+            expires_at=expires_at,
+        )
+        return vault, entry, backend
+
+    def test_get_no_active_envelope_logs_reason(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        vault, entry, _backend = self._setup_with_entry(
+            principal_id, envelope_openai_cli
+        )
+        vault_no_env = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=None,
+            keyring_backend=_backend,
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(EnvelopeScopeMismatchError):
+                vault_no_env.get(entry.entry_id)
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(getattr(r, "reason", None) == "no_active_envelope" for r in warns)
+
+    def test_get_envelope_scope_mismatch_logs_reason(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        envelope_telegram: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        vault, entry, _backend = self._setup_with_entry(
+            principal_id, envelope_openai_cli
+        )
+        vault_tg = vault.with_active_envelope(envelope_telegram)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(EnvelopeScopeMismatchError):
+                vault_tg.get(entry.entry_id)
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            getattr(r, "reason", None) == "envelope_scope_mismatch" for r in warns
+        )
+
+    def test_get_entry_expired_logs_reason(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        vault, entry, _backend = self._setup_with_entry(
+            principal_id, envelope_openai_cli, expires_at=past
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(EntryExpiredError):
+                vault.get(entry.entry_id)
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(getattr(r, "reason", None) == "entry_expired" for r in warns)
+
+    def test_get_cross_principal_logs_reason(
+        self,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        backend = _MemBackend()
+        vault_a = ConnectionVault(
+            principal_genesis_id=_PRINCIPAL_A,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        vault_b = ConnectionVault(
+            principal_genesis_id=_PRINCIPAL_B,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        entry_a = vault_a.set(
+            credential_type=CredentialType.API_KEY,
+            service_identifier="openai",
+            entry_envelope_scope=scope,
+            secret="sk-a",
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            from envoy.connection_vault import CrossPrincipalAccessRefusedError
+
+            with pytest.raises(CrossPrincipalAccessRefusedError):
+                vault_b.get(entry_a.entry_id)
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            getattr(r, "reason", None) == "cross_principal_refused" for r in warns
+        )
+
+    def test_get_usage_counter_overflow_logs_reason(
+        self,
+        principal_id: str,
+        envelope_openai_cli: EnvelopeConfigInput,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from envoy.connection_vault.adapter import (
+            KEYRING_SERVICE_NAMESPACE,
+            _serialize_record,
+        )
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        eid = uuid4()
+        ceiling_entry = CredentialEntry(
+            entry_id=eid,
+            principal_genesis_id=principal_id,
+            credential_type=CredentialType.API_KEY,
+            service_identifier="openai",
+            entry_envelope_scope=scope,
+            created_at=datetime.now(timezone.utc),
+            last_used_at=datetime.now(timezone.utc),
+            expires_at=None,
+            usage_counter=USAGE_COUNTER_MAX,
+            rotation_policy=RotationPolicy.NEVER,
+        )
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE,
+            str(eid),
+            _serialize_record(ceiling_entry, "sk-overflow"),
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(UsageCounterOverflowError):
+                vault.get(eid)
+        warns = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            getattr(r, "reason", None) == "usage_counter_overflow" for r in warns
+        )
+
+
+# ---------------------------------------------------------------------------
+# 18. Round 1 /redteam — R1-F6: ActiveEnvelope facade export consistency
+# ---------------------------------------------------------------------------
+
+
+class TestActiveEnvelopeExportConsistency:
+    def test_active_envelope_not_in_connection_vault_all(self) -> None:
+        """Per R1-F6: ActiveEnvelope's canonical home is envoy.envelope, not
+        envoy.connection_vault. Listing it in either module's __all__ creates
+        import-path drift."""
+        import envoy.connection_vault as cv
+        import envoy.connection_vault.adapter as adapter
+
+        assert "ActiveEnvelope" not in cv.__all__
+        assert "ActiveEnvelope" not in adapter.__all__
+
+    def test_active_envelope_is_in_envelope_all(self) -> None:
+        import envoy.envelope as env
+
+        assert "ActiveEnvelope" in env.__all__

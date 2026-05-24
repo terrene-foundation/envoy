@@ -37,7 +37,9 @@ from envoy.connection_vault.errors import (
     EntryExpiredError,
     EntryNotFoundError,
     EnvelopeScopeMismatchError,
+    InvalidServiceIdentifierError,
     KeychainUnavailableError,
+    PrincipalRequiredError,
     RecordSchemaVersionError,
     UsageCounterOverflowError,
 )
@@ -121,9 +123,24 @@ def _deserialize_record(blob: str) -> tuple[CredentialEntry, str]:
         scope_payload = payload["entry_envelope_scope"]
         if not isinstance(scope_payload, dict):
             raise CorruptedRecordError("entry_envelope_scope must be JSON object")
+        # Per R1-F5 (2026-05-24): tampered scope fields must raise typed
+        # CorruptedRecordError. EnvelopeScopeRef itself has no __post_init__,
+        # so type-check at the deserialization boundary.
+        scope_service = scope_payload["service_identifier"]
+        if not isinstance(scope_service, str):
+            raise CorruptedRecordError(
+                f"entry_envelope_scope.service_identifier must be str, "
+                f"got {type(scope_service).__name__}"
+            )
+        scope_channel = scope_payload.get("channel")
+        if scope_channel is not None and not isinstance(scope_channel, str):
+            raise CorruptedRecordError(
+                f"entry_envelope_scope.channel must be str or null, "
+                f"got {type(scope_channel).__name__}"
+            )
         scope = EnvelopeScopeRef(
-            service_identifier=scope_payload["service_identifier"],
-            channel=scope_payload.get("channel"),
+            service_identifier=scope_service,
+            channel=scope_channel,
         )
         expires_at_raw = payload.get("expires_at")
         expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw is not None else None
@@ -148,6 +165,17 @@ def _deserialize_record(blob: str) -> tuple[CredentialEntry, str]:
         raise
     except (KeyError, TypeError, ValueError) as exc:
         raise CorruptedRecordError(f"connection-vault record shape invalid: {exc}") from exc
+    except (PrincipalRequiredError, InvalidServiceIdentifierError) as exc:
+        # Per R1-F2 (2026-05-24): CredentialEntry.__post_init__ invokes
+        # validate_principal_genesis_id + validate_service_identifier, which
+        # raise PrincipalRequiredError / InvalidServiceIdentifierError. These
+        # do NOT inherit from (KeyError, TypeError, ValueError), so without
+        # this branch they'd leak past the typed-taxonomy contract the
+        # spec § Change log advertises. Wrap into CorruptedRecordError so
+        # callers see the uniform "tampered record" surface.
+        raise CorruptedRecordError(
+            f"connection-vault record contains invalid validator-rejected field: {exc}"
+        ) from exc
     return entry, secret
 
 
@@ -364,8 +392,18 @@ class ConnectionVault:
                 "credential_type": credential_type.value,
             },
         )
-        validate_service_identifier(service_identifier)
-        validate_service_identifier(entry_envelope_scope.service_identifier)
+        # Per R1-F1 (2026-05-24): every typed-error raise on the set path
+        # MUST emit a warning log symmetric with get/delete. The
+        # NIL_ENTRY_ID sentinel below stands in for "raised before
+        # entry_id was generated" so the log line still carries a hint
+        # field per `rules/observability.md` Rule 1.
+        nil_entry_id = UUID(int=0)
+        try:
+            validate_service_identifier(service_identifier)
+            validate_service_identifier(entry_envelope_scope.service_identifier)
+        except InvalidServiceIdentifierError:
+            self._log_error("set", nil_entry_id, "invalid_service_identifier")
+            raise
 
         if expires_at is not None:
             expires_at = _ensure_utc(expires_at)
@@ -383,11 +421,23 @@ class ConnectionVault:
             rotation_policy=rotation_policy,
         )
         blob = _serialize_record(entry, secret)
-        self._set_password(entry.entry_id, blob)
-        index = self._read_index()
-        if entry.entry_id not in index:
-            index.append(entry.entry_id)
-            self._write_index(index)
+        try:
+            self._set_password(entry.entry_id, blob)
+        except KeychainUnavailableError:
+            self._log_error("set", entry.entry_id, "keychain_unavailable")
+            raise
+        try:
+            index = self._read_index()
+            if entry.entry_id not in index:
+                index.append(entry.entry_id)
+                self._write_index(index)
+        except (KeychainUnavailableError, CorruptedRecordError):
+            # Partial-write recovery surface per `rules/observability.md`
+            # Rule 7: the entry IS in the keychain but the index update
+            # failed. Caller sees the typed raise; logs name the in-flight
+            # entry_id so operators can recover via direct keychain inspection.
+            self._log_error("set", entry.entry_id, "index_update_failed_after_write")
+            raise
         logger.info(
             "connection_vault.set.ok",
             extra={
@@ -532,17 +582,38 @@ class ConnectionVault:
             "connection_vault.list_by_principal.start",
             extra={"principal_hint": self._principal_genesis_id[:8]},
         )
+        # Per R1-F1 (2026-05-24): KeychainUnavailableError + CorruptedRecordError
+        # on the index-read path must emit a symmetric warning log before
+        # propagating. UUID(int=0) sentinel because no specific entry_id
+        # caused the failure — the index itself did.
+        nil_entry_id = UUID(int=0)
+        try:
+            index_ids = self._read_index()
+        except KeychainUnavailableError:
+            self._log_error("list_by_principal", nil_entry_id, "keychain_unavailable")
+            raise
+        except CorruptedRecordError:
+            self._log_error("list_by_principal", nil_entry_id, "corrupted_index")
+            raise
         out: list[CredentialEntry] = []
         stale_count = 0
-        for entry_id in self._read_index():
-            blob = self._get_password(entry_id)
+        for entry_id in index_ids:
+            try:
+                blob = self._get_password(entry_id)
+            except KeychainUnavailableError:
+                self._log_error("list_by_principal", entry_id, "keychain_unavailable")
+                raise
             if blob is None:
                 # Stale index entry — happens if the OS keychain was wiped
                 # outside the adapter. Skip rather than raise; the next
                 # `set` will re-write the index.
                 stale_count += 1
                 continue
-            entry, _secret = _deserialize_record(blob)
+            try:
+                entry, _secret = _deserialize_record(blob)
+            except CorruptedRecordError:
+                self._log_error("list_by_principal", entry_id, "corrupted_record")
+                raise
             if entry.principal_genesis_id == self._principal_genesis_id:
                 out.append(entry)
         if stale_count > 0:
@@ -566,5 +637,7 @@ class ConnectionVault:
 __all__ = [
     "ConnectionVault",
     "KEYRING_SERVICE_NAMESPACE",
-    "ActiveEnvelope",
 ]
+# `ActiveEnvelope` canonical home is `envoy.envelope.scope` per code-reviewer
+# MED-5; this module only consumes it. Removed from `__all__` per R1-F6 to
+# eliminate facade-vs-module export drift.

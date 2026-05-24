@@ -26,11 +26,17 @@ ActiveEnvelope = Union[EnvelopeConfig, EnvelopeConfigInput]
 def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -> bool:
     """Return True iff `envelope` permits `scope` per Phase 01 semantics.
 
-    Both conditions MUST hold:
+    Four conditions MUST hold (all fail-closed):
 
-    1. `scope.service_identifier` ∈ `envelope.operational.tool_allowlist`
-    2. If `scope.channel` is set, `scope.channel` ∈
-       `envelope.communication.channel_allowlist`
+    1. `scope.service_identifier` ∉ `envelope.operational.tool_denylist`
+       (deny-veto per /redteam R1-F4 — a denylisted service is refused even
+       if also allow-listed via template override).
+    2. `scope.service_identifier` ∈ `envelope.operational.tool_allowlist`.
+    3. If `scope.channel` is set, `scope.channel` ∉
+       `envelope.communication.recipient_denylist` (deny-veto on the
+       communication axis).
+    4. If `scope.channel` is set, `scope.channel` ∈
+       `envelope.communication.channel_allowlist`.
 
     A credential with `channel=None` is service-only (e.g. an LLM API key);
     a credential with `channel` set is service+channel (e.g. a Telegram bot
@@ -39,10 +45,20 @@ def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -
     Fail-closed by construction: returns False on any miss; the caller
     (Connection Vault adapter) translates the False into the typed
     `EnvelopeScopeMismatchError` per `specs/connection-vault.md` § Error
-    taxonomy.
+    taxonomy. The deny-veto is the structural defense against the Phase-02
+    template-import override class — a sibling envelope library that allows
+    a service via template SHALL NOT override the active envelope's deny.
     """
+    # Deny axis FIRST — if the active envelope denies, no allowlist match
+    # rescues it. Per `rules/security.md` § "Fail-Closed Security Defaults":
+    # explicit deny dominates implicit allow.
+    if scope.service_identifier in envelope.operational.tool_denylist:
+        return False
     if scope.service_identifier not in envelope.operational.tool_allowlist:
         return False
-    if scope.channel is not None and scope.channel not in envelope.communication.channel_allowlist:
-        return False
+    if scope.channel is not None:
+        if scope.channel in envelope.communication.recipient_denylist:
+            return False
+        if scope.channel not in envelope.communication.channel_allowlist:
+            return False
     return True
