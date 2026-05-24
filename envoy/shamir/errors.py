@@ -1,11 +1,11 @@
 """envoy.shamir typed errors.
 
-Per `specs/shamir-recovery.md` § Error taxonomy. T-02-34 ships only the
+Per `specs/shamir-recovery.md` § Error taxonomy. T-02-34 ships the
 errors raised by `ShamirRitualCoordinator` (ritual-orchestration scope).
-T-02-35 (paper / commitments / distribution_checklist) and T-02-36
-(reconstruct CLI) extend this set with the recovery-side taxonomy
-(`ShardChecksumFailedError`, `CommitmentVerificationFailedError`,
-`RecoveryRateLimitedError`, etc.).
+T-02-35 adds `ChecklistPersisterError`. T-02-36 (recovery CLI) extends
+this set with the recovery-side taxonomy: `ShardChecksumFailedError`,
+`InsufficientSharesError`, `CommitmentVerificationFailedError`,
+`ShardSlotLabelMismatchError`, `ShardPublicCommitmentMissingError`.
 
 Per `rules/communication.md`, every error carries a plain-language
 `.user_message` attribute that the channel adapters render directly.
@@ -94,10 +94,190 @@ class ChecklistPersisterError(ShamirRitualError):
     """
 
 
+class ShamirRecoveryError(ShamirRitualError):
+    """Base class for recovery-side errors raised by T-02-36 `envoy shamir recover`.
+
+    Inherits from `ShamirRitualError` so the existing channel adapter
+    catch sites (`except ShamirRitualError`) keep covering recovery
+    failures without extra wiring. Per `specs/shamir-recovery.md`
+    § Error taxonomy — the recovery-side errors live here so the CLI,
+    Boundary Conversation S8, and future channel-adapter recovery flows
+    all surface the same typed contract.
+    """
+
+
+class ShardChecksumFailedError(ShamirRecoveryError):
+    """SLIP-0039 per-card BIP-39 checksum invalid at entry (L-03 fix).
+
+    Per `specs/shamir-recovery.md` § Recovery flow:
+    > Enter words from any 3 cards (any order). Per-card checksum
+    > validation at entry (L-03 fix).
+
+    Raised BEFORE reconstruction is attempted, so the user knows
+    which specific card failed (not "combine failed somewhere"). The
+    `card_index` attribute identifies the 0-indexed card; the
+    `.user_message` names the slot label the holder transcribed.
+
+    The L-03 carry-forward originally targeted `shamir_mnemonic`'s
+    `MnemonicError` raised by `combine_mnemonics` — which fires at
+    threshold-time and cannot name the offending card. Per-card
+    validation via `shamir_mnemonic.share.Share.from_mnemonic` catches
+    the same checksum failure earlier and binds it to the specific card.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        card_index: int,
+        slot_label: str,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.card_index = card_index
+        self.slot_label = slot_label
+
+
+class InsufficientSharesError(ShamirRecoveryError):
+    """Recovery attempted with fewer than threshold (default 3) valid shards.
+
+    Per `specs/shamir-recovery.md` § Error taxonomy. Raised by the
+    recovery primitive at entry validation — BEFORE any commitment
+    verification or reconstruction call. The `presented` and `threshold`
+    attributes let channel adapters render "need 3, have 2" UX.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        presented: int,
+        threshold: int,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.presented = presented
+        self.threshold = threshold
+
+
+class TooManySharesError(ShamirRecoveryError):
+    """Recovery attempted with more than threshold valid shards.
+
+    SLIP-0039 is strict about share count — `combine_mnemonics` requires
+    EXACTLY threshold mnemonics. The library raises an opaque
+    `MnemonicError` ("Wrong number of mnemonics. Expected 3 ... but 4
+    were provided") which `rules/communication.md` MUST NOT (raw error
+    messages) requires us to translate at the boundary.
+
+    The recovery primitive validates `len(presented) == threshold` at
+    entry, raising this typed error with plain-language `.user_message`
+    so the user knows to pick exactly threshold cards (rather than
+    "provide all the cards you have"). Distinct from
+    `InsufficientSharesError` so channel adapters can render direction-
+    specific UX ("you have too many, pick 3" vs "you have too few,
+    retrieve more").
+
+    Spec-extension note: this error class is NOT enumerated in
+    `specs/shamir-recovery.md` § Error taxonomy because the spec's
+    "Enter words from any 3 cards" wording is silent on the >threshold
+    case. The T-02-36 implementation discovered the library's strict
+    behavior; the typed error is the user-friendly surface. Per
+    `rules/specs-authority.md` MUST Rule 5 the spec MUST be updated to
+    enumerate this case at the same shard the error lands.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        presented: int,
+        threshold: int,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.presented = presented
+        self.threshold = threshold
+
+
+class CommitmentVerificationFailedError(ShamirRecoveryError):
+    """Presented shard's commitment is not in `Genesis.shard_public_commitments`.
+
+    This is a SECURITY EVENT per `specs/shamir-recovery.md` § Error
+    taxonomy ("Retry: Never"). A counterfeit shard — constructed from a
+    different secret — produces a commitment that does NOT appear in the
+    Genesis Record's commitment array. The recovery primitive refuses to
+    install the reconstructed master key.
+
+    The `failing_card_index` and `failing_slot_label` attributes identify
+    which presented card failed verification. The recovery primitive
+    fails FAST on the first mismatch — it does not enumerate all
+    mismatching cards (a second mismatch would leak the same security
+    signal).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failing_card_index: int,
+        failing_slot_label: str,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.failing_card_index = failing_card_index
+        self.failing_slot_label = failing_slot_label
+
+
+class ShardSlotLabelMismatchError(ShamirRecoveryError):
+    """A presented slot label does not appear in the DistributionChecklist.
+
+    Per `specs/shamir-recovery.md` § Error taxonomy. Surface as
+    wrong-card; user retrieves the correct slot OR investigates checklist
+    drift. The opaque-label whitelist (`^slot-\\d+$`) per
+    `envoy/shamir/distribution_checklist.py` constrains the surface to
+    a small, structurally-validated set.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        presented_label: str,
+        checklist_labels: tuple[str, ...],
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+        self.presented_label = presented_label
+        self.checklist_labels = checklist_labels
+
+
+class ShardPublicCommitmentMissingError(ShamirRecoveryError):
+    """Genesis Record lacks `shard_public_commitments` (pre-Phase-01 vault).
+
+    Per `specs/shamir-recovery.md` § Error taxonomy + `specs/trust-lineage.md`
+    § GenesisRecord schema. A Phase-01 vault MUST carry the commitment
+    array; an absent array means the vault was created before T-02-35
+    landed and cannot be recovered safely (counterfeit shards cannot be
+    detected). The user MUST migrate the vault to the current schema OR
+    re-shard from a fresh ritual.
+
+    This error is raised BEFORE per-shard commitment verification fires —
+    it is the precondition that the verification step exists at all.
+    """
+
+
 __all__ = [
     "ShamirRitualError",
     "RitualPreconditionError",
     "MasterKeyZeroizationError",
     "EnvoyLabelOnCardError",
     "ChecklistPersisterError",
+    # Recovery-side taxonomy (T-02-36)
+    "ShamirRecoveryError",
+    "ShardChecksumFailedError",
+    "InsufficientSharesError",
+    "TooManySharesError",
+    "CommitmentVerificationFailedError",
+    "ShardSlotLabelMismatchError",
+    "ShardPublicCommitmentMissingError",
 ]

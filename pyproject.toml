@@ -75,6 +75,13 @@ dev = [
 "Homepage" = "https://terrene.foundation"
 # "Source" and "Bug Tracker" to be filled in once the public GitHub repo is created.
 
+[project.scripts]
+# Per briefs/00-phase-01-mvp-scope.md § Surfaces — `envoy` is the canonical
+# user-facing CLI (`pipx install envoy-agent` exposes it). T-02-36 ships
+# the `envoy shamir recover` subcommand; upcoming shards add envoy init /
+# envoy up / envoy boundaries (T-02-50+).
+envoy = "envoy.cli:cli"
+
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests*", ".*", "__pycache__*"]
