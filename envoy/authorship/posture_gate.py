@@ -671,6 +671,31 @@ class _PostureCarryingEnvelope(Protocol):
     would deceive PostureGate — but Tier 2 wiring tests (T-02-33) verify
     the real adapter against real canonical-bytes pipeline, closing the
     deceit window structurally.
+
+    Side-effect-free attribute reads (R2-F2 contract — IMPLEMENTORS):
+
+    Implementations of this Protocol MUST have side-effect-free attribute
+    reads. The gate's runtime conformance check (`_is_posture_carrying_envelope`)
+    inspects this Protocol's attributes via `hasattr()` / `getattr()` —
+    operations that invoke each attribute's descriptor / `__getattribute__`
+    path on every kwarg-boundary check (every `request_transition()` call,
+    including ratchet-down paths where the envelope is supplied
+    informationally but never mutated).
+
+    Implementations MUST therefore NOT, on attribute read:
+
+    - Perform I/O (file read, network call, DB query)
+    - Acquire locks (threading / asyncio primitives)
+    - Emit log records
+    - Mutate observable state
+    - Wake background tasks
+
+    The gate cannot enforce side-effect-freeness at runtime (Python's
+    structural Protocol contract gives no hook); the discipline is on the
+    IMPLEMENTOR. The Tier 1 spy-adapter test
+    (`TestPostureCarryingEnvelopeProtocolDiscipline`) bounds the gate's
+    attribute-read surface so a future refactor that adds spurious
+    `hasattr()` / `getattr()` calls fails loudly.
     """
 
     @property

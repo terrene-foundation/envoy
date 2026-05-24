@@ -1965,6 +1965,140 @@ class TestEnvelopeKwargProtocolCheck:
 
 
 # ---------------------------------------------------------------------------
+# Protocol attribute-read surface discipline (Round 2 /redteam F-2)
+# ---------------------------------------------------------------------------
+
+
+class TestPostureCarryingEnvelopeProtocolDiscipline:
+    """Per Round 2 /redteam F-2 (MED): the gate's runtime conformance
+    check `_is_posture_carrying_envelope` invokes attribute reads on
+    every envelope passed to `request_transition()`. The Protocol
+    docstring states implementations MUST have side-effect-free
+    attribute reads — the gate cannot enforce that contract at runtime
+    (Python's structural Protocol gives no hook), but it CAN bound its
+    OWN attribute-read surface so a future refactor that adds spurious
+    `hasattr()` / `getattr()` calls fails loudly.
+
+    This test pins the gate-side bound: ALL non-None envelope kwargs
+    flow through exactly the attribute reads declared in
+    `_is_posture_carrying_envelope`. A spy adapter that increments a
+    counter per `__getattribute__` call observes the bound; an unexpected
+    growth signals the conformance helper expanded.
+    """
+
+    def test_protocol_attribute_read_surface_bounded(self):
+        # The 5 reads are 4 `hasattr()` + 1 `getattr()` per the helper:
+        #
+        #   hasattr(obj, "envelope_id")
+        #   hasattr(obj, "prior_version")
+        #   hasattr(obj, "prior_content_hash")
+        #   hasattr(obj, "prior_posture_level")
+        #   getattr(obj, "mutate_for_posture_level", None)
+        #
+        # If a future refactor extends the Protocol or adds defensive
+        # reads, this test fires with a clear delta.
+        _EXPECTED_PROTOCOL_ATTR_READS = {
+            "envelope_id",
+            "prior_version",
+            "prior_content_hash",
+            "prior_posture_level",
+            "mutate_for_posture_level",
+        }
+
+        observed_reads: list[str] = []
+
+        class _SpyEnvelope:
+            """Spy adapter satisfying the Protocol structurally. Every
+            attribute access is recorded so the test asserts the gate's
+            attribute-read surface stays bounded.
+
+            Per the Protocol's R2-F2 contract: implementations MUST have
+            side-effect-free reads. The spy itself is the most minimal
+            side effect (in-test list mutation) and is acceptable because
+            it observes the bound the gate's helper imposes — not the
+            full read surface the gate exercises during Step 5b.
+            """
+
+            def __getattribute__(self, name: str):  # noqa: D401 - test spy
+                # Filter out Python dunder noise (`__class__`, `__init__`,
+                # etc.) — the test bound is on Protocol-declared attribute
+                # names only.
+                if not name.startswith("__"):
+                    object.__getattribute__(self, "_record")(name)
+                return object.__getattribute__(self, name)
+
+            def _record(self, name: str) -> None:
+                # Stored on the instance via object.__setattr__ to avoid
+                # re-entry into __getattribute__.
+                observed_reads.append(name)
+
+            # Protocol-declared attribute surface (provided as readable
+            # data so the kwarg-boundary check resolves True).
+            envelope_id = "sha256:spy-envelope"
+            prior_version = 0
+            prior_content_hash = "sha256:spy-prior"
+            prior_posture_level = "PSEUDO"
+
+            def mutate_for_posture_level(self, new_level):  # noqa: D401
+                # Never invoked — the test exercises the kwarg-boundary
+                # conformance check ONLY, not the Step 5b mutation path.
+                # The kwarg check uses `callable(getattr(obj, "...", None))`
+                # which reads the bound method without calling it.
+                raise AssertionError(
+                    "spy mutate_for_posture_level invoked; test should "
+                    "exercise the conformance check only, not Step 5b"
+                )
+
+        # Import the private helper directly — Tier 1 has access to
+        # module-private symbols per the package's testing contract.
+        from envoy.authorship.posture_gate import _is_posture_carrying_envelope
+
+        spy = _SpyEnvelope()
+        # Run the conformance check; record the attribute-read surface.
+        result = _is_posture_carrying_envelope(spy)
+
+        assert result is True, (
+            "spy adapter satisfies the structural Protocol; the "
+            "conformance helper should accept it"
+        )
+
+        # Filter to the Protocol-declared names (the spy's __getattribute__
+        # may also see internal helper-method names like `_record`).
+        protocol_reads = [name for name in observed_reads if name in _EXPECTED_PROTOCOL_ATTR_READS]
+        unexpected_reads = [
+            name
+            for name in observed_reads
+            if name not in _EXPECTED_PROTOCOL_ATTR_READS and not name.startswith("_")
+        ]
+
+        # The helper MUST touch each Protocol-declared attribute exactly
+        # once. A growth signals a defensive duplicate read; a shrinkage
+        # signals a removed check.
+        assert set(protocol_reads) == _EXPECTED_PROTOCOL_ATTR_READS, (
+            "R2-F2 attribute-read surface drifted — gate's helper "
+            "touched Protocol attributes "
+            f"{sorted(set(protocol_reads))}, expected "
+            f"{sorted(_EXPECTED_PROTOCOL_ATTR_READS)}"
+        )
+        assert unexpected_reads == [], (
+            "R2-F2 attribute-read surface expanded — gate's helper "
+            f"touched non-Protocol attributes {unexpected_reads}. Each "
+            "new attribute multiplies the side-effect blast radius for "
+            "every _PostureCarryingEnvelope implementor."
+        )
+        # Bound the total attribute-read count (one read per Protocol
+        # attribute = 5 total). Defensive duplicate reads (e.g. hasattr
+        # then getattr on the same name) would inflate this count.
+        assert len(protocol_reads) == len(_EXPECTED_PROTOCOL_ATTR_READS), (
+            f"R2-F2 read-count drift — observed {len(protocol_reads)} "
+            f"Protocol-attribute reads, expected "
+            f"{len(_EXPECTED_PROTOCOL_ATTR_READS)}. Duplicate reads on "
+            "the same attribute inflate side-effect exposure for "
+            "implementors with non-trivial descriptor logic."
+        )
+
+
+# ---------------------------------------------------------------------------
 # F-6 closure: metadata.posture_level mint-state read path (audit-only role)
 # ---------------------------------------------------------------------------
 
