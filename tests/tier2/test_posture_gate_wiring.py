@@ -53,6 +53,7 @@ from envoy.authorship import (
     BET12CadencePayload,
     PostureAuthorshipInsufficientError,
     PostureChangeResult,
+    PostureEnvelopeMutationInvariantError,
     PostureEvidence,
     PostureGate,
     PostureLevel,
@@ -612,6 +613,220 @@ class TestFailedRatchetUpEmitsNeitherEntry:
             f"ratchet-up; got types {[e['type'] for e in entries]}"
         )
         # BET-12 also did not emit (Step 5+ runs only on accepted transitions).
+        assert sink.writes == []
+
+
+# ---------------------------------------------------------------------------
+# F-2 mutation invariant violation emits NEITHER entry (R2-F1 closure)
+# ---------------------------------------------------------------------------
+
+
+class _ForgedMutationCarrier:
+    """Adapter that satisfies `_PostureCarryingEnvelope` but returns a
+    caller-controlled (forged) mutation result. Used to drive the
+    F-2 trust-boundary invariants through the real Ledger end-to-end.
+
+    Tier 2 contract per `rules/testing.md` § Tier 2 (no mocking via
+    `@patch`/`MagicMock`): this is a REAL adapter — a malicious-shape
+    `_PostureCarryingEnvelope` implementation purpose-built to exercise
+    the precondition gate. The mutation it returns is whatever the test
+    constructed; the gate's F-2 invariants reject it. The acceptance
+    bullets are external (real Ledger reads), not mock-assertion-style.
+    """
+
+    def __init__(
+        self,
+        *,
+        envelope_id: str,
+        prior_version: int,
+        prior_content_hash: str,
+        prior_posture_level: str,
+        forged_mutation: _PostureMutationOutcome,
+    ) -> None:
+        self._envelope_id = envelope_id
+        self._prior_version = prior_version
+        self._prior_content_hash = prior_content_hash
+        self._prior_posture_level = prior_posture_level
+        self._forged_mutation = forged_mutation
+
+    @property
+    def envelope_id(self) -> str:
+        return self._envelope_id
+
+    @property
+    def prior_version(self) -> int:
+        return self._prior_version
+
+    @property
+    def prior_content_hash(self) -> str:
+        return self._prior_content_hash
+
+    @property
+    def prior_posture_level(self) -> str:
+        return self._prior_posture_level
+
+    def mutate_for_posture_level(self, new_level: PostureLevel) -> _PostureMutationOutcome:
+        return self._forged_mutation
+
+
+class TestF2InvariantViolationEmitsNeitherEntry:
+    """Per Round 2 /redteam Finding R2-F1 (HIGH): the F-2 mutation
+    invariants run as PRECONDITIONS, BEFORE Step 5a's posture_change
+    append. On any invariant violation, ZERO Ledger entries land —
+    the application-level paired-emission contract is atomic and
+    fail-closed.
+
+    This class exercises the contract end-to-end against the REAL
+    `EnvoyLedger` (real device-signed entries, real audit store): a
+    forged mutation that violates one of the three invariants
+    (envelope_id mismatch / new_version drift / malformed diff_hash)
+    MUST raise `PostureEnvelopeMutationInvariantError` AND leave the
+    Ledger untouched.
+
+    The R2-F1 regression that motivates this case shipped on PR #25
+    Shard 1: the F-2 invariant raises landed BETWEEN Step 5a's append
+    and Step 5b's append, so any invariant violation committed an
+    orphan posture_change to the Ledger. Per
+    `rules/zero-tolerance.md` Rule 3 (no silent fallbacks) the orphan
+    is a contract-level failure. This Tier 2 case pins the closure
+    against real persistence so the FFI/Ledger path is exercised, not
+    just the in-memory Tier 1 fake.
+
+    Note: this case addresses APPLICATION-level invariant violations.
+    TRANSIENT Ledger failures BETWEEN Step 5a and Step 5b (the F-001
+    follow-up at issue #24) are a distinct bug class requiring
+    Ledger-level transactional support.
+    """
+
+    async def test_envelope_id_mismatch_emits_neither_entry(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        """F-2 invariant: mutation.envelope_id MUST match the source
+        envelope's envelope_id. A swapped id fires the precondition
+        check BEFORE Step 5a — zero Ledger entries land."""
+        gate, _revoke, sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        # Forge a mutation whose envelope_id does NOT match the carrier's.
+        forged = _PostureMutationOutcome(
+            envelope_id="sha256:forged-swapped-id",
+            new_version=2,
+            new_content_hash="sha256:forged-new-content",
+            diff_hash="sha256:" + ("a" * 64),
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        carrier = _ForgedMutationCarrier(
+            envelope_id="sha256:authentic-envelope",
+            prior_version=1,
+            prior_content_hash="sha256:authentic-prior",
+            prior_posture_level="PSEUDO",
+            forged_mutation=forged,
+        )
+
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            await gate.request_transition(
+                principal_id="agent-r2f1-id-mismatch",
+                current=PostureLevel.PSEUDO,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=0),
+                envelope=carrier,
+            )
+        assert "envelope_id mismatch" in exc.value.reason
+
+        # R2-F1 contract: zero Ledger entries landed. The orphan
+        # posture_change pattern this fix closes would have shown up
+        # here as `len(entries) == 1` with type == "posture_change".
+        entries = await _read_appended_entries(envoy_ledger)
+        assert entries == [], (
+            "R2-F1 fail-closed broken on real Ledger — forged-mutation "
+            f"violation appended {len(entries)} entries (types "
+            f"{[e['type'] for e in entries]}); precondition gate must "
+            "preempt any append on invariant violation."
+        )
+        assert sink.writes == []
+
+    async def test_new_version_drift_emits_neither_entry(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        """F-2 invariant: mutation.new_version MUST equal prior_version
+        + 1. A regression / skip fires the precondition check BEFORE
+        Step 5a — zero Ledger entries land."""
+        gate, _revoke, sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        # Forge a mutation that skips version 4 (prior=3, new=5).
+        forged = _PostureMutationOutcome(
+            envelope_id="sha256:authentic-envelope",
+            new_version=5,  # skipped 4
+            new_content_hash="sha256:forged-new-content",
+            diff_hash="sha256:" + ("b" * 64),
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        carrier = _ForgedMutationCarrier(
+            envelope_id="sha256:authentic-envelope",
+            prior_version=3,
+            prior_content_hash="sha256:authentic-prior",
+            prior_posture_level="PSEUDO",
+            forged_mutation=forged,
+        )
+
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            await gate.request_transition(
+                principal_id="agent-r2f1-version-drift",
+                current=PostureLevel.PSEUDO,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=0),
+                envelope=carrier,
+            )
+        assert "new_version must be prior_version+1" in exc.value.reason
+
+        entries = await _read_appended_entries(envoy_ledger)
+        assert entries == [], (
+            "R2-F1 fail-closed broken on real Ledger — version-drift "
+            f"violation appended {len(entries)} entries (types "
+            f"{[e['type'] for e in entries]})."
+        )
+        assert sink.writes == []
+
+    async def test_malformed_diff_hash_emits_neither_entry(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        """F-2 invariant: mutation.diff_hash MUST match `sha256:<64-hex>`.
+        A malformed hash fires the precondition check BEFORE Step 5a —
+        zero Ledger entries land."""
+        gate, _revoke, sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        # Forge a mutation with a malformed diff_hash (wrong algorithm
+        # prefix, invalid hex shape).
+        forged = _PostureMutationOutcome(
+            envelope_id="sha256:authentic-envelope",
+            new_version=2,
+            new_content_hash="sha256:forged-new-content",
+            diff_hash="md5:not-a-canonical-sha256",
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        carrier = _ForgedMutationCarrier(
+            envelope_id="sha256:authentic-envelope",
+            prior_version=1,
+            prior_content_hash="sha256:authentic-prior",
+            prior_posture_level="PSEUDO",
+            forged_mutation=forged,
+        )
+
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            await gate.request_transition(
+                principal_id="agent-r2f1-malformed-hash",
+                current=PostureLevel.PSEUDO,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=0),
+                envelope=carrier,
+            )
+        assert "diff_hash must match 'sha256:<64-hex>'" in exc.value.reason
+
+        entries = await _read_appended_entries(envoy_ledger)
+        assert entries == [], (
+            "R2-F1 fail-closed broken on real Ledger — diff_hash "
+            f"violation appended {len(entries)} entries (types "
+            f"{[e['type'] for e in entries]})."
+        )
         assert sink.writes == []
 
 

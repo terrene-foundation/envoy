@@ -125,6 +125,11 @@ def posture_change(current: PostureLevel, target: PostureLevel, evidence: Postur
 ```python
 def effective_posture_for_composition(principals: list[Principal], action: Action) -> PostureLevel:
     # Shared Household composition; specs/shared-household.md consumer.
+    # `p.posture_level` here is the PRINCIPAL'S current effective posture
+    # (derived per principal by walking that principal's Ledger
+    # `posture_change` entries — the audit-chain authority). It is NOT the
+    # envelope's `metadata.posture_level` field, which is the mint-time
+    # annotation per specs/envelope-model.md § metadata.posture_level.
     return min(p.posture_level for p in principals if p in action.consenting_principals)
 ```
 

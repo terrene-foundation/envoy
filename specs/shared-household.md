@@ -99,6 +99,10 @@ def compose_cross_principal_action(principals: list[Principal], action: Action) 
     for env in envelopes[1:]:
         composed = intersect_envelopes(composed, env)
     # 3. Effective posture = MIN across principals (specs/posture-ladder.md).
+    # `p.posture_level` is the principal's current effective posture derived
+    # from that principal's Ledger `posture_change` chain — NOT any envelope's
+    # mint-time `metadata.posture_level` annotation (per
+    # specs/envelope-model.md § metadata.posture_level).
     composed.effective_posture = min(p.posture_level for p in principals)
     # 4. Each principal's Grant Moment required unless all are DELEGATING/AUTONOMOUS
     #    under envelope that covers this action.
