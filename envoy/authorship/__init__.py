@@ -37,6 +37,7 @@ from envoy.authorship.posture_gate import (
     PostureLevel,
     PostureMode,
     PostureNoopError,
+    PostureRatchetEnvelopeMissingError,
 )
 from envoy.authorship.score import (
     AuthorshipCounters,
@@ -61,5 +62,6 @@ __all__ = [
     "PostureLevel",
     "PostureMode",
     "PostureNoopError",
+    "PostureRatchetEnvelopeMissingError",
     "recompute_authorship_counters",
 ]
