@@ -292,6 +292,38 @@ class SemanticChecks:
 
 
 # ---------------------------------------------------------------------------
+# Envelope-scope reference (per specs/envelope-model.md § Operational +
+# Communication dimensions; consumed by `envoy.connection_vault` per
+# shard 14 § 3.3 step 3 — "Envelope-scope enforcement").
+#
+# Phase 01 minimum: narrow operational-service + communication-channel
+# tuple. Phase 02 full envelope intersection lives in
+# `kailash.trust.pact.envelopes.intersect_envelopes` (deferred at T-01-10
+# per envoy/envelope/compiler.py line 296-308). The membership predicate
+# is `envoy.envelope.scope.envelope_contains_scope()` — set-membership,
+# not the full intersection algorithm.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeScopeRef:
+    """Narrow scope tuple for credential / tool / channel use.
+
+    Per `specs/connection-vault.md` § Per-entry schema row "entry_envelope_scope".
+    Phase 01 minimum: a credential is reachable only when the active envelope
+    permits BOTH (a) the service via `operational.tool_allowlist` AND (b) the
+    channel via `communication.channel_allowlist` (when `channel` is set).
+
+    Phase 02 promotion: when `kailash.trust.pact.envelopes.intersect_envelopes`
+    ships, this dataclass moves to richer semantics; the current narrow shape
+    is forward-compatible.
+    """
+
+    service_identifier: str
+    channel: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Authored input (pre-canonicalization)
 # ---------------------------------------------------------------------------
 

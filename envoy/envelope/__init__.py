@@ -20,6 +20,7 @@ from envoy.envelope.errors import (
     SchemaVersionMismatchError,
     TemplateResolutionError,
 )
+from envoy.envelope.scope import envelope_contains_scope
 from envoy.envelope.template_resolver import (
     EnvelopeTemplate,
     EnvelopeTemplateResolver,
@@ -36,6 +37,7 @@ from envoy.envelope.types import (
     EnvelopeConfig,
     EnvelopeConfigInput,
     EnvelopeMetadata,
+    EnvelopeScopeRef,
     FinancialDimension,
     ImportedConstraint,
     OperationalDimension,
@@ -62,6 +64,10 @@ __all__ = [
     "EnvelopeTemplateResolver",
     "LocalTemplateResolver",
     "TemplateRef",
+    # Scope membership (Phase 01 narrow set-membership; full intersection deferred
+    # per envoy/envelope/compiler.py line 296-308)
+    "EnvelopeScopeRef",
+    "envelope_contains_scope",
     # Types
     "AlgorithmIdentifier",
     "AuthoredConstraint",
