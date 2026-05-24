@@ -57,11 +57,9 @@ Per specs/trust-lineage.md — Genesis Record carries `shard_public_commitments:
 | `InsufficientSharesError`           | Recovery attempted with fewer than threshold (default 3) valid shards                                                                                                                | User retrieves additional shards from holders/safes; resume recovery                | Manual after retrieval  |
 | `ShardChecksumFailedError`          | Per-card BIP-39 checksum invalid at entry (L-03 fix)                                                                                                                                 | Re-enter card carefully; if persistent, card may be transcription-corrupted         | Manual after re-entry   |
 | `CommitmentVerificationFailedError` | Reconstructed master key does not match `shard_public_commitments` in Genesis Record                                                                                                 | Refuse unlock; investigate counterfeit-shard or social-engineering attack           | Never (security event)  |
-| `RecoveryRateLimitedError`          | Recovery attempts exceed rate ceiling (T-002 household-adversarial defense)                                                                                                          | Wait for rate-limit window expiry; consult lockout UX                               | Auto after window       |
 | `ShardSlotLabelMismatchError`       | Card-slot label entered does not match Distribution Checklist opaque slot label                                                                                                      | Surface as wrong-card; user retrieves correct slot OR investigates checklist drift  | Manual after correction |
-| `RotationGracePeriodElapsedError`   | Pre-rotation card presented after 30-day grace period                                                                                                                                | Refuse card; user uses post-rotation card from refreshed 5-set                      | Never                   |
 | `EnvoyLabelOnCardError`             | User-supplied slot label fails the opaque-label whitelist (`^slot-\d+$`, ASCII-only, no `envoy` substring) — H-06 hard rejection at renderer + persister + dataclass `__post_init__` | Refuse to render; user re-supplies a canonical `slot-N` label (N=0..total_shards-1) | Manual after re-supply  |
-| `CryptoLibAuditMissingError`        | Phase 00 crypto audit not landed for selected SLIP-0039 implementation                                                                                                               | Block recovery feature in production; complete audit before ship                    | Never (release gate)    |
+| `TooManySharesError`                | Recovery attempted with MORE than threshold (default 3) shards — SLIP-0039 requires EXACTLY threshold                                                                                | Pick exactly threshold cards and retry; the others stay safe in their holders       | Manual after re-supply  |
 | `ShardPublicCommitmentMissingError` | Genesis Record lacks `shard_public_commitments` (pre-Phase-01 vault)                                                                                                                 | Migrate vault to current Genesis Record schema; re-shard if necessary               | Manual after migration  |
 
 ## Cross-references
@@ -78,15 +76,16 @@ Per specs/trust-lineage.md — Genesis Record carries `shard_public_commitments:
 - `tests/tier1/test_shamir_paper_renderer.py` — paper-card render shape + plain-language output + dataclass invariants (Tier 1, shipped T-02-35).
 - `tests/tier1/test_shamir_distribution_checklist_persister.py` — H-06 fix; three-layer slot-label defense (whitelist regex + ASCII-only + substring blacklist); byte-level invariant on persisted checklist (Tier 1, shipped T-02-35).
 - `tests/tier1/test_shamir_ritual_coordinator_orchestration.py` — 6-step ritual, master-key zeroize, storage-only `CommitmentBinder` Protocol (Tier 1, shipped T-02-34 + T-02-35 L-2 re-arch).
+- `tests/tier1/test_shamir_recover_cli.py` — recovery primitive + `envoy shamir recover` CLI: per-card SLIP-0039 checksum validation at entry (L-03 fix), commitment-verify against `Genesis.shard_public_commitments` (counterfeit defense), threshold reconstruction, CLI surface AST-lock, `del recovered` memory-hygiene AST-lock (Tier 1, shipped T-02-36).
 
 ## Out of scope (this phase)
 
 Tests scheduled to land in named successor shards. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in `workspaces/phase-01-mvp/todos/active/`; this section names ONLY the test-file path each shard will create. Citations move into `## Test location` above as the shards land.
 
 - 3-of-5 SLIP-0039 reconstruct + vault unlock (Tier 2 wiring) — scheduled in T-02-37 (`02-wave-2-authorship-shamir-boundary.md`).
-- Per-card BIP-39 checksum at entry (L-03 carry-forward) — scheduled in T-02-36 (recovery CLI).
 - Genesis-Record commitment defeats counterfeit shards (Tier 2 wiring) — scheduled in T-02-37.
 - Full S8 ritual via Boundary Conversation (Tier 3 EC-5) — scheduled in T-08-130 (`08-tests-tier3-acceptance.md`).
+- Error taxonomy rows for Phase-04 hardening (NOT in Phase 01 surface): `RecoveryRateLimitedError` (T-002 household-adversarial defense), `RotationGracePeriodElapsedError` (30-day rotation grace), `CryptoLibAuditMissingError` (Phase-00 release gate) — rows re-land in § Error taxonomy when each error class ships per `rules/spec-accuracy.md` MUST Rule 5 (incremental spec extension: spec content describes ONLY shipped behavior).
 
 Phase-02+ hardening (configurable thresholds beyond 3-of-5 default, 30-day rotation grace window) is out of Phase 01 scope. Phase-04+ work (T-002 household-adversarial recovery defense, T-006 default-safes guidance) is out of Phase 01 scope; tracked at `specs/threat-model.md` for the future-phase audit.
 

@@ -22,14 +22,25 @@ from envoy.shamir.distribution_checklist import (
 )
 from envoy.shamir.errors import (
     ChecklistPersisterError,
+    CommitmentVerificationFailedError,
     EnvoyLabelOnCardError,
+    InsufficientSharesError,
     MasterKeyZeroizationError,
     RitualPreconditionError,
+    ShamirRecoveryError,
     ShamirRitualError,
+    ShardChecksumFailedError,
+    ShardPublicCommitmentMissingError,
+    ShardSlotLabelMismatchError,
+    TooManySharesError,
 )
 from envoy.shamir.paper import (
     PaperShardCard,
     PaperShardRenderer,
+)
+from envoy.shamir.recover import (
+    PresentedShard,
+    recover_master_key,
 )
 from envoy.shamir.ritual import (
     DEFAULT_THRESHOLD,
@@ -66,10 +77,21 @@ __all__ = [
     # Result + state
     "RitualResult",
     "DistributionChecklist",
-    # Errors
+    # Recovery primitive (T-02-36)
+    "PresentedShard",
+    "recover_master_key",
+    # Errors — ritual side
     "ShamirRitualError",
     "RitualPreconditionError",
     "MasterKeyZeroizationError",
     "EnvoyLabelOnCardError",
     "ChecklistPersisterError",
+    # Errors — recovery side (T-02-36)
+    "ShamirRecoveryError",
+    "ShardChecksumFailedError",
+    "InsufficientSharesError",
+    "TooManySharesError",
+    "CommitmentVerificationFailedError",
+    "ShardSlotLabelMismatchError",
+    "ShardPublicCommitmentMissingError",
 ]
