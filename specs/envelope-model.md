@@ -30,7 +30,8 @@ Top-level `EnvelopeConfig` JSON wire format per doc 02 §2.2:
     "authorship_score": {"authored_count": <int>, "imported_count": <int>, "template_provenance": [...]},
     "enterprise_mode": {"is_enterprise": <bool>, "enterprise_deployment_record_hash": <sha256|null>},
     "sub_agent_session_inheritance": "transitive | isolated",
-    "goal_reconfirmation": {"enabled": <bool>, "N_tool_calls": 5, "scope": "session | cross_session", "per_posture_overrides": {...}}
+    "goal_reconfirmation": {"enabled": <bool>, "N_tool_calls": 5, "scope": "session | cross_session", "per_posture_overrides": {...}},
+    "posture_level": "PSEUDO | TOOL | SUPERVISED | DELEGATING | AUTONOMOUS"
   },
   "financial": {
     "per_call_ceiling_microdollars": <int>,
@@ -92,6 +93,7 @@ Classification clearance canonical enum: `Public | Internal | Confidential | Res
 - `tool_output_budget_bytes` — top-level byte ceiling on a tool's return payload, consumed by `specs/tool-output-sanitization.md` `tool_output_sanitize` algorithm. T-010/T-011 structural defense: sanitizer truncates output above this ceiling and fails closed.
 - `semantic_checks.tool_output_classifier_ensemble` — minimum-2-classifier ensemble vote applied to tool output before runtime feeds it to the next prompt. Same fail-closed unavailability policy as `data_access_classifier_ensemble`.
 - `semantic_checks.latency_budget_ms.tool_output_sanitize` (50ms) and `cross_domain_rules_eval` (10ms) — fail-closed budgets for the two new check paths.
+- `metadata.posture_level` — the envelope-side pin of the current posture per `specs/posture-ladder.md` § Canonical enum. Wire form is the canonical `PostureLevel` enum NAME (`"PSEUDO" | "TOOL" | "SUPERVISED" | "DELEGATING" | "AUTONOMOUS"`) so JCS canonicalization produces cross-runtime byte-identical bytes per BET-6. Default at first Boundary Conversation entry is `"PSEUDO"`. PostureGate's ratchet-up path emits an `envelope_edit` Ledger entry per `specs/ledger.md` § envelope_edit (T-02-33) — the entry's `new_version` reflects the bump and the mutated envelope's `posture_level` reflects the new level. Demotion does NOT bump the envelope (asymmetric pairing per `specs/posture-ladder.md` § Ratchet-down).
 
 ## Algorithms
 

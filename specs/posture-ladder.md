@@ -159,18 +159,13 @@ All errors become Ledger entries `content_trust_level: system`. Error messages M
 Per `rules/spec-accuracy.md` Exception 1 (bounded out-of-scope sections) +
 `rules/specs-authority.md` Rule 6 (deviation acknowledgment). The Phase-01
 PostureGate (T-02-31, `envoy/authorship/posture_gate.py`) implements the
-5-step fail-closed gate against the spec's algorithm at § Algorithm. The
-following surfaces from the spec's other sections are explicitly NOT
-implemented in Phase 01 — each is named to a successor shard or phase:
+5-step fail-closed gate against the spec's algorithm at § Algorithm. T-02-33
+(Tier 2 wiring) closed the prior envelope_edit pairing deferral; ratchet-up
+now emits paired `posture_change` + `envelope_edit` Ledger entries per spec
+§ Ratchet-up #3. The following surfaces from the spec's other sections are
+explicitly NOT implemented in Phase 01 — each is named to a successor shard
+or phase:
 
-- **`envelope_edit` Ledger entry pairing on ratchet-up** (spec § Ratchet-up
-  requirement #3) — scheduled in T-02-33 (Tier 2 wiring), where the
-  `EnvoyLedger` envelope-version chain is wired against a real
-  `EnvelopeCompiler` consumer. PostureGate Phase 01 emits ONLY the
-  `posture_change` Ledger entry; the paired `envelope_edit` requires the
-  envelope's `metadata.posture_level` field write + `envelope_edit`
-  Ledger entry, which is not part of T-02-31's primitive substrate.
-  Documented at `journal/0020-DECISION-envelope-edit-deferred-to-tier-2.md`.
 - **Cooling-off TIMER + window calculation** (spec § Ratchet-up #4 +
   `cooling_off_active` boolean) — scheduled in Phase 03 Weekly Posture
   Review ritual. PostureGate Phase 01 ENFORCES `cooling_off_active=True`
@@ -194,6 +189,19 @@ implemented in Phase 01 — each is named to a successor shard or phase:
 - Annual decay.
 - Enterprise AUTONOMOUS refusal.
 - Shared-household MIN composition.
+- `tests/tier2/test_posture_gate_wiring.py` — Tier 2 wiring (T-02-33):
+  PostureGate against real `EnvoyLedger` + real Ed25519. Pins the
+  paired `posture_change` + `envelope_edit` Ledger emission on
+  ratchet-up (3 positive cases — PSEUDO→TOOL, TOOL→SUPERVISED,
+  multi-step PSEUDO→DELEGATING) AND the asymmetric pairing on
+  ratchet-down (1 case — demotion emits ONLY `posture_change`) AND
+  the fail-closed pairing invariant (1 case — failed ratchet-up
+  emits NEITHER entry).
+- `tests/tier1/test_posture_gate_5_step_fail_closed.py` — Tier 1
+  unit coverage for the 5-step gate including Step 3e
+  (`PostureRatchetEnvelopeMissingError` on ratchet-up with
+  `envelope=None`) and the once-only `mutate_for_posture_level()`
+  consumption contract.
 
 Threat traceability — T-019/T-023/T-024 mitigation tests live here, per specs/threat-model.md §Test location.
 
