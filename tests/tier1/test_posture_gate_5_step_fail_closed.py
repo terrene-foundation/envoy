@@ -37,6 +37,7 @@ from envoy.authorship.posture_gate import (
     PostureChangeResult,
     PostureCoolingOffActiveError,
     PostureEnterpriseAutonomousForbidden,
+    PostureEnvelopeMutationInvariantError,
     PostureEvidence,
     PostureGate,
     PostureGateError,
@@ -126,6 +127,7 @@ class _FakePostureMutationResult:
     Tier 2 adapter's `_PostureMutationOutcome` for cross-tier consistency.
     """
 
+    envelope_id: str
     new_version: int
     new_content_hash: str
     diff_hash: str
@@ -150,10 +152,15 @@ class _FakePostureCarryingEnvelope:
 
     def mutate_for_posture_level(self, new_level: PostureLevel) -> _FakePostureMutationResult:
         self.mutate_calls.append(new_level)
+        # diff_hash MUST match `sha256:<64-hex>` per F-2 invariant — produce a
+        # spec-shaped synthetic hex; tests that need to exercise the malformed
+        # branch construct the mutation result inline with a bad value.
+        synthetic_hex = (new_level.name.encode("utf-8").hex() + "0" * 64)[:64]
         return _FakePostureMutationResult(
+            envelope_id=self.envelope_id,
             new_version=self.prior_version + 1,
             new_content_hash=f"sha256:fake-new-content-{new_level.name}",
-            diff_hash=f"sha256:fake-diff-{new_level.name}",
+            diff_hash=f"sha256:{synthetic_hex}",
             new_posture_level=new_level.name,
             new_envelope=object(),
         )
@@ -1587,3 +1594,220 @@ class TestStep3eEnvelopeMissingOnRatchetUp:
             )
         # Envelope untouched.
         assert envelope.mutate_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Step 5b trust-boundary invariants (Round 1 /redteam F-2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _MutationOverrideEnvelope:
+    """Envelope fake that returns a caller-controlled mutation result.
+
+    Used to exercise the Step 5b trust-boundary invariants: the gate
+    consumes mutation fields verbatim into the device-signed Ledger
+    entry, so a malicious adapter could try to inject forged values.
+    Each test constructs the mutation to violate one invariant and
+    asserts the gate raises `PostureEnvelopeMutationInvariantError`.
+    """
+
+    envelope_id: str = "sha256:fake-envelope-0001"
+    prior_version: int = 1
+    prior_content_hash: str = "sha256:fake-prior-content"
+    prior_posture_level: str = "PSEUDO"
+    forced_mutation: _FakePostureMutationResult | None = None
+
+    def mutate_for_posture_level(self, new_level: PostureLevel) -> _FakePostureMutationResult:
+        assert self.forced_mutation is not None, "test must set forced_mutation"
+        return self.forced_mutation
+
+
+class TestStep5bMutationInvariantChecks:
+    """Per Round 1 /redteam F-2 (HIGH): Step 5b validates the mutation
+    result BEFORE the gate signs the envelope_edit Ledger entry. Without
+    these checks, a buggy or malicious `_PostureCarryingEnvelope` adapter
+    could inject a swapped envelope_id, a regressed/skipped version, or
+    a malformed diff_hash into the device-signed audit trail.
+
+    Each test exercises ONE invariant violation and confirms:
+    - `PostureEnvelopeMutationInvariantError` raised with a descriptive
+      reason
+    - posture_change was already appended at Step 5a (the failure is
+      detected BEFORE Step 5b's append — invariant check is the gate
+      between mutate and append)
+    - envelope_edit is NOT appended
+    - BET-12 is NOT emitted (Step 5+ never reached)
+    """
+
+    def test_envelope_id_mismatch_raises(self):
+        gate, led, _rev, sink = _make_gate()
+        envelope = _MutationOverrideEnvelope(envelope_id="sha256:expected-id")
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id="sha256:swapped-id",  # different from envelope.envelope_id
+            new_version=envelope.prior_version + 1,
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="sha256:" + ("a" * 64),
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+        assert "envelope_id mismatch" in exc.value.reason
+        # posture_change was appended at Step 5a; envelope_edit MUST NOT have landed.
+        types = [a["entry_type"] for a in led.appends]
+        assert types == ["posture_change"]
+        # BET-12 emission is Step 5+ (after envelope_edit); MUST NOT fire.
+        assert sink.writes == []
+
+    def test_new_version_regression_raises(self):
+        gate, led, _rev, sink = _make_gate()
+        envelope = _MutationOverrideEnvelope(prior_version=3)
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id=envelope.envelope_id,
+            new_version=3,  # equal to prior — version did NOT advance
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="sha256:" + ("b" * 64),
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+        assert "new_version must be prior_version+1" in exc.value.reason
+        types = [a["entry_type"] for a in led.appends]
+        assert types == ["posture_change"]
+        assert sink.writes == []
+
+    def test_new_version_skip_raises(self):
+        gate, led, _rev, sink = _make_gate()
+        envelope = _MutationOverrideEnvelope(prior_version=3)
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id=envelope.envelope_id,
+            new_version=5,  # skipped version 4
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="sha256:" + ("c" * 64),
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+        assert "new_version must be prior_version+1" in exc.value.reason
+        # Confirm the descriptive reason carries both prior and new for triage
+        assert "prior=3" in exc.value.reason
+        assert "new=5" in exc.value.reason
+        types = [a["entry_type"] for a in led.appends]
+        assert types == ["posture_change"]
+        assert sink.writes == []
+
+    def test_malformed_diff_hash_raises(self):
+        gate, led, _rev, sink = _make_gate()
+        envelope = _MutationOverrideEnvelope()
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id=envelope.envelope_id,
+            new_version=envelope.prior_version + 1,
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="not-a-sha256-hex",  # bypasses canonical shape
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError) as exc:
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+        assert "diff_hash must match 'sha256:<64-hex>'" in exc.value.reason
+        types = [a["entry_type"] for a in led.appends]
+        assert types == ["posture_change"]
+        assert sink.writes == []
+
+    def test_diff_hash_wrong_prefix_raises(self):
+        # `md5:...` / `sha1:...` / unprefixed hex MUST all reject.
+        gate, _led, _rev, _sink = _make_gate()
+        envelope = _MutationOverrideEnvelope()
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id=envelope.envelope_id,
+            new_version=envelope.prior_version + 1,
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="sha1:" + ("d" * 40),  # SHA-1 not accepted
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+
+    def test_diff_hash_uppercase_hex_rejected(self):
+        # Spec form is lowercase hex; uppercase fails the strict pattern.
+        gate, _led, _rev, _sink = _make_gate()
+        envelope = _MutationOverrideEnvelope()
+        envelope.forced_mutation = _FakePostureMutationResult(
+            envelope_id=envelope.envelope_id,
+            new_version=envelope.prior_version + 1,
+            new_content_hash="sha256:fake-new-content",
+            diff_hash="sha256:" + ("A" * 64),  # uppercase rejected
+            new_posture_level="TOOL",
+            new_envelope=object(),
+        )
+        with pytest.raises(PostureEnvelopeMutationInvariantError):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    envelope=envelope,
+                )
+            )
+
+    def test_invariant_error_carries_user_message(self):
+        # Plain-language user_message per `rules/communication.md`.
+        err = PostureEnvelopeMutationInvariantError(reason="test reason")
+        assert hasattr(err, "user_message")
+        assert isinstance(err.user_message, str)
+        assert len(err.user_message) > 0
+        # No internal jargon should leak into the user-facing string.
+        assert "envelope_id" not in err.user_message
+        assert "diff_hash" not in err.user_message
+        assert "sha256" not in err.user_message
+
+    def test_invariant_error_is_posture_gate_error_subclass(self):
+        # All gate errors share the base class for surface-side polymorphism.
+        from envoy.authorship.posture_gate import PostureGateError
+
+        assert issubclass(PostureEnvelopeMutationInvariantError, PostureGateError)

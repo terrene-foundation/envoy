@@ -150,8 +150,12 @@ class _PostureMutationOutcome:
     Mirrors the Protocol `_PostureMutationResult` PostureGate declares.
     Carried as a dataclass here for test-side readability; the production
     Protocol is structural so any same-shaped object satisfies it.
+
+    `envelope_id` mirrors the source envelope's id; PostureGate verifies
+    the match at Step 5b per Round 1 /redteam F-2 trust-boundary invariant.
     """
 
+    envelope_id: str
     new_version: int
     new_content_hash: str
     diff_hash: str
@@ -236,6 +240,7 @@ class _EnvelopeConfigPostureCarrier:
             "sha256:" + hashlib.sha256(self._envelope.canonical_bytes + new_canonical).hexdigest()
         )
         return _PostureMutationOutcome(
+            envelope_id=self._envelope.metadata.envelope_id,
             new_version=new_version,
             new_content_hash=new_content_hash,
             diff_hash=diff_hash,
