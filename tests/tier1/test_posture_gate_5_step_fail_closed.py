@@ -1933,3 +1933,66 @@ class TestEnvelopeKwargProtocolCheck:
             )
         assert led.appends == []
         assert sink.writes == []
+
+
+# ---------------------------------------------------------------------------
+# F-6 closure: metadata.posture_level mint-state read path (audit-only role)
+# ---------------------------------------------------------------------------
+
+
+class TestPostureLevelMintStateRead:
+    """F-6 closure: per `specs/envelope-model.md` § Schema field semantics
+    for metadata.posture_level, the field is the envelope's mint-time
+    audit annotation. No production read consumer dispatches on its value
+    (effective-posture derivation walks the Ledger's posture_change
+    entries instead). Per `rules/orphan-detection.md` Rule 1, the field
+    is structurally non-orphan only if at least one test reads it.
+
+    These tests exercise the read path against the canonical
+    `EnvelopeMetadata` shape:
+
+    1. Default mint-state at first envelope is "PSEUDO" per
+       `specs/envelope-model.md` § Schema field semantics.
+    2. Mint-state minted via `EnvelopeMetadata(posture_level=...)`
+       round-trips byte-stably (the spec value IS the stored value).
+    3. The field is part of the metadata.posture_level wire form per
+       `specs/envelope-model.md` line 34 ("PSEUDO | TOOL | SUPERVISED
+       | DELEGATING | AUTONOMOUS").
+
+    The tests do NOT exercise any production dispatch logic against the
+    field (because none exists per the documented audit-only role); they
+    exercise the read access so the field is reachable from at least one
+    test and is therefore not structurally orphan.
+    """
+
+    def test_default_posture_level_is_pseudo(self):
+        from envoy.envelope import EnvelopeMetadata
+
+        metadata = EnvelopeMetadata()
+        # Default mint-state per `specs/envelope-model.md` field semantics
+        # — Boundary Conversation first entry is PSEUDO.
+        assert metadata.posture_level == "PSEUDO"
+
+    def test_mint_state_round_trips(self):
+        from envoy.envelope import EnvelopeMetadata
+
+        # Each canonical posture level can be set as a mint-state value
+        # and read back unchanged. The dataclass is frozen — the read
+        # path is what audit consumers (Tier 03+ verifiers per spec
+        # field-semantics) use to cross-check against Ledger entries.
+        for name in ("PSEUDO", "TOOL", "SUPERVISED", "DELEGATING", "AUTONOMOUS"):
+            metadata = EnvelopeMetadata(posture_level=name)
+            assert metadata.posture_level == name
+
+    def test_mint_state_matches_canonical_posture_level_enum(self):
+        # The field's wire form per `specs/envelope-model.md` line 34
+        # MUST match the canonical `PostureLevel` enum names — pinning
+        # this cross-checks the spec wire form against the Python enum
+        # and surfaces drift if either side renames.
+        from envoy.envelope import EnvelopeMetadata
+
+        canonical_names = {p.name for p in PostureLevel}
+        for level in PostureLevel:
+            metadata = EnvelopeMetadata(posture_level=level.name)
+            assert metadata.posture_level in canonical_names
+            assert metadata.posture_level == level.name
