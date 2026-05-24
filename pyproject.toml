@@ -30,6 +30,12 @@ dependencies = [
     # the runtime adapter slot per `11-phase-02-handoff.md` T-11-04.
     # Apache 2.0; Foundation-stewarded; install via `pipx install envoy-agent`.
     "kailash[nexus,kaizen,dataflow,pact,shamir]>=2.13.4",
+    # SLIP-0039 per-card BIP-39 checksum decode (L-03 fix) — imported
+    # directly in envoy.shamir.recover._validate_card_checksum so it
+    # MUST be a first-class dep per rules/dependencies.md § "Declared =
+    # Imported". `kailash[shamir]` transitively pulls this in today;
+    # the explicit declaration insulates against upstream extras renames.
+    "shamir-mnemonic>=0.3",
     # Trust Vault crypto (T-01-13) — AES-256-GCM via cryptography; Argon2id KDF
     # via argon2-cffi (m=2^17, t=3, p=1 per specs/trust-vault.md § Encryption).
     "cryptography>=44.0",

@@ -589,6 +589,118 @@ class TestMemoryHygiene:
     the finally clause.
     """
 
+    def test_default_threshold_canonical_source(self) -> None:
+        """Regression /redteam Round 1 F-1: DEFAULT_THRESHOLD MUST be a single
+        source of truth — `envoy.shamir.recover.DEFAULT_THRESHOLD` is re-exported
+        from `envoy.shamir.ritual.DEFAULT_THRESHOLD`, not a parallel constant.
+        Catches a future refactor that re-introduces the duplicate.
+        """
+        import envoy.shamir.recover as recover_mod
+        import envoy.shamir.ritual as ritual_mod
+
+        assert recover_mod.DEFAULT_THRESHOLD is ritual_mod.DEFAULT_THRESHOLD, (
+            "DEFAULT_THRESHOLD MUST be the same object in both modules — "
+            "duplicate constants drift; ritual.DEFAULT_THRESHOLD is canonical"
+        )
+
+    def test_slot_label_mismatch_base_message_excludes_checklist_tuple(
+        self, real_ritual: dict
+    ) -> None:
+        """Regression security review F-1: the Exception base message MUST NOT
+        embed the full `checklist_labels` tuple — `str(error)` flows to
+        logger.exception() and stack traces, leaking the whitelist to log
+        aggregators. Per rules/observability.md MUST Rule 8.
+        """
+        presented = [
+            PresentedShard(
+                slot_label="slot-99",
+                words=list(real_ritual["shards"][0]),
+                card_index=0,
+            ),
+            PresentedShard(
+                slot_label="slot-1",
+                words=list(real_ritual["shards"][1]),
+                card_index=1,
+            ),
+            PresentedShard(
+                slot_label="slot-2",
+                words=list(real_ritual["shards"][2]),
+                card_index=2,
+            ),
+        ]
+        with pytest.raises(ShardSlotLabelMismatchError) as exc_info:
+            recover_master_key(
+                presented,
+                commitments=real_ritual["commitments"],
+                checklist_labels=real_ritual["slot_labels"],
+            )
+        # Instance attribute is the programmatic access path — must still carry
+        # the full tuple.
+        assert exc_info.value.checklist_labels == real_ritual["slot_labels"]
+        # But the Exception message (what `str(error)` / repr(error) surface)
+        # MUST NOT embed the tuple. Each slot label is the leak signal.
+        base_message = str(exc_info.value)
+        for label in real_ritual["slot_labels"]:
+            assert label not in base_message, (
+                f"Exception base message leaks slot label {label!r} via "
+                f"checklist_labels embedding — flows to logger.exception() / "
+                f"stack traces"
+            )
+
+    def test_recover_master_key_logs_error_path(
+        self, real_ritual: dict, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Regression reviewer F-2: recover_master_key MUST log a
+        `shamir.recover.error` line on every typed-error path. Per
+        rules/observability.md MUST Rule 1 (Entry, exit, AND error each log).
+        Pre-fix, only `.start` and `.ok` fired; precondition failures
+        produced ZERO log line.
+        """
+        import logging
+
+        caplog.set_level(logging.DEBUG, logger="envoy.shamir.recover")
+        presented = _present(real_ritual, [0, 1])  # < threshold → InsufficientSharesError
+
+        with pytest.raises(InsufficientSharesError):
+            recover_master_key(
+                presented,
+                commitments=real_ritual["commitments"],
+                checklist_labels=real_ritual["slot_labels"],
+            )
+
+        # MUST observe both: start (entry log) + error (typed-error path log)
+        log_messages = [r.message for r in caplog.records]
+        assert (
+            "shamir.recover.start" in log_messages
+        ), "missing start log — entry MUST be logged per observability.md Rule 1"
+        assert "shamir.recover.error" in log_messages, (
+            "missing error log — typed-error path MUST be logged per "
+            "observability.md Rule 1 (reviewer F-2 regression)"
+        )
+        # Schema-safe per observability.md Rule 8 — the error record carries
+        # the class name + counts, never the slot labels / words / hashes.
+        error_records = [r for r in caplog.records if r.message == "shamir.recover.error"]
+        assert error_records, "no error-class record found"
+        assert error_records[0].error_class == "InsufficientSharesError"
+
+    def test_render_error_raises_on_missing_user_message(self) -> None:
+        """Regression security review F-3: `_render_error` MUST assert the
+        typed error carries a `user_message`. A future ShamirRecoveryError
+        subclass that forgets to populate `user_message` would otherwise leak
+        the technical `str(error)` (card_index, paths, sizes) to stderr.
+        """
+        from envoy.cli.shamir import _render_error
+        from envoy.shamir.errors import ShamirRecoveryError
+
+        class _OrphanRecoveryError(ShamirRecoveryError):
+            """Future-drift subclass that forgets user_message — MUST fail loudly."""
+
+        # No user_message set — `_render_error` MUST refuse rather than
+        # silently leak `str(error)`.
+        orphan = _OrphanRecoveryError("technical-only message")
+        with pytest.raises(AssertionError, match="user_message"):
+            _render_error(orphan)
+
     def test_recover_command_dels_recovered_bytes(self) -> None:
         import envoy.cli.shamir as shamir_mod
 

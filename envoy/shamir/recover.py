@@ -58,11 +58,13 @@ from envoy.shamir.errors import (
     TooManySharesError,
 )
 
+# Re-export from the canonical site (`envoy.shamir.ritual`) so the
+# generate-time and recovery-time thresholds cannot drift. /redteam
+# Round 1 F-1 closed the duplicate-constant gap. Per `rules/specs-authority.md`
+# Rule 5b — single source of truth for cross-spec invariants.
+from envoy.shamir.ritual import DEFAULT_THRESHOLD
+
 logger = logging.getLogger(__name__)
-
-
-# Default threshold per `specs/shamir-recovery.md` § Default threshold.
-DEFAULT_THRESHOLD = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,11 +217,59 @@ def recover_master_key(
             failures (mixed identifiers, etc.) outside the envoy-side
             taxonomy.
     """
-    # Lazy import — keeps `from envoy.shamir.recover import recover_master_key`
-    # cheap and lets the test layer monkeypatch the reconstruct surface
-    # without dragging the kailash extras at primitive import time.
-    from kailash.trust.vault.shamir import reconstruct
+    # Per `rules/observability.md` MUST Rule 1 (Entry, exit, AND error
+    # each log): emit `start` BEFORE any precondition fires so post-incident
+    # triage can count attempt rate even on early-precondition failures.
+    # Reviewer F-2 closed the gap where typed-error paths produced zero
+    # `shamir.recover.*` log line.
+    logger.info(
+        "shamir.recover.start",
+        extra={
+            "presented_count": len(presented),
+            "threshold": threshold,
+        },
+    )
 
+    try:
+        return _recover_master_key_impl(
+            presented,
+            commitments=commitments,
+            checklist_labels=checklist_labels,
+            threshold=threshold,
+            passphrase=passphrase,
+        )
+    except Exception as exc:
+        # Schema-safe error log per `rules/observability.md` MUST Rule 8 —
+        # class name + integer counts only. No slot labels, no card words,
+        # no commitment hashes (those are schema-revealing identifiers; per
+        # observability.md Rule 8 they belong at DEBUG, never WARN).
+        logger.warning(
+            "shamir.recover.error",
+            extra={
+                "error_class": type(exc).__name__,
+                "presented_count": len(presented),
+                "threshold": threshold,
+            },
+        )
+        raise
+
+
+def _recover_master_key_impl(
+    presented: list[PresentedShard],
+    *,
+    commitments: tuple[str, ...],
+    checklist_labels: tuple[str, ...],
+    threshold: int,
+    passphrase: bytes,
+) -> bytes:
+    """Implementation half of `recover_master_key` — runs the 6 validation
+    steps + reconstruction. Split from the public surface so the public
+    function owns the start/error/ok log triple (rules/observability.md
+    MUST Rule 1) and this half stays focused on the validation algebra.
+    Per /redteam Round 1 F-2: the kailash lazy import moves to Step 6 so
+    the cheapest preconditions (Steps 1-5) fire FIRST as the docstring
+    claims — matching the spec's "validation order" contract.
+    """
     # Step 1 — threshold precondition (cheapest). SLIP-0039 is strict:
     # exactly threshold cards required. Both below-threshold and
     # above-threshold raise typed envoy errors so the CLI / channel
@@ -270,13 +320,20 @@ def recover_master_key(
     # Step 3 — slot-label whitelist (catches wrong-card UX before
     # checksum work). `checklist_labels` is the canonical list from
     # the DistributionChecklist.
+    #
+    # Security review F-1 closed: the Exception base-message MUST NOT
+    # embed `checklist_labels!r` — `repr(error)` / `str(error)` flow to
+    # `logger.exception()` and stack traces, leaking the full whitelist
+    # tuple to log aggregators. Per `rules/observability.md` MUST Rule 8
+    # the schema-revealing tuple stays on the `.checklist_labels`
+    # instance attribute for programmatic access only.
     checklist_set = frozenset(checklist_labels)
     for shard in presented:
         if shard.slot_label not in checklist_set:
             raise ShardSlotLabelMismatchError(
                 f"recover_master_key: card {shard.card_index} slot label "
-                f"{shard.slot_label!r} not in DistributionChecklist labels "
-                f"{checklist_labels!r}",
+                f"not in DistributionChecklist "
+                f"(checklist has {len(checklist_labels)} entries)",
                 presented_label=shard.slot_label,
                 checklist_labels=checklist_labels,
                 user_message=(
@@ -321,14 +378,15 @@ def recover_master_key(
     # their native types so callers can distinguish reconstruction
     # failures (mixed identifiers from different rituals, library-level
     # malformed input) from the envoy-side typed errors above.
+    #
+    # /redteam Round 1 F-2 closed: the lazy import moves HERE (was at
+    # function entry) so the cheaper preconditions fire FIRST as the
+    # docstring claims. `kailash[shamir]>=2.13.4` is a declared hard
+    # dep so ImportError is not a real-world failure mode; the move
+    # restores the documented validation-order contract.
+    from kailash.trust.vault.shamir import reconstruct
+
     shards = [shard.words for shard in presented]
-    logger.info(
-        "shamir.recover.start",
-        extra={
-            "presented_count": len(presented),
-            "threshold": threshold,
-        },
-    )
     secret = reconstruct(shards, passphrase=passphrase)
     logger.info(
         "shamir.recover.ok",

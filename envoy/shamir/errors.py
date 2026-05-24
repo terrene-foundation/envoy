@@ -177,13 +177,13 @@ class TooManySharesError(ShamirRecoveryError):
     specific UX ("you have too many, pick 3" vs "you have too few,
     retrieve more").
 
-    Spec-extension note: this error class is NOT enumerated in
-    `specs/shamir-recovery.md` § Error taxonomy because the spec's
-    "Enter words from any 3 cards" wording is silent on the >threshold
-    case. The T-02-36 implementation discovered the library's strict
-    behavior; the typed error is the user-friendly surface. Per
-    `rules/specs-authority.md` MUST Rule 5 the spec MUST be updated to
-    enumerate this case at the same shard the error lands.
+    Spec-extension note: T-02-36 extended `specs/shamir-recovery.md`
+    § Error taxonomy in the same PR to enumerate this case per
+    `rules/specs-authority.md` MUST Rule 5 — the row makes the typed
+    error part of the canonical taxonomy. The implementation discovered
+    the library's strict-count behavior; the typed envoy error is the
+    user-friendly translation per `rules/communication.md` MUST NOT
+    (raw error messages).
     """
 
     def __init__(

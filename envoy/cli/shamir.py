@@ -206,11 +206,25 @@ def _render_error(error: ShamirRecoveryError) -> None:
 
     Per `rules/communication.md` MUST NOT (raw error messages): every
     `ShamirRecoveryError` carries a `.user_message` for direct user
-    rendering. The class name is included on a second line as a stable
+    rendering. The class name is included on the same line as a stable
     machine-parseable identifier for downstream tooling.
+
+    Security review F-3 + F-5 closed:
+    - Asserts `user_message` is set so a future ShamirRecoveryError
+      subclass that forgets to populate it fails LOUDLY at the gate
+      rather than silently leaking the technical `str(error)` (which
+      carries card_index, file paths, label-set sizes).
+    - Single `click.echo` call so the `[error_class=...]` tag cannot be
+      split from its message by interleaved stderr writes.
     """
-    click.echo(f"\n{error.user_message or str(error)}\n", err=True)
-    click.echo(f"[error_class={type(error).__name__}]", err=True)
+    assert error.user_message, (
+        f"ShamirRecoveryError subclass {type(error).__name__} MUST set "
+        f"user_message per rules/communication.md MUST NOT (raw error messages)"
+    )
+    click.echo(
+        f"\n{error.user_message}\n\n[error_class={type(error).__name__}]",
+        err=True,
+    )
 
 
 @shamir.command(name="recover")
