@@ -150,8 +150,12 @@ class _PostureMutationOutcome:
     Mirrors the Protocol `_PostureMutationResult` PostureGate declares.
     Carried as a dataclass here for test-side readability; the production
     Protocol is structural so any same-shaped object satisfies it.
+
+    `envelope_id` mirrors the source envelope's id; PostureGate verifies
+    the match at Step 5b per Round 1 /redteam F-2 trust-boundary invariant.
     """
 
+    envelope_id: str
     new_version: int
     new_content_hash: str
     diff_hash: str
@@ -236,6 +240,7 @@ class _EnvelopeConfigPostureCarrier:
             "sha256:" + hashlib.sha256(self._envelope.canonical_bytes + new_canonical).hexdigest()
         )
         return _PostureMutationOutcome(
+            envelope_id=self._envelope.metadata.envelope_id,
             new_version=new_version,
             new_content_hash=new_content_hash,
             diff_hash=diff_hash,
@@ -660,6 +665,124 @@ class TestPostureChangeOnRatchetDownNoEnvelopeEdit:
         assert len(sink.writes) == 1
         assert sink.writes[0].from_level is PostureLevel.DELEGATING
         assert sink.writes[0].to_level is PostureLevel.TOOL
+
+    async def test_ratchet_down_does_not_mutate_envelope_posture_level(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        """F-4 mint-state pin: demotion MUST NOT mutate envelope.metadata.posture_level.
+
+        Per `journal/0022-DECISION-posture-level-mint-state-interpretation.md`
+        + `specs/envelope-model.md` § Schema field semantics for
+        metadata.posture_level: the field is the mint-time annotation,
+        not the current effective posture. Ratchet-down emits a
+        `posture_change` entry only (no `envelope_edit`, no envelope
+        mutation); the envelope's `posture_level` stays at the mint-time
+        value.
+
+        Provided demotion path: compile envelope at DELEGATING, demote to TOOL.
+        Expected: envelope.metadata.posture_level remains "DELEGATING" after
+        the gate accepts the demotion.
+        """
+        gate, _revoke, _sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        compiler = _make_compiler(tmp_path)
+        envelope = _compile_envelope(
+            compiler, principal_id="frank", initial_posture_level=PostureLevel.DELEGATING
+        )
+        mint_state_value = envelope.metadata.posture_level
+        assert mint_state_value == "DELEGATING"  # baseline
+
+        # Demote with envelope=None (the documented ratchet-down path —
+        # envelope is not consumed on demotion paths).
+        await gate.request_transition(
+            principal_id="frank",
+            current=PostureLevel.DELEGATING,
+            target=PostureLevel.TOOL,
+            evidence=_evidence(recomputed=5),
+            envelope=None,
+        )
+
+        # Mint-immutability invariant: the envelope reference still carries
+        # the mint-time posture_level. The current effective posture is
+        # derived by walking the Ledger's posture_change entries, NOT by
+        # reading this field.
+        assert envelope.metadata.posture_level == mint_state_value
+        assert envelope.metadata.posture_level == "DELEGATING"
+
+
+# ---------------------------------------------------------------------------
+# F-4 mint-state pin: ratchet-up mints a new envelope; original is immutable
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopePostureLevelIsMintStateOnRatchetUp:
+    """F-4 closure: `metadata.posture_level` is the envelope's mint-time
+    audit annotation. Ratchet-up mints a NEW envelope version (whose
+    `posture_level` reflects the new mint state) via
+    `mutate_for_posture_level()`; the ORIGINAL envelope reference's
+    `posture_level` stays at the prior mint-time value (mint-immutability).
+
+    Per `journal/0022-DECISION-posture-level-mint-state-interpretation.md`
+    + `specs/envelope-model.md` § Schema field semantics for
+    metadata.posture_level: this pins that the envelope's posture_level
+    is NOT a current-effective-posture readout, and that ratchet-up does
+    NOT in-place-mutate the source envelope.
+    """
+
+    async def test_ratchet_up_returns_new_mint_state_original_untouched(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        gate, _revoke, _sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        compiler = _make_compiler(tmp_path)
+        envelope = _compile_envelope(
+            compiler, principal_id="grace", initial_posture_level=PostureLevel.PSEUDO
+        )
+        original_mint_state = envelope.metadata.posture_level
+        assert original_mint_state == "PSEUDO"
+
+        carrier = _EnvelopeConfigPostureCarrier(envelope, compiler)
+        await gate.request_transition(
+            principal_id="grace",
+            current=PostureLevel.PSEUDO,
+            target=PostureLevel.TOOL,
+            evidence=_evidence(recomputed=0),
+            envelope=carrier,
+        )
+
+        # Mint-immutability invariant: the SOURCE envelope reference's
+        # posture_level is unchanged. The new envelope version (returned
+        # by mutate_for_posture_level) carries the new mint state.
+        assert envelope.metadata.posture_level == original_mint_state
+        assert envelope.metadata.posture_level == "PSEUDO"
+
+        # The mutation result carries the NEW mint state.
+        mutation = carrier.mutate_for_posture_level(PostureLevel.TOOL)
+        assert mutation.new_posture_level == "TOOL"
+        assert mutation.new_envelope.metadata.posture_level == "TOOL"
+        # And the new envelope's posture_level differs from the original.
+        assert mutation.new_envelope.metadata.posture_level != envelope.metadata.posture_level
+
+    async def test_mutation_returns_new_envelope_object_not_in_place(
+        self, envoy_ledger: EnvoyLedger, tmp_path
+    ) -> None:
+        """The mutation result's `new_envelope` MUST NOT be the same Python
+        object as the source envelope. Mint-state semantics require a new
+        envelope version (per `specs/envelope-model.md` § envelope_version
+        monotonic bump); in-place mutation would violate the mint-time-
+        immutability invariant the spec relies on."""
+        _gate, _revoke, _sink, _emitter = _make_gate_and_collaborators(envoy_ledger)
+        compiler = _make_compiler(tmp_path)
+        envelope = _compile_envelope(
+            compiler, principal_id="grace", initial_posture_level=PostureLevel.PSEUDO
+        )
+        carrier = _EnvelopeConfigPostureCarrier(envelope, compiler)
+        mutation = carrier.mutate_for_posture_level(PostureLevel.TOOL)
+        # Distinct Python object — frozen dataclass replace returns a new instance.
+        assert mutation.new_envelope is not envelope
+        # Distinct envelope_version — the new envelope is at the next version.
+        assert mutation.new_envelope.envelope_version == envelope.envelope_version + 1
+        # Same envelope_id — the new version is a continuation of the same
+        # envelope chain, not a fresh envelope identity.
+        assert mutation.new_envelope.metadata.envelope_id == envelope.metadata.envelope_id
 
 
 # ---------------------------------------------------------------------------

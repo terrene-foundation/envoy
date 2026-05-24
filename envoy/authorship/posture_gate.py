@@ -93,6 +93,14 @@ _ENVELOPE_ID_HASH_MAX_LEN = 128
 _ENVELOPE_ID_HASH_PATTERN = re.compile(r"^[a-zA-Z0-9:_-]*$")
 
 
+# Trust-boundary invariant: every `mutation.diff_hash` consumed verbatim into
+# a device-signed envelope_edit Ledger entry MUST match `sha256:<64-hex>` per
+# `specs/ledger.md` § envelope_edit § diff_hash. Validated at Step 5b before
+# the gate signs the entry; rejects malformed values a malicious
+# `_PostureCarryingEnvelope` adapter might try to inject (Round 1 /redteam F-2).
+_SHA256_HEX_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+
 # Agent-id safety bounds for `revoke_on_demotion` per security-reviewer F-1 —
 # matches the canonical defense `_validate_id_safety` at
 # `envoy/trust/store.py:55` (intentionally NOT imported because that helper is
@@ -141,6 +149,7 @@ __all__ = [
     "PostureChangeResult",
     "PostureCoolingOffActiveError",
     "PostureEnterpriseAutonomousForbidden",
+    "PostureEnvelopeMutationInvariantError",
     "PostureEvidence",
     "PostureGate",
     "PostureGateError",
@@ -411,6 +420,31 @@ class PostureRatchetEnvelopeMissingError(PostureGateError):
         )
 
 
+class PostureEnvelopeMutationInvariantError(PostureGateError):
+    """Mutation result violated a Step 5b trust-boundary invariant.
+
+    Per Round 1 /redteam F-2: PostureGate device-signs the envelope_edit
+    Ledger entry by consuming mutation fields (`envelope_id`, `new_version`,
+    `diff_hash`) verbatim. A malicious or buggy `_PostureCarryingEnvelope`
+    adapter could otherwise inject forged values (mismatched envelope_id,
+    regressed/skipped version, malformed diff_hash) into the device-signed
+    entry. Step 5b validates these invariants BEFORE the gate signs.
+
+    The runtime check is the structural defense per `rules/zero-tolerance.md`
+    Rule 3 — no silent fallback path where a malformed mutation lands as
+    a signed Ledger entry.
+    """
+
+    def __init__(self, *, reason: str) -> None:
+        self.reason = reason
+        self.user_message = (
+            "There was a problem confirming the envelope update for this "
+            "posture change. The change has not been recorded — please "
+            "re-open Weekly Posture Review and try again."
+        )
+        super().__init__(f"PostureEnvelopeMutationInvariantError: {reason}")
+
+
 class PostureGenesisGrantMissingError(PostureGateError):
     """Ratchet-up ceremony not co-signed by Genesis key."""
 
@@ -551,6 +585,9 @@ class _PostureMutationResult(Protocol):
     (real `EnvelopeConfig`-wrapping adapters; Tier 1 frozen-dataclass fakes).
 
     Per `specs/ledger.md` § envelope_edit (lines 107-114):
+    - `envelope_id` — the uuid of the envelope this mutation belongs to.
+      PostureGate verifies it matches the input envelope's envelope_id at
+      Step 5b per Round 1 /redteam F-2 (trust-boundary invariant).
     - `new_version` — the envelope_version after the bump (= prior_version + 1).
     - `new_content_hash` — sha256 over the new canonical_bytes.
     - `diff_hash` — sha256 binding prior canonical bytes to new canonical
@@ -559,6 +596,9 @@ class _PostureMutationResult(Protocol):
     - `new_envelope` — the mutated envelope object (opaque to PostureGate;
       the caller consumes it on success to advance its own envelope reference).
     """
+
+    @property
+    def envelope_id(self) -> str: ...
 
     @property
     def new_version(self) -> int: ...
@@ -574,6 +614,34 @@ class _PostureMutationResult(Protocol):
 
     @property
     def new_envelope(self) -> object: ...
+
+
+def _is_posture_carrying_envelope(obj: object) -> bool:
+    """Structural Protocol conformance check for the `envelope` kwarg per
+    Round 1 /redteam F-1 (MED).
+
+    `_PostureCarryingEnvelope` is a structural (PEP-544) Protocol — any
+    duck-typed object that exposes the read state + mutate operation
+    satisfies it at static-checking time, but Python's runtime never
+    enforces structural Protocols by default. A caller that hands the
+    gate a wrong-shape object (a string, a dict, an arbitrary value
+    missing the required attributes) would otherwise produce a deep
+    `AttributeError` at Step 5b's `envelope.mutate_for_posture_level(...)`
+    call site — blocking the request mid-Ledger-sequence with an opaque
+    stack trace.
+
+    The runtime check converts that into a loud `TypeError` raised at
+    the kwarg boundary BEFORE any of the 5-step sequence runs. Same
+    failure-mode class as the existing `PostureEvidence.__post_init__`
+    type validation (`rules/security.md` § Multi-Site Kwarg Plumbing).
+    """
+    return (
+        hasattr(obj, "envelope_id")
+        and hasattr(obj, "prior_version")
+        and hasattr(obj, "prior_content_hash")
+        and hasattr(obj, "prior_posture_level")
+        and callable(getattr(obj, "mutate_for_posture_level", None))
+    )
 
 
 class _PostureCarryingEnvelope(Protocol):
@@ -777,6 +845,18 @@ class PostureGate:
                 f"{type(revoke_on_demotion).__name__}"
             )
 
+        # Round 1 /redteam F-1 (MED): _PostureCarryingEnvelope is a structural
+        # Protocol; Python doesn't enforce it at runtime. A duck-typed object
+        # missing required attributes would otherwise crash mid-Step-5b with
+        # an opaque AttributeError. Reject at the kwarg boundary instead.
+        if envelope is not None and not _is_posture_carrying_envelope(envelope):
+            raise TypeError(
+                "envelope must conform to _PostureCarryingEnvelope Protocol "
+                "(must expose envelope_id, prior_version, prior_content_hash, "
+                "prior_posture_level, and a callable mutate_for_posture_level); "
+                f"got {type(envelope).__name__}"
+            )
+
         # ----- STEP 1: divergence check (T-023 defense) -----
         # Per `specs/authorship-score.md` § Stored vs recomputed: stored at
         # envelope-sign time MUST match runtime recompute; mismatch is an
@@ -928,17 +1008,51 @@ class PostureGate:
         # entries are application-signed by the delegation key (the gate's
         # entry envelope itself is device-signed by EnvoyLedger.append).
         if target > current:
-            # MyPy can't narrow `envelope` past the Step 3e raise above;
-            # the runtime invariant is: if we reach here on ratchet-up,
-            # envelope is non-None. Assert defensively (pre-condition the
-            # raise above already proved) so a future refactor that
-            # accidentally drops Step 3e fails loudly at this site rather
-            # than producing a NoneType.mutate_for_posture_level() crash
-            # downstream — per `rules/zero-tolerance.md` Rule 3a (typed
-            # delegate guards for None backing objects).
-            if envelope is None:
-                raise PostureRatchetEnvelopeMissingError(current=current, target=target)
+            # F-3 + F-002 closure (Round 1 /redteam): the defensive
+            # `if envelope is None` guard previously here was unreachable
+            # (Step 3e raises BEFORE any side-effect) AND mis-ordered
+            # (it fired AFTER Step 5a's posture_change append, so a
+            # future refactor that dropped Step 3e would have left an
+            # orphan posture_change with no paired envelope_edit). The
+            # correct structural defense is Step 3e raising before ANY
+            # Ledger write — moved earlier in this function. Removing
+            # the redundant guard here ALSO closes the orphan-
+            # posture_change risk per `rules/zero-tolerance.md` Rule 3.
+            # MyPy narrows `envelope` to non-None via the Step 3e raise.
+            assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces
             mutation = envelope.mutate_for_posture_level(target)
+            # Trust-boundary invariants per Round 1 /redteam F-2: PostureGate
+            # device-signs the envelope_edit Ledger entry by consuming the
+            # mutation fields verbatim. Without these checks, a malicious
+            # `_PostureCarryingEnvelope` adapter could inject (a) a swapped
+            # envelope_id, (b) a regressed/skipped version, OR (c) a
+            # malformed diff_hash — all forwarded straight into the
+            # device-signed entry. Validation BEFORE append closes the
+            # forge window per `rules/zero-tolerance.md` Rule 3.
+            if mutation.envelope_id != envelope.envelope_id:
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.envelope_id mismatch: "
+                        f"expected {envelope.envelope_id!r}, "
+                        f"got {mutation.envelope_id!r}"
+                    )
+                )
+            if mutation.new_version != envelope.prior_version + 1:
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.new_version must be prior_version+1: "
+                        f"prior={envelope.prior_version}, "
+                        f"new={mutation.new_version}"
+                    )
+                )
+            if not _SHA256_HEX_PATTERN.fullmatch(mutation.diff_hash):
+                raise PostureEnvelopeMutationInvariantError(
+                    reason=(
+                        f"mutation.diff_hash must match 'sha256:<64-hex>' per "
+                        f"specs/ledger.md § envelope_edit, got "
+                        f"{mutation.diff_hash!r}"
+                    )
+                )
             envelope_edit_content: dict = {
                 "schema_version": _ENVELOPE_EDIT_SCHEMA_VERSION,
                 "envelope_id": envelope.envelope_id,
