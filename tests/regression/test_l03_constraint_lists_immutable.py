@@ -199,8 +199,12 @@ class TestShardBFollowupTracking:
             ),
             (lambda: DataAccessDimension(), "field_denylist", ["ssn"]),
             (lambda: CommunicationDimension(), "recipient_allowlist", ["evil@x.com"]),
+            (lambda: CommunicationDimension(), "recipient_denylist", ["evil@x.com"]),
             (lambda: CommunicationDimension(), "domain_allowlist", ["evil.com"]),
             (lambda: CommunicationDimension(), "channel_allowlist", ["evil-channel"]),
+            # Per /redteam Round 3 R3-M1 (2026-05-24): channel_denylist added
+            # in R2-H1 — same-bug-class with the sibling list fields above.
+            (lambda: CommunicationDimension(), "channel_denylist", ["evil-channel"]),
         ],
     )
     def test_sibling_dimension_field_reassignment_rejected(

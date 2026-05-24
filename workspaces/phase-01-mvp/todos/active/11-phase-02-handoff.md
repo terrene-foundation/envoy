@@ -138,6 +138,28 @@ When Phase 02 opens (assuming Phase 01 shipped successfully):
 
 ---
 
+## T-11-XX — Connection Vault partial-write rollback on index failure
+
+**Source:** `/redteam` Round 2 R2-L1 against T-01-24 (2026-05-24); filed on
+`feat/phase-01-T-01-24-connection-vault`.
+
+**Action:** When `ConnectionVault.set()` fails on the index-update branch
+AFTER the keychain entry has been written (raising `KeychainUnavailableError`
+or `CorruptedRecordError` from `_read_index` / `_write_index`), the entry
+is orphaned from the index — `list_by_principal()` will never surface it.
+Phase 01 disposition: log + raise; caller may delete via `entry.entry_id`
+hint surfaced in the `index_update_failed_after_write` warning. Phase 02
+hardening: delete the just-written keychain entry before re-raising, so
+the failure mode is atomic-fail-closed rather than partial-orphan.
+
+**Cost:** ~0.25 session — one try/except wrap + Tier 1 regression pinning
+the rollback contract.
+
+**Phase 02 entry pre-condition:** none — this is a same-class hardening
+that can land at any Phase 02 / Phase 03 cycle.
+
+---
+
 ## Cross-references
 
 - Decisions journal: `journal/0005-DECISION-todos-opening-dispositions.md`

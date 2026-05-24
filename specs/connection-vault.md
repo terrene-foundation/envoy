@@ -39,6 +39,17 @@ Third-party credential storage (API keys, channel tokens, OAuth refresh) — OS 
 | `usage_counter`        | `int`                                                                    | Monotonic counter; observable via specs/foundation-health-heartbeat.md (anonymous aggregate only).                                |
 | `rotation_policy`      | enum (never / yearly / quarterly / monthly / on_event)                   | Policy hint for UX nudges.                                                                                                        |
 
+## Envelope-scope membership semantics
+
+`ConnectionVault.get(entry_id)` checks the entry's `entry_envelope_scope` against the caller's active session envelope before returning the credential. An envelope permits the entry's scope iff ALL four conditions hold (fail-closed):
+
+1. `scope.service_identifier` ∉ `envelope.operational.tool_denylist`, AND
+2. `scope.service_identifier` ∈ `envelope.operational.tool_allowlist`, AND
+3. If `scope.channel` is set: `scope.channel` ∉ `envelope.communication.channel_denylist`, AND
+4. If `scope.channel` is set: `scope.channel` ∈ `envelope.communication.channel_allowlist`.
+
+Explicit deny dominates implicit allow per `specs/envelope-model.md` § Algorithms (`intersect_envelopes` rule: "denylists UNION; allowlists INTERSECTION") and `rules/pact-governance.md` § "Fail-Closed Decisions" — a denylisted service or channel is refused even when re-allowed via template-import override. The membership predicate is implemented at `envoy/envelope/scope.py::envelope_contains_scope`; full envelope-intersection semantics (per `kailash.trust.pact.envelopes.intersect_envelopes`) ship in Phase 02 (deferred at T-01-10 per `envoy/envelope/compiler.py:296-308`). Phase 01 is narrow set-membership with deny-veto.
+
 ## Per-principal isolation (Phase 03)
 
 Entries keyed by `principal_genesis_id`. Cross-principal access requires Grant Moment.
@@ -62,6 +73,16 @@ Grant Moment dialogs that capture credentials use secure-text-field inputs (bypa
 | `EntryNotFoundError`                         | `entry_id` absent (deleted, never existed, or wrong principal)                 | UX surfaces "credential gone"; user re-pairs channel            | Manual                     |
 | `RotationOverdueWarn` (advisory, not raised) | `rotation_policy` cadence exceeded since `created_at`                          | UX nudge to rotate; not a hard block                            | Manual                     |
 | `UsageCounterOverflowError`                  | `usage_counter` reaches int64 ceiling (defensive guard)                        | Reset counter via re-pair; investigate cause (hostile usage?)   | Never (programming bug)    |
+| `PrincipalRequiredError`                     | Vault constructed without a valid sha256-hex `principal_genesis_id`            | Provide the principal's `genesis_id` (sha256 hex, 64 lowercase) | Never (programming bug)    |
+| `InvalidServiceIdentifierError`              | `service_identifier` fails `^[a-z0-9._-]+$` / >256 chars / empty               | Rename service per the validator contract                       | Manual after rename        |
+| `RecordSchemaVersionError`                   | Keychain record's `schema_version` differs from this build's contract          | Upgrade Envoy build OR re-pair credential at current version    | Manual after upgrade       |
+| `CorruptedRecordError`                       | Keychain record / index payload fails JSON decode / shape validation           | Re-pair credential (record was tampered or truncated)           | Manual after re-pair       |
+
+## §X Change log
+
+- 2026-05-24 — Added 4 defensive error rows (`PrincipalRequiredError`, `InvalidServiceIdentifierError`, `RecordSchemaVersionError`, `CorruptedRecordError`) per code-reviewer HIGH-1 + security-reviewer M2/M3 (T-01-24 gate-review). `PrincipalRequiredError` mirrors `envoy/trust/errors.py` contract (`rules/tenant-isolation.md` Rule 2). `InvalidServiceIdentifierError` formalises shard 14 § 7.2 disposition. `RecordSchemaVersionError` distinguishes "present-but-unparseable-version" from `EntryNotFoundError` ("absent"). `CorruptedRecordError` translates raw stdlib decode/key/value exceptions into the typed taxonomy per `rules/zero-tolerance.md` Rule 3a.
+- 2026-05-24 — Added § "Envelope-scope membership semantics" pinning the 4-condition fail-closed predicate (tool_denylist veto + tool_allowlist + channel_denylist veto + channel_allowlist) per /redteam Round 2 R2-H2. Phase 01 narrow set-membership with deny-veto; full intersection semantics deferred to Phase 02. New `channel_denylist` field added to `CommunicationDimension` per R2-H1 (distinct from `recipient_denylist` — channels are transports, recipients are entities).
+- 2026-05-24 — Strengthened citation chain in § "Envelope-scope membership semantics" per /redteam Round 4 R4-M1: the load-bearing claim "explicit deny dominates implicit allow" now cites `specs/envelope-model.md` § Algorithms (the `intersect_envelopes` lemma "denylists UNION; allowlists INTERSECTION" at line 119) AS PRIMARY rationale + `rules/pact-governance.md` § "Fail-Closed Decisions" as supporting fail-closed mindset. The pact-governance section covers fail-closed on exception; envelope-model covers deny-priority within successful evaluation — both halves needed.
 
 ## Cross-references
 

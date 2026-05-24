@@ -8,7 +8,9 @@
 
 ---
 
-## T-01-10 — Build envoy/envelope/
+## T-01-10 — Build envoy/envelope/ ✅ CLOSED 2026-05-06
+
+**Status:** SHIPPED 2026-05-06. Origin commit `b85b90f` (feat — EnvelopeCompiler + canonical bytes + 11 typed errors); errata `0cdd2b2` + `daca955` correcting commit-message count to 7 typed errors. L-03 shards A/B subsequently froze constraint tuples + EnvelopeMetadata in commits `767ded1`, `cd769ba`, `791baff`, `29571da`, `2a2a9e6`. Status-line drift backfilled 2026-05-24 alongside T-01-24 close-out.
 
 **Implements:** `specs/envelope-model.md` + `specs/sub-agent-delegation.md`
 
@@ -53,7 +55,9 @@ Per /implement workflow Step 7:
 
 ---
 
-## T-01-11 — Wire envoy/envelope/ (Tier 2)
+## T-01-11 — Wire envoy/envelope/ (Tier 2) ✅ CLOSED 2026-05-06
+
+**Status:** SHIPPED 2026-05-06 as combined Tier 2 end-to-end work alongside T-01-16/21; commit `7ee6461` (feat) + fixes in `0221e07`. Tests live at `tests/tier2/test_envelope_*` (envelope-hash mint-time cached, posture-gate wiring exercises EnvelopeCompiler end-to-end). Status-line drift backfilled 2026-05-24.
 
 **Implements:** `rules/orphan-detection.md` Rule 1 (every facade has a hot-path call site within 5 commits).
 
@@ -67,7 +71,9 @@ Per /implement workflow Step 7:
 
 ---
 
-## T-01-12 — Build envoy/trust/store + types
+## T-01-12 — Build envoy/trust/store + types ✅ CLOSED 2026-05-06
+
+**Status:** SHIPPED 2026-05-06. Commit `da03637` (feat — TrustStoreAdapter (async) + PrincipalRequiredError + 3-dep init). Subsequent T-01-15 algorithm_id wire-form translator (`f690cb0`) consumed by store. Status-line drift backfilled 2026-05-24.
 
 **Implements:** `specs/trust-vault.md` + `specs/trust-lineage.md`
 
@@ -533,7 +539,9 @@ inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols
 
 ---
 
-## T-01-20 — Build envoy/ledger/segment_boundary 4-key serializer (R3-M-02)
+## T-01-20 — Build envoy/ledger/segment_boundary 4-key serializer (R3-M-02) ✅ CLOSED 2026-05-06
+
+**Status:** SHIPPED 2026-05-06 alongside T-01-19 export bundle work; commit `08e7cdb` (feat) + fixes in `ff78935`. 4-key shape `{"sig": "ed25519", "hash": "sha256", "shamir": "slip39", "canonical_json": "jcs-rfc8785"}` lives at `envoy/ledger/export.py`. Status-line drift backfilled 2026-05-24.
 
 > **SUBSUMED by T-01-19** (see Verification — T-01-19 above). The 4-key
 > segment-boundary algorithm_identifier enforcement landed inside
@@ -561,7 +569,9 @@ inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols
 
 ---
 
-## T-01-21 — Wire envoy/ledger/ (Tier 2)
+## T-01-21 — Wire envoy/ledger/ (Tier 2) ✅ CLOSED 2026-05-06
+
+**Status:** SHIPPED 2026-05-06 as combined Tier 2 work alongside T-01-16; commit `7ee6461` (feat — Tier 2 end-to-end pipeline integration) + fixes in `0221e07`. Tests live at `tests/tier2/test_envoy_ledger_wiring.py`. Status-line drift backfilled 2026-05-24.
 
 **Action:** Per `02-plans/03-package-skeleton.md` § 3 Tier 2 list — 11 wiring tests covering facade + crypto round-trip + atomic-append-under-failure + head-commitment-monotonic + phase-A/B-intent-id-link + canonical-JSON-byte-identity + export-round-trip + classification-policy-redaction.
 
@@ -616,22 +626,52 @@ inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols
 
 ---
 
-## T-01-24 — Build envoy/connection_vault/ (keyring + per-principal isolation)
+## T-01-24 — Build envoy/connection_vault/ (keyring + per-principal isolation) ✅ CLOSED 2026-05-25 (/redteam convergence MET)
 
-**Implements:** `specs/connection-vault.md`
+**Status:** SHIPPED + CONVERGED on `feat/phase-01-T-01-24-connection-vault`. Gate-review sweep + 6 /redteam rounds; convergence MET (Round 5 + Round 6 both CLEAN at HEAD `f3d73d0`). Durable convergence receipt: `journal/0027-DISCOVERY-t-01-24-connection-vault-convergence.md` (round-by-round trajectory + commit trail per `rules/verify-resource-existence.md` MUST-4). Every NOT-CLEAN round was same-bug-class fix-immediately per `rules/autonomous-execution.md` MUST Rule 4.
+
+| Round | HEAD      | Verdict   | Closure SHA     |
+| ----- | --------- | --------- | --------------- |
+| gate  | `1e3c0df` | NOT CLEAN | `b334dce`       |
+| R1    | `b334dce` | NOT CLEAN | `1095a32`       |
+| R2    | `1095a32` | NOT CLEAN | `4f7ad5d`       |
+| R3    | `4f7ad5d` | NOT CLEAN | `6425f81`       |
+| R4    | `6425f81` | NOT CLEAN | `f3d73d0`       |
+| R5    | `f3d73d0` | CLEAN     | (1st of 2)      |
+| R6    | `f3d73d0` | CLEAN     | convergence MET |
+
+- Origin `1e3c0df` — adapter + schema + errors + env_import + envelope scope-membership predicate + 50 Tier 1 tests.
+- Gate sweep `b334dce` — sec M2 (`CorruptedRecordError` typed raise), M3 (`validate_principal_genesis_id` sha256-hex), L3 (env_import skip-reason granularity); rev HIGH-1 (spec Error taxonomy + change-log), MED-1 (`RecordSchemaVersionError`), MED-4 (get/delete/list observability), MED-5 (`ActiveEnvelope` canonical home).
+- R1 sweep `1095a32` — F2/F5 (validator-leak + scope-payload type checks → `CorruptedRecordError`), F4 (denylist veto), F1/F7 (symmetric error logs + coverage), F6 (`__all__` consistency).
+- R2 sweep `4f7ad5d` — H1 (`channel_denylist` field, distinct from `recipient_denylist`), H2 (spec § Envelope-scope membership semantics), N1/N2.
+- R3 sweep `6425f81` — H1 (`channel_denylist` in `specs/envelope-model.md`), H2 (phantom-citation fix), M1 (immutability parametrize + adjacent `recipient_denylist`).
+- R4 sweep `f3d73d0` — H1 (phantom-citation chain swept across source + test comments), M1 (citation-load strengthened to `specs/envelope-model.md § Algorithms`).
+
+Final surface (`envoy.connection_vault.__all__`):
+
+- Adapter: `ConnectionVault`, `KEYRING_SERVICE_NAMESPACE`
+- Schema: `CredentialEntry`, `CredentialType`, `RotationPolicy`, `USAGE_COUNTER_MAX`, `validate_principal_genesis_id`, `validate_service_identifier`
+- `.env` first-run import: `EnvCredentialSpec`, `ImportResult`, `import_credentials_from_env`
+- 10 typed errors: `ConnectionVaultError` + `CorruptedRecordError`, `CrossPrincipalAccessRefusedError`, `EntryExpiredError`, `EntryNotFoundError`, `EnvelopeScopeMismatchError`, `InvalidServiceIdentifierError`, `KeychainUnavailableError`, `PrincipalRequiredError`, `RecordSchemaVersionError`, `UsageCounterOverflowError`
+
+Tier 1 coverage: 79 tests across `tests/tier1/test_connection_vault_adapter.py` (69 cases — 11-field schema round-trip; principal isolation; envelope-scope enforcement; lifecycle; service-identifier validation; keychain availability; delete + EntryNotFoundError; `.env` first-run import; secret isolation; principal sha256-hex validation; corrupted-record typed raises; schema-version-vs-not-found distinction; structured-log observability; env-import skip-reason granularity) + `tests/tier1/test_envelope_scope_predicate.py` (10 cases — truth-table coverage of `envelope_contains_scope` + `EnvelopeScopeRef` dataclass contract). Full suite 724/724 pass (was 637 pre-T-01-24).
+
+**Implements:** `specs/connection-vault.md` (full Phase 01 surface — 11-field schema, 11-row Error taxonomy after spec extension, `.env` first-run import per § "Per-entry schema" docstring).
 
 **Source:** Build seq § Wave 1 #envoy.connection_vault; shard `01-analysis/14-connection-vault-implementation.md` § 3.
 
-**Steps:**
+**Steps (all delivered):**
 
-1. Adapter + 11-field schema — `envoy/connection_vault/adapter.py`; serializes 11 fields into `keyring.set_password()` 3-tuple via canonical-JSON.
-2. Per-principal isolation + envelope-scope enforcement — `principal_genesis_id` keyed; `EnvelopeScopeMismatchError` on get without active scope.
-3. `expires_at` + `usage_counter` enforcement — fail-closed defaults; 7 typed errors.
-4. `.env` first-run import path — Boundary Conversation reads `.env` and writes Vault; post-onboarding `.env` no longer source of truth.
+1. Adapter + 11-field schema — `envoy/connection_vault/adapter.py`; serializes 11 fields into `keyring.set_password()` 3-tuple via canonical-JSON (sort_keys=True).
+2. Per-principal isolation + envelope-scope enforcement — `principal_genesis_id` keyed; `EnvelopeScopeMismatchError` on get without active scope; `CrossPrincipalAccessRefusedError` on cross-principal get/delete; `envoy.envelope.envelope_contains_scope` set-membership predicate (full intersection deferred per `envoy/envelope/compiler.py:296-308`).
+3. `expires_at` + `usage_counter` enforcement — fail-closed defaults; 10 typed errors (7 spec + 4 defensive added per `specs-authority.md` Rule 6 spec extension).
+4. `.env` first-run import path — `envoy.connection_vault.import_credentials_from_env` accepts `EnvCredentialSpec` tuples; returns `ImportResult` distinguishing `imported` / `skipped_unset` / `skipped_empty_after_strip` per security-reviewer L3.
 
-**Capacity check:** ~280 LOC; 5 invariants (11-field schema; principal_id key; envelope-scope match; lifecycle enforcement; .env one-time import); 2 call-graph hops. Within budget.
+**Capacity check (actual vs estimate):** Estimate ~280 LOC; **actual ~780 LOC of production code** (adapter 510 + schema 145 + env_import 113 + errors 95 + envelope `scope.py` extension + 2 lines in `envelope/types.py`) + ~1,070 LOC of tests. Mis-estimate flagged per code-reviewer MED-2 — the overage stems from canonical-JSON ser/de discipline, the explicit cross-platform-portable `__index__:{principal}` enumeration helper (`keyring` lacks portable enumerate-by-service), and fail-closed guards on every public method. 5 invariants (11-field schema; principal_id sha256-hex key; envelope-scope match; lifecycle enforcement; .env one-time import) + 1 added during gate review (typed-error taxonomy for malformed-payload class). 2 call-graph hops on hot path. Within shard budget despite LOC overage — invariant count + call-graph depth + describable-in-3-sentences hold.
 
-**Estimate:** 1 session.
+**Blocks unlocked:** T-01-22 (model router routes secrets to Connection Vault per its line 601 "NEVER `.env` plaintext"), T-02-40 (Boundary Conversation runtime writes credentials on onboarding per shard 14 § 5.2), all 8 channel adapters in Wave 4 (T-04-\* — credential read-on-init per shard 14 § 5.1).
+
+**Estimate:** 1 session. **Actual:** 1 session including gate-review sweep.
 
 ---
 

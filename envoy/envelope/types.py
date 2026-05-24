@@ -223,6 +223,12 @@ class CommunicationDimension:
     recipient_denylist: list[str] = field(default_factory=list)
     domain_allowlist: list[str] = field(default_factory=list)
     channel_allowlist: list[str] = field(default_factory=list)
+    # Per /redteam R2-H1 (2026-05-24): `channel_denylist` is the deny-veto
+    # twin of `channel_allowlist`. Distinct from `recipient_denylist` —
+    # recipients are entities communicated WITH; channels are the transport.
+    # Consumed by `envoy.envelope.envelope_contains_scope` so a denylisted
+    # channel cannot be reached even when allow-listed via template override.
+    channel_denylist: list[str] = field(default_factory=list)
     content_rules: list[dict[str, Any]] = field(default_factory=list)
     authored_constraints: tuple[AuthoredConstraint, ...] = ()
     imported_constraints: tuple[ImportedConstraint, ...] = ()
@@ -289,6 +295,38 @@ class SemanticChecks:
         }
     )
     unavailability_policy: str = "fail-closed"
+
+
+# ---------------------------------------------------------------------------
+# Envelope-scope reference (per specs/envelope-model.md § Operational +
+# Communication dimensions; consumed by `envoy.connection_vault` per
+# shard 14 § 3.3 step 3 — "Envelope-scope enforcement").
+#
+# Phase 01 minimum: narrow operational-service + communication-channel
+# tuple. Phase 02 full envelope intersection lives in
+# `kailash.trust.pact.envelopes.intersect_envelopes` (deferred at T-01-10
+# per envoy/envelope/compiler.py line 296-308). The membership predicate
+# is `envoy.envelope.scope.envelope_contains_scope()` — set-membership,
+# not the full intersection algorithm.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeScopeRef:
+    """Narrow scope tuple for credential / tool / channel use.
+
+    Per `specs/connection-vault.md` § Per-entry schema row "entry_envelope_scope".
+    Phase 01 minimum: a credential is reachable only when the active envelope
+    permits BOTH (a) the service via `operational.tool_allowlist` AND (b) the
+    channel via `communication.channel_allowlist` (when `channel` is set).
+
+    Phase 02 promotion: when `kailash.trust.pact.envelopes.intersect_envelopes`
+    ships, this dataclass moves to richer semantics; the current narrow shape
+    is forward-compatible.
+    """
+
+    service_identifier: str
+    channel: str | None = None
 
 
 # ---------------------------------------------------------------------------
