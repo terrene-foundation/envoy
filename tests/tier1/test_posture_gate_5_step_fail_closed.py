@@ -44,6 +44,7 @@ from envoy.authorship.posture_gate import (
     PostureLevel,
     PostureMode,
     PostureNoopError,
+    PostureRatchetEnvelopeMissingError,
     _required_authorship,
 )
 from envoy.authorship.score import AuthorshipScoreDivergenceError
@@ -114,6 +115,48 @@ class _FakeBET12Sink:
         if self.raise_on_write is not None:
             raise self.raise_on_write
         self.writes.append(payload)
+
+
+@dataclass
+class _FakePostureMutationResult:
+    """Mirror of `envoy.authorship.posture_gate._PostureMutationResult` Protocol.
+
+    Tier 1 fakes don't import the Protocol directly because Protocols are
+    structural — any same-shaped object satisfies them. Fields match the
+    Tier 2 adapter's `_PostureMutationOutcome` for cross-tier consistency.
+    """
+
+    new_version: int
+    new_content_hash: str
+    diff_hash: str
+    new_posture_level: str
+    new_envelope: object
+
+
+@dataclass
+class _FakePostureCarryingEnvelope:
+    """In-memory envelope fake satisfying the `_PostureCarryingEnvelope` Protocol.
+
+    Records every `mutate_for_posture_level()` call so tests can assert
+    the gate consumed the envelope exactly once on ratchet-up and zero
+    times on ratchet-down / noop / Step-1-divergence paths.
+    """
+
+    envelope_id: str = "sha256:fake-envelope-0001"
+    prior_version: int = 1
+    prior_content_hash: str = "sha256:fake-prior-content"
+    prior_posture_level: str = "PSEUDO"
+    mutate_calls: list[PostureLevel] = field(default_factory=list)
+
+    def mutate_for_posture_level(self, new_level: PostureLevel) -> _FakePostureMutationResult:
+        self.mutate_calls.append(new_level)
+        return _FakePostureMutationResult(
+            new_version=self.prior_version + 1,
+            new_content_hash=f"sha256:fake-new-content-{new_level.name}",
+            diff_hash=f"sha256:fake-diff-{new_level.name}",
+            new_posture_level=new_level.name,
+            new_envelope=object(),
+        )
 
 
 def _make_gate(
@@ -495,10 +538,14 @@ class TestStep1DivergenceCheck:
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=ev,
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert result.new_level is PostureLevel.SUPERVISED
-        assert len(led.appends) == 1
+        # T-02-33: ratchet-up now emits BOTH posture_change AND envelope_edit.
+        assert len(led.appends) == 2
+        assert led.appends[0]["entry_type"] == "posture_change"
+        assert led.appends[1]["entry_type"] == "envelope_edit"
 
 
 # ---------------------------------------------------------------------------
@@ -575,10 +622,12 @@ class TestStep3aEnterpriseAutonomousForbidden:
                 current=PostureLevel.DELEGATING,
                 target=PostureLevel.AUTONOMOUS,
                 evidence=_evidence(recomputed=5, stored=5, mode=PostureMode.PERSONAL),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert result.new_level is PostureLevel.AUTONOMOUS
-        assert len(led.appends) == 1
+        # T-02-33: ratchet-up now emits paired posture_change + envelope_edit.
+        assert len(led.appends) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -648,9 +697,11 @@ class TestStep3cGenesisGrantMissing:
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1, genesis_signed_grant=True),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
-        assert len(led.appends) == 1
+        # T-02-33: ratchet-up emits paired posture_change + envelope_edit.
+        assert len(led.appends) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -723,10 +774,12 @@ class TestStep3dAuthorshipThreshold:
                 current=PostureLevel.PSEUDO,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(recomputed=0, stored=0),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert result.new_level is PostureLevel.TOOL
-        assert len(led.appends) == 1
+        # T-02-33: ratchet-up emits paired posture_change + envelope_edit.
+        assert len(led.appends) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +888,7 @@ class TestStep4CascadeRevoke:
                 evidence=_evidence(recomputed=1, stored=1),
                 # Caller passing a list is irrelevant on promotion path.
                 revoke_on_demotion=("agent-X",),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert rev.calls == []
@@ -1014,14 +1068,23 @@ class TestStep5LedgerEntrySchema:
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
                 trigger="weekly_review",
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
+        # T-02-33: result.ledger_entry_id is the posture_change entry id
+        # (Step 5a). The envelope_edit entry (Step 5b) lands second; the
+        # _FakeLedger returns the same `next_entry_id` for both appends in
+        # this test, so result.ledger_entry_id equals next_entry_id.
         assert result.ledger_entry_id == led.next_entry_id
-        assert len(led.appends) == 1
-        call = led.appends[0]
-        assert call["entry_type"] == "posture_change"
-        assert call["intent_id"] is None  # Phase 01 single-phase
-        assert call["content_trust_level"] == "system"
+        # T-02-33: ratchet-up emits paired posture_change + envelope_edit.
+        assert len(led.appends) == 2
+        posture_call = led.appends[0]
+        assert posture_call["entry_type"] == "posture_change"
+        assert posture_call["intent_id"] is None  # Phase 01 single-phase
+        assert posture_call["content_trust_level"] == "system"
+        envelope_call = led.appends[1]
+        assert envelope_call["entry_type"] == "envelope_edit"
+        assert envelope_call["content_trust_level"] == "system"
 
     def test_ledger_content_matches_spec_schema(self):
         # Exact-key check against spec lines 243-253.
@@ -1033,8 +1096,10 @@ class TestStep5LedgerEntrySchema:
                 target=PostureLevel.DELEGATING,
                 evidence=_evidence(recomputed=3, stored=3),
                 trigger="authorship_threshold",
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
+        # Step 5a posture_change content per spec lines 243-253
         content = led.appends[0]["content"]
         assert set(content.keys()) == {
             "schema_version",
@@ -1052,6 +1117,21 @@ class TestStep5LedgerEntrySchema:
         assert content["trigger"] == "authorship_threshold"
         assert content["evidence_ref"] is None
         assert content["signed_by"] == "genesis_key"
+        # T-02-33: Step 5b envelope_edit content per spec lines 107-114
+        env_content = led.appends[1]["content"]
+        assert set(env_content.keys()) == {
+            "schema_version",
+            "envelope_id",
+            "prior_version",
+            "new_version",
+            "diff_hash",
+            "rollback_grace_window_seconds",
+            "signed_by",
+        }
+        assert env_content["schema_version"] == "1.0"
+        assert env_content["new_version"] == env_content["prior_version"] + 1
+        assert env_content["signed_by"] == "delegation_key"
+        assert env_content["diff_hash"].startswith("sha256:")
 
     def test_demotion_emits_posture_change_with_correct_direction(self):
         gate, led, _rev, _sink = _make_gate()
@@ -1210,11 +1290,14 @@ class TestStep5PlusBET12Emission:
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
                 days_at_current_posture=4.5,
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
-        # Ledger AND emitter both fire; ledger fires first (Step 5),
-        # emitter fires second (Step 5+).
-        assert len(led.appends) == 1
+        # T-02-33: Ledger fires Step 5a (posture_change) + Step 5b
+        # (envelope_edit) in order; emitter fires Step 5+.
+        assert len(led.appends) == 2
+        assert led.appends[0]["entry_type"] == "posture_change"
+        assert led.appends[1]["entry_type"] == "envelope_edit"
         assert len(sink.writes) == 1
         payload = sink.writes[0]
         assert payload.bet_id == "BET-12"
@@ -1271,6 +1354,7 @@ class TestStep5PlusBET12Emission:
                 current=PostureLevel.PSEUDO,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(recomputed=0, stored=0),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert len(sink.writes) == 1
@@ -1290,6 +1374,7 @@ class TestStep5PlusBET12Emission:
                 current=PostureLevel.SUPERVISED,
                 target=PostureLevel.DELEGATING,
                 evidence=_evidence(recomputed=3, stored=3),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert sink.writes[0].authored_count_at_transition == 3
@@ -1306,6 +1391,7 @@ class TestStep5PlusBET12Emission:
                 current=PostureLevel.PSEUDO,
                 target=PostureLevel.TOOL,
                 evidence=_evidence(recomputed=0, stored=0),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert sink.writes[0].days_at_current_posture == 0.0
@@ -1326,10 +1412,14 @@ class TestPostureChangeResult:
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         assert isinstance(result, PostureChangeResult)
         assert result.new_level is PostureLevel.SUPERVISED
+        # T-02-33: result.ledger_entry_id is the posture_change entry id
+        # (Step 5a). The _FakeLedger returns next_entry_id for every
+        # append; both Step 5a and Step 5b appends see the same id here.
         assert result.ledger_entry_id == "sha256:specific-id"
 
     def test_result_is_frozen(self):
@@ -1342,6 +1432,7 @@ class TestPostureChangeResult:
                 current=PostureLevel.TOOL,
                 target=PostureLevel.SUPERVISED,
                 evidence=_evidence(recomputed=1, stored=1),
+                envelope=_FakePostureCarryingEnvelope(),
             )
         )
         with pytest.raises(FrozenInstanceError):
@@ -1361,6 +1452,7 @@ class TestErrorHierarchy:
             PostureGenesisGrantMissingError,
             PostureCoolingOffActiveError,
             PostureEnterpriseAutonomousForbidden,
+            PostureRatchetEnvelopeMissingError,  # T-02-33
         ):
             assert issubclass(cls, PostureGateError)
 
@@ -1379,6 +1471,11 @@ class TestErrorHierarchy:
             ),
             PostureCoolingOffActiveError(current=PostureLevel.TOOL, target=PostureLevel.SUPERVISED),
             PostureEnterpriseAutonomousForbidden(),
+            # T-02-33 — PostureRatchetEnvelopeMissingError carries the same
+            # plain-language contract.
+            PostureRatchetEnvelopeMissingError(
+                current=PostureLevel.PSEUDO, target=PostureLevel.TOOL
+            ),
         ]
         for err in errors:
             assert hasattr(err, "user_message")
@@ -1387,3 +1484,106 @@ class TestErrorHierarchy:
             # No SLIP-0039 / cryptographic jargon should leak to user surfaces.
             assert "SLIP" not in err.user_message
             assert "Argon2" not in err.user_message
+
+
+# ---------------------------------------------------------------------------
+# Step 3e: envelope-present check on ratchet-up (T-02-33)
+# ---------------------------------------------------------------------------
+
+
+class TestStep3eEnvelopeMissingOnRatchetUp:
+    """Per `journal/0021-DECISION-t-02-33-envelope-edit-pairing-design.md` +
+    `specs/posture-ladder.md` § Ratchet-up #3: ratchet-up MUST emit a
+    paired envelope_edit; calling without `envelope=` raises the typed
+    error and writes ZERO Ledger entries (no orphan posture_change)."""
+
+    def test_ratchet_up_without_envelope_raises(self):
+        gate, led, _rev, sink = _make_gate()
+        with pytest.raises(PostureRatchetEnvelopeMissingError) as exc:
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.PSEUDO,
+                    target=PostureLevel.TOOL,
+                    evidence=_evidence(recomputed=0, stored=0),
+                    # envelope omitted — ratchet-up MUST raise
+                )
+            )
+        assert exc.value.current is PostureLevel.PSEUDO
+        assert exc.value.target is PostureLevel.TOOL
+        # Fail-closed: zero Ledger appends, zero BET-12 emissions.
+        assert led.appends == []
+        assert sink.writes == []
+
+    def test_ratchet_up_with_envelope_none_raises(self):
+        # Same as above but explicitly passing envelope=None — exercises
+        # the kwarg-was-passed-but-None path distinctly from kwarg-omitted.
+        gate, led, _rev, sink = _make_gate()
+        with pytest.raises(PostureRatchetEnvelopeMissingError):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.TOOL,
+                    target=PostureLevel.SUPERVISED,
+                    evidence=_evidence(recomputed=1, stored=1),
+                    envelope=None,
+                )
+            )
+        assert led.appends == []
+        assert sink.writes == []
+
+    def test_ratchet_down_with_envelope_none_succeeds(self):
+        # Demotion path: envelope=None is legitimate per spec § Ratchet-
+        # down lines 47-52. The gate skips Step 5b cleanly.
+        gate, led, _rev, sink = _make_gate()
+        result = _run(
+            gate.request_transition(
+                principal_id="agent-test",
+                current=PostureLevel.DELEGATING,
+                target=PostureLevel.TOOL,
+                evidence=_evidence(recomputed=5, stored=5),
+                envelope=None,
+            )
+        )
+        assert result.new_level is PostureLevel.TOOL
+        # Exactly one Ledger entry — posture_change. No envelope_edit.
+        assert len(led.appends) == 1
+        assert led.appends[0]["entry_type"] == "posture_change"
+        # BET-12 emits on every accepted transition (demotion included).
+        assert len(sink.writes) == 1
+
+    def test_ratchet_up_consumes_envelope_exactly_once(self):
+        # The gate calls mutate_for_posture_level() ONCE per accepted
+        # ratchet-up. Pin the count so a future refactor that
+        # accidentally double-mutates fails loudly.
+        gate, _led, _rev, _sink = _make_gate()
+        envelope = _FakePostureCarryingEnvelope()
+        _run(
+            gate.request_transition(
+                principal_id="agent-test",
+                current=PostureLevel.TOOL,
+                target=PostureLevel.SUPERVISED,
+                evidence=_evidence(recomputed=1, stored=1),
+                envelope=envelope,
+            )
+        )
+        assert envelope.mutate_calls == [PostureLevel.SUPERVISED]
+
+    def test_failed_ratchet_up_does_not_consume_envelope(self):
+        # Step 1-3 failure on a ratchet-up MUST short-circuit BEFORE
+        # mutate_for_posture_level() is called — no envelope mutation
+        # on a rejected transition.
+        gate, _led, _rev, _sink = _make_gate()
+        envelope = _FakePostureCarryingEnvelope()
+        with pytest.raises(PostureAuthorshipInsufficientError):
+            _run(
+                gate.request_transition(
+                    principal_id="agent-test",
+                    current=PostureLevel.SUPERVISED,
+                    target=PostureLevel.DELEGATING,
+                    evidence=_evidence(recomputed=2, stored=2),  # below N=3
+                    envelope=envelope,
+                )
+            )
+        # Envelope untouched.
+        assert envelope.mutate_calls == []

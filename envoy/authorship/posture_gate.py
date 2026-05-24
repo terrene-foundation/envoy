@@ -31,16 +31,20 @@ Phase 01 narrow scope:
 - Shared Household composition per `specs/posture-ladder.md` § Shared Household
   semantics is OUT OF SCOPE — that's `effective_posture_for_composition` (a
   separate function, Phase 03+).
-- **`envelope_edit` Ledger entry pairing deferred to T-02-33 (Tier 2 wiring).**
+- **`envelope_edit` Ledger entry pairing shipped at T-02-33 (Tier 2 wiring).**
   Spec line 41 mandates that ratchet-up writes BOTH a `posture_change` entry
   AND an `envelope_edit` entry (because new posture is part of the envelope
-  schema). Phase 01 PostureGate emits ONLY the `posture_change` entry —
-  `envelope_edit` requires the EnvoyLedger envelope-version chain to be wired
-  against a real `EnvelopeCompiler` consumer, which lands at T-02-33. The
-  deferral is documented at `specs/posture-ladder.md` § Out of scope (this
-  phase) per `rules/spec-accuracy.md` Exception 1 + `rules/specs-authority.md`
-  Rule 6 (deviation acknowledgment), and at `journal/0020-DECISION-envelope-
-  edit-deferred-to-tier-2.md`.
+  schema). T-02-33 closes the T-02-31 deferral via the `envelope` kwarg on
+  `request_transition()` (typed as the `_PostureCarryingEnvelope` Protocol
+  below) and Step 5b emission. Per `journal/0021-DECISION-t-02-33-envelope-
+  edit-pairing-design.md`: kwarg-on-call (not constructor DI) — envelope is
+  per-transition data, not gate-owned state. Ratchet-up with `envelope=None`
+  raises `PostureRatchetEnvelopeMissingError` (no silent fallback per
+  `rules/zero-tolerance.md` Rule 3). Pairing is asymmetric per spec § Ratchet-
+  down lines 47-52: demotion emits ONLY `posture_change`, NOT `envelope_edit`.
+  Original deferral journal: `journal/0020-DECISION-envelope-edit-deferred-
+  to-tier-2.md`. Closure journal: `journal/0021-DECISION-t-02-33-envelope-
+  edit-pairing-design.md`.
 
 Rule mapping:
 - `rules/zero-tolerance.md` Rule 2 — every typed error has a real raise site;
@@ -144,6 +148,7 @@ __all__ = [
     "PostureLevel",
     "PostureMode",
     "PostureNoopError",
+    "PostureRatchetEnvelopeMissingError",
 ]
 
 
@@ -200,6 +205,20 @@ _VALID_TRIGGERS: frozenset[str] = frozenset(
 # Spec posture_change entry schema_version. Bump when the spec wire shape
 # changes (parallel to `HaltedByRollbackRecord._SCHEMA_VERSION`).
 _POSTURE_CHANGE_SCHEMA_VERSION = "1.0"
+
+
+# Spec envelope_edit entry schema_version per `specs/ledger.md` § envelope_edit
+# (lines 107-114). Wire shape: {type, schema_version, envelope_id, prior_version,
+# new_version, diff_hash, rollback_grace_window_seconds, signed_by}.
+_ENVELOPE_EDIT_SCHEMA_VERSION = "1.0"
+
+
+# Default rollback grace window per `specs/envelope-model.md` § Error taxonomy
+# § HaltedByRollbackError — the window during which an envelope_edit can be
+# rolled back before downstream consumers commit to the new version. Phase 01
+# narrow scope: fixed at 24 hours (86400 seconds). Phase 03 Weekly Posture
+# Review ritual may override per-transition.
+_DEFAULT_ROLLBACK_GRACE_WINDOW_SECONDS = 86400
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +380,37 @@ class PostureAuthorshipInsufficientError(PostureGateError):
         )
 
 
+class PostureRatchetEnvelopeMissingError(PostureGateError):
+    """Ratchet-up requested without an envelope to bump.
+
+    Per `specs/posture-ladder.md` § Ratchet-up requirement #3, every
+    ratchet-up MUST emit a paired `envelope_edit` Ledger entry binding
+    the new posture to a specific envelope version bump. A caller that
+    invokes `request_transition()` with `target > current` and
+    `envelope=None` is structurally incomplete — the gate cannot mint
+    the `envelope_edit` entry. Per `rules/zero-tolerance.md` Rule 3
+    (no silent fallbacks), the gate raises this typed error rather than
+    silently skipping Step 5b.
+
+    Ratchet-down paths legitimately pass `envelope=None` — demotion
+    emits ONLY `posture_change` per spec § Ratchet-down lines 47-52.
+    """
+
+    def __init__(self, *, current: PostureLevel, target: PostureLevel) -> None:
+        self.current = current
+        self.target = target
+        self.user_message = (
+            f"Moving from {current.name} to {target.name} needs the current "
+            "envelope to bind the new posture to. The session that triggered "
+            "this transition didn't supply one — please re-open Weekly Posture "
+            "Review and try again from there."
+        )
+        super().__init__(
+            f"PostureRatchetEnvelopeMissingError: {current.name}->{target.name} "
+            "ratchet-up requires envelope=... (spec line 41 + T-02-33)"
+        )
+
+
 class PostureGenesisGrantMissingError(PostureGateError):
     """Ratchet-up ceremony not co-signed by Genesis key."""
 
@@ -495,6 +545,81 @@ class _RevokeHook(Protocol):
     ) -> object: ...
 
 
+class _PostureMutationResult(Protocol):
+    """The structural shape `_PostureCarryingEnvelope.mutate_for_posture_level()`
+    returns. Carried as a Protocol so any same-shaped value type satisfies it
+    (real `EnvelopeConfig`-wrapping adapters; Tier 1 frozen-dataclass fakes).
+
+    Per `specs/ledger.md` § envelope_edit (lines 107-114):
+    - `new_version` — the envelope_version after the bump (= prior_version + 1).
+    - `new_content_hash` — sha256 over the new canonical_bytes.
+    - `diff_hash` — sha256 binding prior canonical bytes to new canonical
+      bytes; the field name is per spec.
+    - `new_posture_level` — the canonical PostureLevel enum NAME (wire form).
+    - `new_envelope` — the mutated envelope object (opaque to PostureGate;
+      the caller consumes it on success to advance its own envelope reference).
+    """
+
+    @property
+    def new_version(self) -> int: ...
+
+    @property
+    def new_content_hash(self) -> str: ...
+
+    @property
+    def diff_hash(self) -> str: ...
+
+    @property
+    def new_posture_level(self) -> str: ...
+
+    @property
+    def new_envelope(self) -> object: ...
+
+
+class _PostureCarryingEnvelope(Protocol):
+    """Minimum envelope surface PostureGate consumes on ratchet-up.
+
+    Per `journal/0021-DECISION-t-02-33-envelope-edit-pairing-design.md`, the
+    Protocol is narrow so any envelope implementation (real `EnvelopeConfig`
+    + adapter, Tier-1 frozen-dataclass fake, Tier-2 wrapper around the real
+    `EnvelopeCompiler` output) satisfies it without inheritance.
+
+    Read state — what the gate consumes BEFORE the mutation:
+    - `envelope_id` — uuid; persisted in the envelope_edit entry.
+    - `prior_version` — int; the version BEFORE the bump.
+    - `prior_content_hash` — sha256 hex; used in audit chain reconstruction.
+    - `prior_posture_level` — canonical enum NAME ("PSEUDO" / etc.); pinned
+      so a future audit can verify the transition matches the envelope-side
+      state at the moment of mutation.
+
+    Mutate operation — what the gate calls ONCE per accepted ratchet-up:
+    - `mutate_for_posture_level(new_level)` returns a `_PostureMutationResult`
+      with the new version, new content hash, diff hash, and new envelope.
+      The gate consumes the result's fields verbatim for the envelope_edit
+      entry; it does NOT introspect the new envelope itself.
+
+    Per `rules/zero-tolerance.md` Rule 2 (no stubs): the Protocol is
+    structural, so a fake `mutate_for_posture_level` returning bogus values
+    would deceive PostureGate — but Tier 2 wiring tests (T-02-33) verify
+    the real adapter against real canonical-bytes pipeline, closing the
+    deceit window structurally.
+    """
+
+    @property
+    def envelope_id(self) -> str: ...
+
+    @property
+    def prior_version(self) -> int: ...
+
+    @property
+    def prior_content_hash(self) -> str: ...
+
+    @property
+    def prior_posture_level(self) -> str: ...
+
+    def mutate_for_posture_level(self, new_level: "PostureLevel") -> _PostureMutationResult: ...
+
+
 # ---------------------------------------------------------------------------
 # PostureGate — the 5-step gate
 # ---------------------------------------------------------------------------
@@ -506,21 +631,31 @@ class PostureGate:
     Per `specs/posture-ladder.md` § Algorithm + the 5 invariants in
     `02-wave-2-...md` § T-02-31. The gate sequence is:
 
-        Step 1 → divergence check (T-023 defense)
-        Step 2 → noop check (target == current)
-        Step 3 → ratchet-up gates [promotion only]
-                 3a. enterprise AUTONOMOUS forbidden
-                 3b. cooling-off active
-                 3c. genesis-signed grant
-                 3d. authorship-score threshold
-        Step 4 → cascade-revoke hook [demotion only]
-        Step 5 → signed posture_change Ledger entry
+        Step 1  → divergence check (T-023 defense)
+        Step 2  → noop check (target == current)
+        Step 3  → ratchet-up gates [promotion only]
+                  3a. enterprise AUTONOMOUS forbidden
+                  3b. cooling-off active
+                  3c. genesis-signed grant
+                  3d. authorship-score threshold
+                  3e. envelope present (T-02-33) — typed error
+                      `PostureRatchetEnvelopeMissingError` if absent
+        Step 4  → cascade-revoke hook [demotion only]
+        Step 5a → signed posture_change Ledger entry
+        Step 5b → signed envelope_edit Ledger entry [ratchet-up only,
+                  T-02-33] — paired with Step 5a via append order
+        Step 5+ → BET-12 cadence emission (T-02-32)
 
     Each step fails closed: the first error short-circuits the rest. The
-    Ledger entry only writes when all prior steps passed. This is the
+    Ledger entries only write when all prior steps passed. This is the
     posture-side defense in depth — `rules/zero-tolerance.md` Rule 2 (no
     fake-classification gates, every accepted dispatch value has a real
     branch) AND Rule 3 (no silent fallbacks).
+
+    Pairing asymmetry: Step 5b runs on ratchet-up ONLY. Per spec § Ratchet-
+    down lines 47-52, demotion emits ONLY `posture_change`. The asymmetry
+    is intentional — envelope_edit binds new posture to a new envelope
+    version; demotion doesn't bump the envelope (spec doesn't mandate it).
 
     Construction (DI):
 
@@ -561,6 +696,7 @@ class PostureGate:
         trigger: str = "user_request",
         revoke_on_demotion: tuple[str, ...] = (),
         days_at_current_posture: float = 0.0,
+        envelope: Optional[_PostureCarryingEnvelope] = None,
     ) -> PostureChangeResult:
         """Request a posture transition; raises on any failed gate.
 
@@ -590,9 +726,23 @@ class PostureGate:
                 cadence event. Phase 03 Weekly Posture Review computes from
                 PostureStore history; Phase 01 callers may pass 0.0 if not
                 tracked (the emitter rejects negative values).
+            envelope: REQUIRED on ratchet-up; ignored on ratchet-down /
+                annual-decay paths. Per `specs/posture-ladder.md` § Ratchet-
+                up requirement #3 + T-02-33 (per `journal/0021-DECISION-...md`),
+                every accepted ratchet-up emits a paired `envelope_edit`
+                Ledger entry binding the new posture to a specific envelope
+                version bump. Caller passing `envelope=None` on a ratchet-up
+                raises `PostureRatchetEnvelopeMissingError` (Step 3e). Per
+                `rules/zero-tolerance.md` Rule 3 — no silent fallback to
+                "skip Step 5b" because the runtime gate is the structural
+                defense.
 
         Returns:
             `PostureChangeResult(new_level, ledger_entry_id)` on success.
+            `ledger_entry_id` is the entry_id of the `posture_change` entry
+            (Step 5a); the paired `envelope_edit` (Step 5b) has its own
+            entry_id which a future API may surface — Phase 01 narrow scope
+            returns only the posture_change id as the canonical handle.
 
         Raises:
             `AuthorshipScoreDivergenceError` (Step 1).
@@ -601,6 +751,8 @@ class PostureGate:
             `PostureCoolingOffActiveError` (Step 3b).
             `PostureGenesisGrantMissingError` (Step 3c).
             `PostureAuthorshipInsufficientError` (Step 3d).
+            `PostureRatchetEnvelopeMissingError` (Step 3e — ratchet-up
+                with envelope=None).
             `TypeError` / `ValueError` on shape-invalid inputs.
         """
         # Input validation — typed errors per `rules/security.md` § Input Validation
@@ -689,6 +841,17 @@ class PostureGate:
                     need=need,
                 )
 
+            # 3e: envelope-present check (T-02-33). Per `specs/posture-ladder.md`
+            # § Ratchet-up requirement #3 + `journal/0021-DECISION-...md`,
+            # every ratchet-up MUST emit a paired `envelope_edit` Ledger
+            # entry. The gate fails closed (typed error, no silent skip) if
+            # the caller didn't supply an envelope to bump. Per
+            # `rules/zero-tolerance.md` Rule 3, the runtime check is the
+            # structural defense — Optional kwarg + runtime fail-closed is
+            # the documented "kwarg-on-call" disposition from journal/0021.
+            if envelope is None:
+                raise PostureRatchetEnvelopeMissingError(current=current, target=target)
+
         # ----- STEP 4: cascade-revoke hook (demotion only) -----
         # Per `specs/posture-ladder.md` § Ratchet-down: "Demotion may happen:
         # User-initiated; Automatic on kill-criterion hit; Automatic on annual
@@ -710,7 +873,7 @@ class PostureGate:
                     revoked_by="posture_gate",
                 )
 
-        # ----- STEP 5: signed posture_change Ledger entry -----
+        # ----- STEP 5a: signed posture_change Ledger entry -----
         # Wire shape per `specs/ledger.md` § posture_change schema (lines 243-253):
         # `{type, schema_version, from_posture, to_posture, dimension_scope,
         # trigger, evidence_ref, signed_by}`. The `signed_by` field is
@@ -747,6 +910,58 @@ class PostureGate:
                 "ledger_entry_id": entry_id,
             },
         )
+
+        # ----- STEP 5b: signed envelope_edit Ledger entry (ratchet-up only, T-02-33) -----
+        # Per `specs/posture-ladder.md` § Ratchet-up requirement #3 + `specs/
+        # ledger.md` § envelope_edit (lines 107-114) + `journal/0021-DECISION-
+        # t-02-33-envelope-edit-pairing-design.md`. The pairing is asymmetric:
+        # envelope_edit fires ONLY on ratchet-up. Demotion paths skip Step 5b
+        # cleanly because envelope is None (and the gate already raised Step
+        # 3e if a caller passed envelope=None on a ratchet-up). Step 5b
+        # mints the new envelope via the `_PostureCarryingEnvelope` adapter
+        # (the adapter owns the canonical-bytes recompute; the gate stays out
+        # of envelope-mutation math per journal/0021's "envelope-kwarg" pick).
+        #
+        # Wire shape per spec L107-114: {type, schema_version, envelope_id,
+        # prior_version, new_version, diff_hash, rollback_grace_window_seconds,
+        # signed_by}. signed_by="delegation_key" per spec L113 — envelope_edit
+        # entries are application-signed by the delegation key (the gate's
+        # entry envelope itself is device-signed by EnvoyLedger.append).
+        if target > current:
+            # MyPy can't narrow `envelope` past the Step 3e raise above;
+            # the runtime invariant is: if we reach here on ratchet-up,
+            # envelope is non-None. Assert defensively (pre-condition the
+            # raise above already proved) so a future refactor that
+            # accidentally drops Step 3e fails loudly at this site rather
+            # than producing a NoneType.mutate_for_posture_level() crash
+            # downstream — per `rules/zero-tolerance.md` Rule 3a (typed
+            # delegate guards for None backing objects).
+            if envelope is None:
+                raise PostureRatchetEnvelopeMissingError(current=current, target=target)
+            mutation = envelope.mutate_for_posture_level(target)
+            envelope_edit_content: dict = {
+                "schema_version": _ENVELOPE_EDIT_SCHEMA_VERSION,
+                "envelope_id": envelope.envelope_id,
+                "prior_version": envelope.prior_version,
+                "new_version": mutation.new_version,
+                "diff_hash": mutation.diff_hash,
+                "rollback_grace_window_seconds": _DEFAULT_ROLLBACK_GRACE_WINDOW_SECONDS,
+                "signed_by": "delegation_key",
+            }
+            envelope_edit_entry_id = await self._ledger.append(
+                entry_type="envelope_edit",
+                content=envelope_edit_content,
+            )
+            logger.info(
+                "posture.envelope_edit",
+                extra={
+                    "envelope_id": envelope.envelope_id,
+                    "prior_version": envelope.prior_version,
+                    "new_version": mutation.new_version,
+                    "ledger_entry_id": envelope_edit_entry_id,
+                    "posture_change_ledger_entry_id": entry_id,
+                },
+            )
 
         # ----- STEP 5+: BET-12 cadence emission (T-02-32) -----
         # Per `01-analysis/09-authorship-score-implementation.md` § 3.3 +

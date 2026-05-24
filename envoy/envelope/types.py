@@ -329,6 +329,15 @@ class EnvelopeMetadata:
             "per_posture_overrides": {},
         }
     )
+    # Per `specs/posture-ladder.md` § Ratchet-up #3 + `journal/0021-DECISION-...md`
+    # (T-02-33): the envelope's posture_level is the load-bearing field that
+    # binds posture transitions to envelope_edit Ledger entries. Wire-form is
+    # the canonical PostureLevel enum NAME (`"PSEUDO" | "TOOL" | "SUPERVISED"
+    # | "DELEGATING" | "AUTONOMOUS"`) so JCS canonicalization produces
+    # cross-runtime byte-identical bytes (spec line 27 — wire format is the
+    # string name). Default is `"PSEUDO"` per `specs/posture-ladder.md` § TOOL
+    # / PSEUDO semantics ("Default tier at first Boundary Conversation entry").
+    posture_level: str = "PSEUDO"
 
 
 @dataclass(slots=True)

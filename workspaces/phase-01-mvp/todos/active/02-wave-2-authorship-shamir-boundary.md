@@ -75,17 +75,36 @@
 
 ---
 
-## T-02-33 — Wire envoy/authorship/ (Tier 2)
+## T-02-33 — Wire envoy/authorship/ (Tier 2) ✅ CLOSED 2026-05-24
 
-**Action:** `tests/tier2/test_posture_gate_wiring.py` — exercises `PostureGate` against real Trust store + Ledger; asserts `posture_change` entry signed by Genesis key.
+**Status:** Shipped. `tests/tier2/test_posture_gate_wiring.py` (8 cases) exercises `PostureGate` against real `EnvoyLedger` + real Ed25519 + real `EnvelopeCompiler` canonical-bytes pipeline. NO mocking. Plus paired envelope_edit pairing on ratchet-up. Commits: planning `1e6b256`, RED BAR test `7a8d62a`, GREEN BAR production fix `fe1b982`, spec sweep `71199d4`. 88 Tier 1 + 8 Tier 2 pass; full suite 579/579.
 
-**Acceptance:** Green against real SQLite + real Ed25519. NO mocking.
+**DI design choice (per `journal/0021-DECISION-t-02-33-envelope-edit-pairing-design.md`):** picked option (b) — `envelope` kwarg on `request_transition()` over `_EnvelopeProtocol` DI surface. Keeps PostureGate stateless; envelope is per-transition data; avoids inventing a `_RoleEnvelopeStore` primitive; updates zero existing Tier 1 fixtures structurally (only the 13 ratchet-up tests gain `envelope=_FakePostureCarryingEnvelope()`). Runtime-contract weakness closed by typed `PostureRatchetEnvelopeMissingError` raised at Step 3e when `target > current` and `envelope is None`.
 
-**Blocks on:** T-02-30 through T-02-32.
+**Acceptance gates per the carry-forward block, all green:**
 
-**Estimate:** 0.25 session.
+- (a) Every ratchet-up emits BOTH `posture_change` (Step 5a) AND `envelope_edit` (Step 5b) in append order. Verified at `tests/tier2/test_posture_gate_wiring.py::TestEnvelopeEditPairingOnRatchetUp` × 3 transitions (PSEUDO→TOOL, TOOL→SUPERVISED, multi-step PSEUDO→DELEGATING).
+- (b) `envelope_edit` wire shape matches `specs/ledger.md` § envelope_edit lines 107-114 — `schema_version`, `envelope_id`, `prior_version`, `new_version` (= prior_version + 1), `diff_hash` (spec-named, NOT content_hash), `rollback_grace_window_seconds` (24h default), `signed_by="delegation_key"`. Pinned in both Tier 1 (`TestStep5LedgerEntrySchema::test_ledger_content_matches_spec_schema`) and Tier 2 wire-shape assertions.
+- (c) Mutated envelope's `metadata.posture_level` reflects new level. Verified via the `_EnvelopeConfigPostureCarrier` adapter's `mutate_for_posture_level()` return value at `tests/tier2/test_posture_gate_wiring.py::TestEnvelopeEditPairingOnRatchetUp::test_envelope_edit_content_hash_changes_on_mutation`.
 
-**Carry-forward from T-02-31 (per `journal/0020-DECISION-envelope-edit-deferred-to-tier-2.md`):** T-02-33 wires the paired `envelope_edit` Ledger entry on ratchet-up (currently absent in T-02-31's `posture_change`-only emission per spec line 41). Tier 2 acceptance MUST assert: (a) on every ratchet-up, BOTH a `posture_change` entry AND a paired `envelope_edit` entry are appended in order; (b) the `envelope_edit` carries the new envelope's content_hash + version bump per `specs/envelope-model.md` § envelope_edit schema; (c) the envelope's `metadata.posture_level` field reflects the new level. Test class: `TestEnvelopeEditPairingOnRatchetUp` (≥3 cases: PSEUDO→TOOL, TOOL→SUPERVISED, multi-step PSEUDO→DELEGATING). The PostureGate signature MAY require extension with an `_EnvelopeProtocol` DI surface OR an `envelope` parameter on `request_transition`; the disposition is for this shard to choose.
+**Same-shard fix-immediately findings per `rules/autonomous-execution.md` Rule 4 (5 closed in the GREEN BAR commit `fe1b982`):**
+
+1. The new `envelope` kwarg invalidated 13 existing Tier 1 ratchet-up tests (same bug class — all needed the new contract). Fixed all 13 in the same commit (rather than filing follow-up).
+2. The `PostureRatchetEnvelopeMissingError` typed-error contract needed Tier 1 coverage too — added `TestStep3eEnvelopeMissingOnRatchetUp` (5 cases) in the same commit.
+3. The `TestErrorHierarchy` class needed to enumerate the new error — done in the same commit.
+4. The asymmetric pairing on demotion (spec § Ratchet-down) needed a pin — added `TestPostureChangeOnRatchetDownNoEnvelopeEdit` (Tier 2) to lock the asymmetry against future "symmetrize" refactors.
+5. The Step 5b code guards `envelope is None` defensively even though Step 3e already raises — closes the typed-delegate-guards-for-None pattern per `rules/zero-tolerance.md` Rule 3a against a future refactor that drops Step 3e.
+
+**Spec deviations acknowledged + closed (per `rules/specs-authority.md` Rule 6):**
+
+- `specs/posture-ladder.md` § Out of scope — envelope_edit deferral bullet REMOVED. Section intro updated to name T-02-33 as the closure. Tier 2 wiring + Tier 1 Step 3e citations added to § Test location.
+- `specs/envelope-model.md` § Schema — `metadata.posture_level` field added with canonical PostureLevel enum NAME wire form. Field-semantics block explains cross-runtime byte-identity contract + ratchet-up envelope_edit pairing + asymmetric pairing on demotion.
+
+**Implements:** `specs/posture-ladder.md` § Ratchet-up requirement #3 + `specs/ledger.md` § envelope_edit lines 107-114 + `specs/envelope-model.md` § metadata.posture_level.
+
+**Blocks on:** T-02-30 ✓ (PR #14, recompute_authorship_counters), T-02-31 ✓ (PR #19, PostureGate 5-step gate), T-02-32 ✓ (PR ??, BET12CadenceEmitter). All satisfied.
+
+**Capacity check:** ~110 LOC load-bearing logic added to posture_gate.py (within ≤500 LOC threshold per `rules/autonomous-execution.md` MUST Rule 1); 8 invariants total on PostureGate (was 5; added envelope-version monotonic bump + envelope.metadata.posture_level reflects new level + envelope_edit appended in order AFTER posture_change); 3 call-graph hops unchanged (PostureGate → `_LedgerProtocol.append` × 2 OR PostureGate → `_RevokeHook`; new hop is PostureGate → `_PostureCarryingEnvelope.mutate_for_posture_level` which is a Protocol method, not a new chain).
 
 ---
 
