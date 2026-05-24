@@ -7,24 +7,34 @@ real TrustVault. NO mocking per `rules/testing.md` Tier 2.
 
 T-02-37 scope: this file exercises the 6-step ritual orchestration
 end-to-end on the real generator + real paper renderer + real
-persister. The 4-test matrix per the todo plan:
+persister. The 3-test matrix shipped:
 
-1. Ritual produces threshold-many shards that the recovery primitive
-   reconstructs back to the same master-key bytes.
-2. Master-key bytes are zeroized between ritual step 2 and step 3
-   (verified via instrumented MasterKeySource that records the buffer
-   identity, then asserts the bytearray returned from the source IS
-   the buffer overwritten by the coordinator).
-3. Ritual round-trip is deterministic at the shard level — same secret
-   → SAME number of shards (5) with SAME threshold (3); shard content
-   varies per ritual (entropy in the SLIP-0039 generation).
-4. Coordinator's published `commitments` survive the lock/unlock of
-   the TrustVault checklist (the persister round-trip is the storage
-   contract).
+1. `test_real_ritual_yields_reconstructable_shards` — Ritual produces
+   threshold-many shards that the recovery primitive reconstructs back
+   to the same master-key bytes (load-bearing crypto-pair round-trip
+   per `rules/orphan-detection.md` Rule 2a).
+2. `test_recover_via_any_3_of_5_succeeds` — Spec § Recovery flow's
+   "any 3 cards (any order)" wording exercised across three distinct
+   3-subsets ({0,1,2}, {1,3,4}, {0,2,4}); all reconstruct to the same
+   master key.
+3. `test_persisted_checklist_round_trips_through_vault` — Persister
+   round-trip via lock+unlock cycle on a fresh `TrustVault` instance;
+   slot labels survive AES-256-GCM container with H-06 compliance
+   confirmed at read-back time.
+
+Out of T-02-37 scope (deferred to named successor shards): commitment
+ROUND-TRIP through Genesis Record (lives on the binder/TrustStoreAdapter
+side per `envoy/shamir/commitments.py:13-21`'s L-2 storage-only
+re-architecture; T-01-12 wiring is the natural owner) + master-key
+zeroize instrumentation (already covered by Tier 1
+`test_shamir_ritual_coordinator_orchestration.py`'s fake-source
+identity-check pattern; Tier 2 cannot inspect the kailash-side bytearray
+without violating the storage-only contract).
 """
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Awaitable
 from pathlib import Path
 
@@ -164,7 +174,22 @@ class TestRitualReconstructRoundTrip:
         # The reconstructed master key MUST equal the original — this is
         # the load-bearing crypto-pair round-trip per orphan-detection.md
         # Rule 2a (round-trip through the facade).
-        assert recovered == original_master_key
+        #
+        # Security review F-2: use `hmac.compare_digest` + redacted error
+        # message so a future regression that breaks reconstruction
+        # cannot leak both 32-byte master-key buffers via pytest's
+        # assertion rewriter (which would dump both byte strings to
+        # stderr / CI logs on `assert a == b` failure).
+        assert hmac.compare_digest(recovered, original_master_key), (
+            "reconstructed master key does not match original (bytes redacted "
+            "per rules/trust-plane-security.md MUST NOT Rule 3)"
+        )
+        # Security review F-1: drop the sensitive buffers immediately
+        # after the assertion. `bytes` is immutable; reference-drop is
+        # the strongest portable defense per rules/trust-plane-security.md
+        # MUST NOT Rule 3.
+        del original_master_key
+        del recovered
 
     async def test_recover_via_any_3_of_5_succeeds(
         self,
@@ -196,7 +221,18 @@ class TestRitualReconstructRoundTrip:
                 commitments=commitments,
                 checklist_labels=slot_labels,
             )
-            assert recovered == original_master_key, f"subset {subset} failed to reconstruct"
+            # Security review F-2 — hmac.compare_digest + redacted message
+            # so pytest's assertion rewriter cannot leak both master-key
+            # buffers via stderr on regression.
+            assert hmac.compare_digest(recovered, original_master_key), (
+                f"subset {subset} failed to reconstruct (bytes redacted per "
+                "rules/trust-plane-security.md MUST NOT Rule 3)"
+            )
+            # Security review F-1 — drop the sensitive buffer immediately
+            # so the next loop iteration does not extend its residency.
+            del recovered
+        # F-1 — drop the captured original after the loop too.
+        del original_master_key
 
 
 # ---------------------------------------------------------------------------

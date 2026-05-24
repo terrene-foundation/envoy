@@ -117,6 +117,13 @@ class TestGenesisCommitmentDefeatsCounterfeit:
                 commitments=authentic_commitments,
                 checklist_labels=slot_labels,
             )
+        # Security review F-3 — drop the counterfeit shapes from local
+        # scope so a same-process heap dump cannot recover the test's
+        # attack-shaped secret. Defensive: counterfeit_secret is a
+        # constructed test value, not the production master key.
+        del counterfeit_secret
+        del counterfeit_shards
+        del presented
         # First-failure-wins per envoy/shamir/recover.py contract.
         assert exc_info.value.failing_card_index == 0
         # Plain-language user_message names "fingerprint" + "security incident".

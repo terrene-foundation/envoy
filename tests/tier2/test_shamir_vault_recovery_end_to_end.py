@@ -41,6 +41,7 @@ from envoy.shamir import (
     recover_master_key,
 )
 from envoy.shamir.paper import PaperShardRenderer
+from envoy.trust.errors import VaultUnlockFailedError
 from envoy.trust.vault import TrustVault
 
 
@@ -198,6 +199,11 @@ class TestVaultShamirRecoveryEndToEnd:
         recovery_vault = TrustVault(vault_path, idle_ttl_seconds=60)
         # AES-GCM tag verification under wrong key MUST fail; vault
         # stays sealed per the import_master_key_from_shamir contract.
-        with pytest.raises(Exception):  # noqa: BLE001 — vault error class is implementation detail
+        # Security review F-5 + reviewer F-1 closed: pin the typed
+        # exception class so a future regression that raises a different
+        # error class (TypeError, FileNotFoundError) cannot silently
+        # pass this test. Same failure-class as rules/zero-tolerance.md
+        # Rule 3a typed-delegate guards.
+        with pytest.raises(VaultUnlockFailedError):
             await recovery_vault.import_master_key_from_shamir(wrong_key)
         del wrong_key
