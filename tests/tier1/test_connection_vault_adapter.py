@@ -18,6 +18,7 @@ keychain. The Tier 2 wire-up (T-01-25) exercises real keyring backends.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -27,6 +28,7 @@ import pytest
 from envoy.connection_vault import (
     USAGE_COUNTER_MAX,
     ConnectionVault,
+    CorruptedRecordError,
     CredentialType,
     EnvCredentialSpec,
     EntryExpiredError,
@@ -35,11 +37,38 @@ from envoy.connection_vault import (
     InvalidServiceIdentifierError,
     KeychainUnavailableError,
     PrincipalRequiredError,
+    RecordSchemaVersionError,
     RotationPolicy,
     UsageCounterOverflowError,
     import_credentials_from_env,
+    validate_principal_genesis_id,
     validate_service_identifier,
 )
+
+
+def _hex_principal(label: str) -> str:
+    """Build a sha256-hex principal_genesis_id matching the spec contract.
+
+    Per security-reviewer M3 (2026-05-24) the principal_genesis_id MUST be
+    64 lowercase hex characters. Tests use this helper to derive stable
+    sha256 ids from labels.
+    """
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+_PRINCIPAL_ALPHA = _hex_principal("principal-alpha")
+_PRINCIPAL_A = _hex_principal("principal-A")
+_PRINCIPAL_B = _hex_principal("principal-B")
+_PRINCIPAL_ABC = _hex_principal("abc")
+
+
+# Override the global `principal_id` fixture (root tests/tier1/conftest.py)
+# for this file — Connection Vault requires sha256-hex shape per spec.
+@pytest.fixture
+def principal_id() -> str:
+    return _PRINCIPAL_ALPHA
+
+
 from envoy.connection_vault.adapter import _deserialize_record, _serialize_record
 from envoy.connection_vault.schema import CredentialEntry
 from envoy.envelope import (
@@ -142,7 +171,7 @@ class TestSchemaRoundTrip:
         scope = EnvelopeScopeRef(service_identifier="openai")
         entry = CredentialEntry(
             entry_id=uuid4(),
-            principal_genesis_id="abc",
+            principal_genesis_id=_PRINCIPAL_ABC,
             credential_type=CredentialType.API_KEY,
             service_identifier="openai",
             entry_envelope_scope=scope,
@@ -158,7 +187,7 @@ class TestSchemaRoundTrip:
         scope = EnvelopeScopeRef(service_identifier="openai", channel="cli")
         original = CredentialEntry(
             entry_id=uuid4(),
-            principal_genesis_id="abc123",
+            principal_genesis_id=_PRINCIPAL_ABC,
             credential_type=CredentialType.API_KEY,
             service_identifier="openai",
             entry_envelope_scope=scope,
@@ -179,7 +208,7 @@ class TestSchemaRoundTrip:
         with pytest.raises(ValueError, match="timezone-aware UTC"):
             CredentialEntry(
                 entry_id=uuid4(),
-                principal_genesis_id="abc",
+                principal_genesis_id=_PRINCIPAL_ABC,
                 credential_type=CredentialType.API_KEY,
                 service_identifier="openai",
                 entry_envelope_scope=scope,
@@ -194,7 +223,7 @@ class TestSchemaRoundTrip:
         with pytest.raises(ValueError, match="usage_counter"):
             CredentialEntry(
                 entry_id=uuid4(),
-                principal_genesis_id="abc",
+                principal_genesis_id=_PRINCIPAL_ABC,
                 credential_type=CredentialType.API_KEY,
                 service_identifier="openai",
                 entry_envelope_scope=scope,
@@ -222,12 +251,12 @@ class TestPrincipalIsolation:
     ) -> None:
         backend = _MemBackend()
         vault_a = ConnectionVault(
-            principal_genesis_id="principal-A",
+            principal_genesis_id=_PRINCIPAL_A,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
         vault_b = ConnectionVault(
-            principal_genesis_id="principal-B",
+            principal_genesis_id=_PRINCIPAL_B,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
@@ -246,12 +275,12 @@ class TestPrincipalIsolation:
     def test_delete_refuses_cross_principal(self, envelope_openai_cli: EnvelopeConfigInput) -> None:
         backend = _MemBackend()
         vault_a = ConnectionVault(
-            principal_genesis_id="principal-A",
+            principal_genesis_id=_PRINCIPAL_A,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
         vault_b = ConnectionVault(
-            principal_genesis_id="principal-B",
+            principal_genesis_id=_PRINCIPAL_B,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
@@ -272,12 +301,12 @@ class TestPrincipalIsolation:
     ) -> None:
         backend = _MemBackend()
         vault_a = ConnectionVault(
-            principal_genesis_id="principal-A",
+            principal_genesis_id=_PRINCIPAL_A,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
         vault_b = ConnectionVault(
-            principal_genesis_id="principal-B",
+            principal_genesis_id=_PRINCIPAL_B,
             active_envelope=envelope_openai_cli,
             keyring_backend=backend,
         )
@@ -304,8 +333,8 @@ class TestPrincipalIsolation:
         b_entries = vault_b.list_by_principal()
         assert len(a_entries) == 2
         assert len(b_entries) == 1
-        assert all(e.principal_genesis_id == "principal-A" for e in a_entries)
-        assert all(e.principal_genesis_id == "principal-B" for e in b_entries)
+        assert all(e.principal_genesis_id == _PRINCIPAL_A for e in a_entries)
+        assert all(e.principal_genesis_id == _PRINCIPAL_B for e in b_entries)
 
 
 # ---------------------------------------------------------------------------
@@ -707,7 +736,7 @@ class TestSecretIsolation:
         scope = EnvelopeScopeRef(service_identifier="openai")
         entry = CredentialEntry(
             entry_id=uuid4(),
-            principal_genesis_id="abc",
+            principal_genesis_id=_PRINCIPAL_ABC,
             credential_type=CredentialType.API_KEY,
             service_identifier="openai",
             entry_envelope_scope=scope,
@@ -719,3 +748,401 @@ class TestSecretIsolation:
         # The dataclass has no `secret` field → repr can't include it.
         assert "secret" not in repr(entry).lower()
         assert "sk-" not in repr(entry).lower()
+
+
+# ---------------------------------------------------------------------------
+# 10. principal_genesis_id sha256-hex validation (security-reviewer M3)
+# ---------------------------------------------------------------------------
+
+
+class TestPrincipalGenesisIdValidation:
+    """Per security-reviewer M3 (2026-05-24): principal_genesis_id MUST match
+    `^[0-9a-f]{64}$` so the keychain key namespace cannot be collision-injected
+    via colons / control chars / newlines."""
+
+    def test_accepts_sha256_hex(self) -> None:
+        validate_principal_genesis_id(_PRINCIPAL_ALPHA)  # no raise
+
+    @pytest.mark.parametrize(
+        "bad,reason",
+        [
+            ("", "empty"),
+            ("principal-A", "wrong shape"),
+            ("a" * 63, "too short"),
+            ("a" * 65, "too long"),
+            ("A" * 64, "uppercase rejected"),
+            ("g" * 64, "non-hex char"),
+            ("a" * 60 + ":abc", "colon injection (keychain key collision)"),
+            ("a" * 60 + "\n123", "newline injection"),
+            ("a" * 60 + "\x00abc", "null-byte injection"),
+        ],
+    )
+    def test_rejects_invalid(self, bad: str, reason: str) -> None:
+        with pytest.raises(PrincipalRequiredError):
+            validate_principal_genesis_id(bad)
+
+    def test_constructor_uses_full_validator(
+        self, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        """ConnectionVault __init__ delegates to validate_principal_genesis_id."""
+        with pytest.raises(PrincipalRequiredError, match="sha256-hex shape"):
+            ConnectionVault(
+                principal_genesis_id="principal-not-hex",
+                active_envelope=envelope_openai_cli,
+                keyring_backend=_MemBackend(),
+            )
+
+    def test_credential_entry_post_init_uses_full_validator(self) -> None:
+        """Dataclass post_init applies the same sha256-hex check."""
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        with pytest.raises(PrincipalRequiredError, match="sha256-hex shape"):
+            CredentialEntry(
+                entry_id=uuid4(),
+                principal_genesis_id="not-hex",
+                credential_type=CredentialType.API_KEY,
+                service_identifier="openai",
+                entry_envelope_scope=scope,
+                created_at=datetime.now(timezone.utc),
+                last_used_at=datetime.now(timezone.utc),
+                expires_at=None,
+                usage_counter=0,
+            )
+
+
+# ---------------------------------------------------------------------------
+# 11. Corrupted record / index typed raises (security-reviewer M2)
+# ---------------------------------------------------------------------------
+
+
+class TestCorruptedRecord:
+    """Per security-reviewer M2 (2026-05-24): malformed JSON / missing keys /
+    wrong types translate to typed CorruptedRecordError — NOT raw stdlib
+    exceptions."""
+
+    def test_malformed_json_raises_typed(self) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        with pytest.raises(CorruptedRecordError, match="JSON decode failed"):
+            _deserialize_record("{not valid json")
+
+    def test_non_object_top_level_raises_typed(self) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        with pytest.raises(CorruptedRecordError, match="top-level must be JSON object"):
+            _deserialize_record('["list", "not", "object"]')
+
+    def test_missing_required_key_raises_typed(self) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        # Missing entry_id — should raise CorruptedRecordError, not KeyError
+        import json as _json
+
+        malformed = _json.dumps(
+            {
+                "schema_version": 1,
+                "principal_genesis_id": _PRINCIPAL_ABC,
+                "credential_type": "api_key",
+                "service_identifier": "openai",
+                "entry_envelope_scope": {"service_identifier": "openai", "channel": None},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_used_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": None,
+                "usage_counter": 0,
+                "rotation_policy": "never",
+                "secret": "sk-test",
+                # entry_id intentionally omitted
+            }
+        )
+        with pytest.raises(CorruptedRecordError, match="shape invalid"):
+            _deserialize_record(malformed)
+
+    def test_secret_field_wrong_type_raises_typed(self) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        import json as _json
+
+        malformed = _json.dumps(
+            {
+                "schema_version": 1,
+                "entry_id": str(uuid4()),
+                "principal_genesis_id": _PRINCIPAL_ABC,
+                "credential_type": "api_key",
+                "service_identifier": "openai",
+                "entry_envelope_scope": {"service_identifier": "openai", "channel": None},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_used_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": None,
+                "usage_counter": 0,
+                "rotation_policy": "never",
+                "secret": 12345,  # wrong type — should be str
+            }
+        )
+        with pytest.raises(CorruptedRecordError, match="`secret` must be str"):
+            _deserialize_record(malformed)
+
+    def test_unknown_schema_version_raises_typed(self) -> None:
+        from envoy.connection_vault.adapter import _deserialize_record
+
+        import json as _json
+
+        malformed = _json.dumps({"schema_version": 999, "anything": "else"})
+        with pytest.raises(RecordSchemaVersionError, match="unsupported"):
+            _deserialize_record(malformed)
+
+    def test_malformed_index_raises_typed(
+        self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        """A tampered index payload raises CorruptedRecordError, not raw JSONDecodeError."""
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        # Inject a malformed index entry directly
+        backend.set_password(KEYRING_SERVICE_NAMESPACE, f"__index__:{principal_id}", "{not json")
+        with pytest.raises(CorruptedRecordError, match="index JSON decode failed"):
+            vault.list_by_principal()
+
+    def test_non_list_index_raises_typed(
+        self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE,
+            f"__index__:{principal_id}",
+            '{"not": "list"}',
+        )
+        with pytest.raises(CorruptedRecordError, match="index payload must be JSON list"):
+            vault.list_by_principal()
+
+    def test_index_with_non_uuid_entries_raises_typed(
+        self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE,
+            f"__index__:{principal_id}",
+            '["not-a-uuid", "also-not-a-uuid"]',
+        )
+        with pytest.raises(CorruptedRecordError, match="non-UUID entries"):
+            vault.list_by_principal()
+
+
+# ---------------------------------------------------------------------------
+# 12. RecordSchemaVersionError vs EntryNotFoundError (code-reviewer MED-1)
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaVersionMismatch:
+    """Per code-reviewer MED-1 (2026-05-24): a record with an unsupported
+    schema_version MUST raise RecordSchemaVersionError, NOT EntryNotFoundError.
+    The entry IS present — it's at a version this Envoy build can't parse."""
+
+    def test_get_on_future_version_raises_schema_version_error(
+        self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
+
+        import json as _json
+
+        backend = _MemBackend()
+        vault = ConnectionVault(
+            principal_genesis_id=principal_id,
+            active_envelope=envelope_openai_cli,
+            keyring_backend=backend,
+        )
+        future_entry_id = uuid4()
+        backend.set_password(
+            KEYRING_SERVICE_NAMESPACE,
+            str(future_entry_id),
+            _json.dumps({"schema_version": 999, "future_field": "data"}),
+        )
+        with pytest.raises(RecordSchemaVersionError, match="upgrade Envoy"):
+            vault.get(future_entry_id)
+
+    def test_schema_version_error_is_distinct_from_entry_not_found(
+        self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
+    ) -> None:
+        """The two errors carry distinct user-action contracts and MUST not collapse."""
+        from envoy.connection_vault import (
+            ConnectionVaultError,
+            EntryNotFoundError as _Missing,
+            RecordSchemaVersionError as _Version,
+        )
+
+        assert issubclass(_Missing, ConnectionVaultError)
+        assert issubclass(_Version, ConnectionVaultError)
+        assert _Missing is not _Version
+        assert not issubclass(_Missing, _Version)
+        assert not issubclass(_Version, _Missing)
+
+
+# ---------------------------------------------------------------------------
+# 13. Observability: get/delete/list_by_principal emit structured logs
+#     (code-reviewer MED-4)
+# ---------------------------------------------------------------------------
+
+
+class TestObservability:
+    """Per code-reviewer MED-4 (2026-05-24): cross-keychain-boundary ops MUST
+    emit start/ok structured logs + warning on every typed-error path."""
+
+    def test_get_emits_start_and_ok(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        entry = vault.set(
+            credential_type=CredentialType.API_KEY,
+            service_identifier="openai",
+            entry_envelope_scope=scope,
+            secret="sk-observ",
+        )
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
+            vault.get(entry.entry_id)
+        log_msgs = [r.message for r in caplog.records]
+        assert any("connection_vault.get.start" in m for m in log_msgs)
+        assert any("connection_vault.get.ok" in m for m in log_msgs)
+
+    def test_get_emits_warning_on_entry_not_found(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
+            with pytest.raises(EntryNotFoundError):
+                vault.get(uuid4())
+        warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("connection_vault.get.error" in r.message for r in warning_records)
+        assert any(getattr(r, "reason", None) == "entry_not_found" for r in warning_records)
+
+    def test_delete_emits_start_and_ok(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        entry = vault.set(
+            credential_type=CredentialType.API_KEY,
+            service_identifier="openai",
+            entry_envelope_scope=scope,
+            secret="sk-del-observ",
+        )
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
+            vault.delete(entry.entry_id)
+        log_msgs = [r.message for r in caplog.records]
+        assert any("connection_vault.delete.start" in m for m in log_msgs)
+        assert any("connection_vault.delete.ok" in m for m in log_msgs)
+
+    def test_list_by_principal_emits_start_and_ok(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
+            vault.list_by_principal()
+        log_msgs = [r.message for r in caplog.records]
+        assert any("connection_vault.list_by_principal.start" in m for m in log_msgs)
+        assert any("connection_vault.list_by_principal.ok" in m for m in log_msgs)
+
+    def test_log_lines_do_not_contain_raw_principal_id(
+        self, vault: ConnectionVault, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Per `rules/observability.md` Rule 8: schema-revealing identifiers
+        at WARN/INFO MUST be hashed-prefix only, not raw."""
+        import logging
+
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault"):
+            vault.set(
+                credential_type=CredentialType.API_KEY,
+                service_identifier="openai",
+                entry_envelope_scope=scope,
+                secret="sk-raw-id-check",
+            )
+        for record in caplog.records:
+            # The full 64-char principal id MUST NOT appear in any log line
+            assert _PRINCIPAL_ALPHA not in record.getMessage()
+            for value in record.__dict__.values():
+                if isinstance(value, str):
+                    assert _PRINCIPAL_ALPHA not in value
+
+
+# ---------------------------------------------------------------------------
+# 14. env_import skip-reason granularity (security-reviewer L3)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvImportSkipReason:
+    """Per security-reviewer L3 (2026-05-24): distinguish `unset` from
+    `empty_after_strip` so operators can debug `.env` problems."""
+
+    def test_unset_emits_unset_reason(
+        self,
+        vault: ConnectionVault,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        monkeypatch.delenv("ENVOY_TEST_GRANULAR_UNSET", raising=False)
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault.env_import"):
+            import_credentials_from_env(
+                vault,
+                (
+                    EnvCredentialSpec(
+                        env_var_name="ENVOY_TEST_GRANULAR_UNSET",
+                        credential_type=CredentialType.API_KEY,
+                        service_identifier="openai",
+                        entry_envelope_scope=scope,
+                    ),
+                ),
+            )
+        assert any(getattr(r, "reason", None) == "unset" for r in caplog.records)
+
+    def test_whitespace_emits_empty_after_strip_reason(
+        self,
+        vault: ConnectionVault,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        monkeypatch.setenv("ENVOY_TEST_GRANULAR_EMPTY", "   ")
+        scope = EnvelopeScopeRef(service_identifier="openai")
+        with caplog.at_level(logging.INFO, logger="envoy.connection_vault.env_import"):
+            import_credentials_from_env(
+                vault,
+                (
+                    EnvCredentialSpec(
+                        env_var_name="ENVOY_TEST_GRANULAR_EMPTY",
+                        credential_type=CredentialType.API_KEY,
+                        service_identifier="openai",
+                        entry_envelope_scope=scope,
+                    ),
+                ),
+            )
+        assert any(getattr(r, "reason", None) == "empty_after_strip" for r in caplog.records)

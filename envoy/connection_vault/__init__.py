@@ -13,11 +13,7 @@ Public facade per `rules/orphan-detection.md` Rule 6 — every module-scope
 import in this file appears in ``__all__``.
 """
 
-from envoy.connection_vault.adapter import (
-    KEYRING_SERVICE_NAMESPACE,
-    ActiveEnvelope,
-    ConnectionVault,
-)
+from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE, ConnectionVault
 from envoy.connection_vault.env_import import (
     EnvCredentialSpec,
     ImportResult,
@@ -25,6 +21,7 @@ from envoy.connection_vault.env_import import (
 )
 from envoy.connection_vault.errors import (
     ConnectionVaultError,
+    CorruptedRecordError,
     CrossPrincipalAccessRefusedError,
     EntryExpiredError,
     EntryNotFoundError,
@@ -32,6 +29,7 @@ from envoy.connection_vault.errors import (
     InvalidServiceIdentifierError,
     KeychainUnavailableError,
     PrincipalRequiredError,
+    RecordSchemaVersionError,
     UsageCounterOverflowError,
 )
 from envoy.connection_vault.schema import (
@@ -39,6 +37,7 @@ from envoy.connection_vault.schema import (
     CredentialEntry,
     CredentialType,
     RotationPolicy,
+    validate_principal_genesis_id,
     validate_service_identifier,
 )
 
@@ -46,19 +45,22 @@ __all__ = [
     # Adapter
     "ConnectionVault",
     "KEYRING_SERVICE_NAMESPACE",
-    "ActiveEnvelope",
     # Schema
     "CredentialEntry",
     "CredentialType",
     "RotationPolicy",
     "USAGE_COUNTER_MAX",
+    "validate_principal_genesis_id",
     "validate_service_identifier",
     # `.env` first-run import
     "EnvCredentialSpec",
     "ImportResult",
     "import_credentials_from_env",
-    # Errors
+    # Errors (10 total — 7 spec + 3 defensive: PrincipalRequiredError,
+    # InvalidServiceIdentifierError, CorruptedRecordError, RecordSchemaVersionError;
+    # spec § Error taxonomy updated per code-reviewer HIGH-1)
     "ConnectionVaultError",
+    "CorruptedRecordError",
     "CrossPrincipalAccessRefusedError",
     "EntryExpiredError",
     "EntryNotFoundError",
@@ -66,5 +68,6 @@ __all__ = [
     "InvalidServiceIdentifierError",
     "KeychainUnavailableError",
     "PrincipalRequiredError",
+    "RecordSchemaVersionError",
     "UsageCounterOverflowError",
 ]

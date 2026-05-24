@@ -25,19 +25,20 @@ import json
 import logging
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Optional, Union
+from typing import Any, Optional
 from uuid import UUID, uuid4
 
 import keyring
 import keyring.errors
 
 from envoy.connection_vault.errors import (
+    CorruptedRecordError,
     CrossPrincipalAccessRefusedError,
     EntryExpiredError,
     EntryNotFoundError,
     EnvelopeScopeMismatchError,
     KeychainUnavailableError,
-    PrincipalRequiredError,
+    RecordSchemaVersionError,
     UsageCounterOverflowError,
 )
 from envoy.connection_vault.schema import (
@@ -46,11 +47,11 @@ from envoy.connection_vault.schema import (
     CredentialType,
     RotationPolicy,
     utcnow,
+    validate_principal_genesis_id,
     validate_service_identifier,
 )
 from envoy.envelope import (
-    EnvelopeConfig,
-    EnvelopeConfigInput,
+    ActiveEnvelope,
     EnvelopeScopeRef,
     envelope_contains_scope,
 )
@@ -62,12 +63,6 @@ per-platform OS keychain entries are keyed by this string + the entry_id."""
 _RECORD_SCHEMA_VERSION = 1
 
 logger = logging.getLogger("envoy.connection_vault")
-
-
-# Type alias for "any envelope shape that has operational + communication
-# dimensions" — Phase 01 the two `Envelope*` dataclasses are the canonical
-# carriers per shard 14 § 5.5. Phase 02 may add `SessionEnvelope`.
-ActiveEnvelope = Union[EnvelopeConfig, EnvelopeConfigInput]
 
 
 def _serialize_record(entry: CredentialEntry, secret: str) -> str:
@@ -99,32 +94,61 @@ def _serialize_record(entry: CredentialEntry, secret: str) -> str:
 
 
 def _deserialize_record(blob: str) -> tuple[CredentialEntry, str]:
-    """Inverse of :func:`_serialize_record`."""
-    payload = json.loads(blob)
-    if payload.get("schema_version") != _RECORD_SCHEMA_VERSION:
-        raise EntryNotFoundError(
-            f"unsupported connection-vault record schema_version={payload.get('schema_version')}"
+    """Inverse of :func:`_serialize_record`.
+
+    Per security-reviewer M2 (2026-05-24): any malformed payload (JSON decode
+    failure, missing required key, wrong type, unparseable UUID/enum/datetime)
+    raises :class:`CorruptedRecordError` — NOT a raw ``json.JSONDecodeError``
+    / ``KeyError`` / ``ValueError`` — so the caller sees the typed taxonomy
+    contract per ``rules/zero-tolerance.md`` Rule 3a.
+    """
+    try:
+        payload = json.loads(blob)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise CorruptedRecordError(f"connection-vault record JSON decode failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CorruptedRecordError(
+            f"connection-vault record top-level must be JSON object, "
+            f"got {type(payload).__name__}"
         )
-    scope_payload = payload["entry_envelope_scope"]
-    scope = EnvelopeScopeRef(
-        service_identifier=scope_payload["service_identifier"],
-        channel=scope_payload.get("channel"),
-    )
-    expires_at_raw = payload.get("expires_at")
-    expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw is not None else None
-    entry = CredentialEntry(
-        entry_id=UUID(payload["entry_id"]),
-        principal_genesis_id=payload["principal_genesis_id"],
-        credential_type=CredentialType(payload["credential_type"]),
-        service_identifier=payload["service_identifier"],
-        entry_envelope_scope=scope,
-        created_at=datetime.fromisoformat(payload["created_at"]),
-        last_used_at=datetime.fromisoformat(payload["last_used_at"]),
-        expires_at=expires_at,
-        usage_counter=int(payload["usage_counter"]),
-        rotation_policy=RotationPolicy(payload["rotation_policy"]),
-    )
-    return entry, payload["secret"]
+    if payload.get("schema_version") != _RECORD_SCHEMA_VERSION:
+        raise RecordSchemaVersionError(
+            f"unsupported connection-vault record schema_version="
+            f"{payload.get('schema_version')!r} (this build expects "
+            f"{_RECORD_SCHEMA_VERSION}); upgrade Envoy or re-pair credential"
+        )
+    try:
+        scope_payload = payload["entry_envelope_scope"]
+        if not isinstance(scope_payload, dict):
+            raise CorruptedRecordError("entry_envelope_scope must be JSON object")
+        scope = EnvelopeScopeRef(
+            service_identifier=scope_payload["service_identifier"],
+            channel=scope_payload.get("channel"),
+        )
+        expires_at_raw = payload.get("expires_at")
+        expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw is not None else None
+        entry = CredentialEntry(
+            entry_id=UUID(payload["entry_id"]),
+            principal_genesis_id=payload["principal_genesis_id"],
+            credential_type=CredentialType(payload["credential_type"]),
+            service_identifier=payload["service_identifier"],
+            entry_envelope_scope=scope,
+            created_at=datetime.fromisoformat(payload["created_at"]),
+            last_used_at=datetime.fromisoformat(payload["last_used_at"]),
+            expires_at=expires_at,
+            usage_counter=int(payload["usage_counter"]),
+            rotation_policy=RotationPolicy(payload["rotation_policy"]),
+        )
+        secret = payload["secret"]
+        if not isinstance(secret, str):
+            raise CorruptedRecordError(
+                f"connection-vault record `secret` must be str, " f"got {type(secret).__name__}"
+            )
+    except CorruptedRecordError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CorruptedRecordError(f"connection-vault record shape invalid: {exc}") from exc
+    return entry, secret
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -146,11 +170,11 @@ class ConnectionVault:
         *,
         keyring_backend: Any = None,
     ) -> None:
-        if not principal_genesis_id or not isinstance(principal_genesis_id, str):
-            raise PrincipalRequiredError(
-                "ConnectionVault requires a non-empty principal_genesis_id "
-                "(see rules/tenant-isolation.md Rule 2)"
-            )
+        # Full shape validation per security-reviewer M3 (2026-05-24):
+        # the principal_genesis_id flows into the keychain key namespace via
+        # `_index_key()`; control chars / colons / newlines would collide
+        # with the `__index__:{principal}` convention.
+        validate_principal_genesis_id(principal_genesis_id)
         self._principal_genesis_id = principal_genesis_id
         self._active_envelope: Optional[ActiveEnvelope] = active_envelope
         # Allow dependency-injection of a custom backend (tests use the
@@ -250,8 +274,27 @@ class ConnectionVault:
             ) from exc
         if payload is None:
             return []
-        ids = json.loads(payload)
-        return [UUID(id_) for id_ in ids]
+        # Per security-reviewer M2 (2026-05-24): malformed / tampered index
+        # payload raises `CorruptedRecordError` rather than letting raw stdlib
+        # exceptions propagate.
+        try:
+            ids_raw = json.loads(payload)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise CorruptedRecordError(
+                f"connection-vault index JSON decode failed for principal "
+                f"{self._principal_genesis_id[:8]}…: {exc}"
+            ) from exc
+        if not isinstance(ids_raw, list):
+            raise CorruptedRecordError(
+                f"connection-vault index payload must be JSON list, "
+                f"got {type(ids_raw).__name__}"
+            )
+        try:
+            return [UUID(id_) for id_ in ids_raw]
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise CorruptedRecordError(
+                f"connection-vault index contains non-UUID entries: {exc}"
+            ) from exc
 
     def _write_index(self, entry_ids: list[UUID]) -> None:
         payload = json.dumps([str(eid) for eid in entry_ids], separators=(",", ":"))
@@ -354,6 +397,21 @@ class ConnectionVault:
         )
         return entry
 
+    def _log_error(self, op: str, entry_id: UUID, reason: str) -> None:
+        """Structured error log per `rules/observability.md` Rule 1 + Rule 8.
+
+        Hashed-prefix only on principal + entry id; raw reason name (not
+        value) per Rule 8 schema-revealing field-name discipline.
+        """
+        logger.warning(
+            f"connection_vault.{op}.error",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "entry_id_hint": str(entry_id)[:8],
+                "reason": reason,
+            },
+        )
+
     def get(self, entry_id: UUID) -> tuple[CredentialEntry, str]:
         """Retrieve a credential entry + plaintext secret.
 
@@ -365,7 +423,15 @@ class ConnectionVault:
         On success: updates ``last_used_at`` and increments ``usage_counter``;
         persists the updated record back to the keychain.
         """
+        logger.info(
+            "connection_vault.get.start",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "entry_id_hint": str(entry_id)[:8],
+            },
+        )
         if self._active_envelope is None:
+            self._log_error("get", entry_id, "no_active_envelope")
             raise EnvelopeScopeMismatchError(
                 "ConnectionVault.get called without an active envelope — "
                 "set one via `with_active_envelope(...)` before retrieval "
@@ -374,23 +440,27 @@ class ConnectionVault:
 
         blob = self._get_password(entry_id)
         if blob is None:
+            self._log_error("get", entry_id, "entry_not_found")
             raise EntryNotFoundError(f"entry_id {entry_id} not found")
 
         entry, secret = _deserialize_record(blob)
 
         if entry.principal_genesis_id != self._principal_genesis_id:
+            self._log_error("get", entry_id, "cross_principal_refused")
             raise CrossPrincipalAccessRefusedError(
                 f"entry_id {entry_id} owned by a different principal — "
                 f"cross-principal access requires Grant Moment (Phase 03)"
             )
 
         if entry.expires_at is not None and entry.expires_at <= utcnow():
+            self._log_error("get", entry_id, "entry_expired")
             raise EntryExpiredError(
                 f"entry_id {entry_id} expired at {entry.expires_at.isoformat()}; "
                 f"re-authenticate via Grant Moment"
             )
 
         if not envelope_contains_scope(self._active_envelope, entry.entry_envelope_scope):
+            self._log_error("get", entry_id, "envelope_scope_mismatch")
             raise EnvelopeScopeMismatchError(
                 f"entry_id {entry_id} envelope_scope "
                 f"(service={entry.entry_envelope_scope.service_identifier}, "
@@ -399,6 +469,7 @@ class ConnectionVault:
             )
 
         if entry.usage_counter >= USAGE_COUNTER_MAX:
+            self._log_error("get", entry_id, "usage_counter_overflow")
             raise UsageCounterOverflowError(
                 f"entry_id {entry_id} usage_counter reached the int64 ceiling — "
                 "investigate hostile-usage / programming bug; reset via re-pair"
@@ -406,17 +477,34 @@ class ConnectionVault:
 
         updated = replace(entry, last_used_at=utcnow(), usage_counter=entry.usage_counter + 1)
         self._set_password(updated.entry_id, _serialize_record(updated, secret))
+        logger.info(
+            "connection_vault.get.ok",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "entry_id_hint": str(entry_id)[:8],
+                "usage_counter": updated.usage_counter,
+            },
+        )
         return updated, secret
 
     def delete(self, entry_id: UUID) -> None:
         """Delete an entry. Raises EntryNotFoundError if absent."""
+        logger.info(
+            "connection_vault.delete.start",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "entry_id_hint": str(entry_id)[:8],
+            },
+        )
         # Defensive principal check via metadata before deletion: a caller
         # holding only an entry_id must not delete another principal's entry.
         blob = self._get_password(entry_id)
         if blob is None:
+            self._log_error("delete", entry_id, "entry_not_found")
             raise EntryNotFoundError(f"entry_id {entry_id} not found")
         entry, _secret = _deserialize_record(blob)
         if entry.principal_genesis_id != self._principal_genesis_id:
+            self._log_error("delete", entry_id, "cross_principal_refused")
             raise CrossPrincipalAccessRefusedError(
                 f"entry_id {entry_id} owned by a different principal — "
                 f"cross-principal delete refused"
@@ -426,6 +514,13 @@ class ConnectionVault:
         if entry_id in index:
             index.remove(entry_id)
             self._write_index(index)
+        logger.info(
+            "connection_vault.delete.ok",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "entry_id_hint": str(entry_id)[:8],
+            },
+        )
 
     def list_by_principal(self) -> tuple[CredentialEntry, ...]:
         """Return all entries owned by this vault's principal.
@@ -433,17 +528,38 @@ class ConnectionVault:
         Phase 01: returns the metadata-only view (no secrets). The secret
         plaintext is retrievable only via :meth:`get`.
         """
+        logger.info(
+            "connection_vault.list_by_principal.start",
+            extra={"principal_hint": self._principal_genesis_id[:8]},
+        )
         out: list[CredentialEntry] = []
+        stale_count = 0
         for entry_id in self._read_index():
             blob = self._get_password(entry_id)
             if blob is None:
                 # Stale index entry — happens if the OS keychain was wiped
                 # outside the adapter. Skip rather than raise; the next
                 # `set` will re-write the index.
+                stale_count += 1
                 continue
             entry, _secret = _deserialize_record(blob)
             if entry.principal_genesis_id == self._principal_genesis_id:
                 out.append(entry)
+        if stale_count > 0:
+            logger.warning(
+                "connection_vault.list_by_principal.stale_index_entries",
+                extra={
+                    "principal_hint": self._principal_genesis_id[:8],
+                    "stale_count": stale_count,
+                },
+            )
+        logger.info(
+            "connection_vault.list_by_principal.ok",
+            extra={
+                "principal_hint": self._principal_genesis_id[:8],
+                "returned_count": len(out),
+            },
+        )
         return tuple(out)
 
 

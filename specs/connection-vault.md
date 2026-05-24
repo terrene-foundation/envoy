@@ -62,6 +62,14 @@ Grant Moment dialogs that capture credentials use secure-text-field inputs (bypa
 | `EntryNotFoundError`                         | `entry_id` absent (deleted, never existed, or wrong principal)                 | UX surfaces "credential gone"; user re-pairs channel            | Manual                     |
 | `RotationOverdueWarn` (advisory, not raised) | `rotation_policy` cadence exceeded since `created_at`                          | UX nudge to rotate; not a hard block                            | Manual                     |
 | `UsageCounterOverflowError`                  | `usage_counter` reaches int64 ceiling (defensive guard)                        | Reset counter via re-pair; investigate cause (hostile usage?)   | Never (programming bug)    |
+| `PrincipalRequiredError`                     | Vault constructed without a valid sha256-hex `principal_genesis_id`            | Provide the principal's `genesis_id` (sha256 hex, 64 lowercase) | Never (programming bug)    |
+| `InvalidServiceIdentifierError`              | `service_identifier` fails `^[a-z0-9._-]+$` / >256 chars / empty               | Rename service per the validator contract                       | Manual after rename        |
+| `RecordSchemaVersionError`                   | Keychain record's `schema_version` differs from this build's contract          | Upgrade Envoy build OR re-pair credential at current version    | Manual after upgrade       |
+| `CorruptedRecordError`                       | Keychain record / index payload fails JSON decode / shape validation           | Re-pair credential (record was tampered or truncated)           | Manual after re-pair       |
+
+## §X Change log
+
+- 2026-05-24 — Added 4 defensive error rows (`PrincipalRequiredError`, `InvalidServiceIdentifierError`, `RecordSchemaVersionError`, `CorruptedRecordError`) per code-reviewer HIGH-1 + security-reviewer M2/M3 (T-01-24 gate-review). `PrincipalRequiredError` mirrors `envoy/trust/errors.py` contract (`rules/tenant-isolation.md` Rule 2). `InvalidServiceIdentifierError` formalises shard 14 § 7.2 disposition. `RecordSchemaVersionError` distinguishes "present-but-unparseable-version" from `EntryNotFoundError` ("absent"). `CorruptedRecordError` translates raw stdlib decode/key/value exceptions into the typed taxonomy per `rules/zero-tolerance.md` Rule 3a.
 
 ## Cross-references
 

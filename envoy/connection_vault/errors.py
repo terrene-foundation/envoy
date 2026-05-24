@@ -80,3 +80,28 @@ class InvalidServiceIdentifierError(ConnectionVaultError):
     ≤256 chars, matches `^[a-z0-9._-]+$`. The Foundation `service_identifier`
     registry per `specs/foundation-ops.md` is a Phase 02 concern.
     """
+
+
+class RecordSchemaVersionError(ConnectionVaultError):
+    """Keychain record schema_version differs from this Envoy build's contract.
+
+    Distinct from :class:`EntryNotFoundError` (the entry IS present) and from
+    :class:`CorruptedRecordError` (the bytes parsed cleanly — they're just at
+    a version this build does not understand). Per code-reviewer MED-1
+    (2026-05-24): conflating "absent" with "present-but-incompatible-version"
+    misleads downstream UX (re-pair vs upgrade Envoy).
+    """
+
+
+class CorruptedRecordError(ConnectionVaultError):
+    """Keychain record / index entry failed deserialization.
+
+    Raised when ``_deserialize_record`` or ``_read_index`` encounters a payload
+    that fails JSON decode, lacks required fields, or has shape-incompatible
+    values (UUID/enum/datetime parsing failures). Phase 01 security disposition
+    (per security-reviewer M2, 2026-05-24): a tampered or accidentally-malformed
+    keychain entry MUST translate to a typed envoy error rather than letting
+    a raw stdlib ``json.JSONDecodeError`` / ``KeyError`` / ``ValueError``
+    propagate to the caller — typed taxonomy is the contract per
+    ``rules/zero-tolerance.md`` Rule 3a.
+    """

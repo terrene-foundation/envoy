@@ -69,10 +69,19 @@ def import_credentials_from_env(
     entry_ids: list[str] = []
     for spec in specs:
         raw: Optional[str] = os.environ.get(spec.env_var_name)
-        if raw is None or not raw.strip():
+        # Skip-reason granularity per security-reviewer L3 (2026-05-24):
+        # operator needs to distinguish "didn't paste" from "pasted whitespace".
+        if raw is None:
             logger.info(
                 "connection_vault.env_import.skip",
-                extra={"env_var": spec.env_var_name, "reason": "unset_or_empty"},
+                extra={"env_var": spec.env_var_name, "reason": "unset"},
+            )
+            skipped.append(spec.env_var_name)
+            continue
+        if not raw.strip():
+            logger.info(
+                "connection_vault.env_import.skip",
+                extra={"env_var": spec.env_var_name, "reason": "empty_after_strip"},
             )
             skipped.append(spec.env_var_name)
             continue

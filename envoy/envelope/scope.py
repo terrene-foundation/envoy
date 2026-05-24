@@ -16,10 +16,14 @@ from typing import Union
 
 from envoy.envelope.types import EnvelopeConfig, EnvelopeConfigInput, EnvelopeScopeRef
 
-EnvelopeForScopeCheck = Union[EnvelopeConfig, EnvelopeConfigInput]
+# Canonical alias for "any envelope shape that has operational + communication
+# dimensions". Per code-reviewer MED-5 (2026-05-24): single source of truth so
+# Phase 02's `SessionEnvelope` extension lands in one place. Re-exported from
+# `envoy.envelope.__init__` and consumed by `envoy.connection_vault.adapter`.
+ActiveEnvelope = Union[EnvelopeConfig, EnvelopeConfigInput]
 
 
-def envelope_contains_scope(envelope: EnvelopeForScopeCheck, scope: EnvelopeScopeRef) -> bool:
+def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -> bool:
     """Return True iff `envelope` permits `scope` per Phase 01 semantics.
 
     Both conditions MUST hold:

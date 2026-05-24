@@ -45,6 +45,44 @@ _SERVICE_IDENTIFIER_RE = re.compile(r"^[a-z0-9._-]+$")
 _SERVICE_IDENTIFIER_MAX_LEN = 256
 USAGE_COUNTER_MAX = 2**63 - 1  # int64 ceiling per spec Error taxonomy row
 
+# `principal_genesis_id` is documented in `specs/connection-vault.md` § Per-entry
+# schema as a "sha256 hex" — 64 lowercase hex characters. Phase 01 validation
+# enforces that shape so the value cannot carry control chars / colons / newlines
+# that would namespace-collide with the `__index__:{principal}` keyring keys
+# (security-reviewer M3, 2026-05-24).
+_PRINCIPAL_GENESIS_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def validate_principal_genesis_id(value: str) -> None:
+    """Phase 01 validation: principal_genesis_id MUST be sha256-hex shape.
+
+    Per security-reviewer M3 (2026-05-24): the constructor previously only
+    checked non-empty-string, allowing control characters / colons / newlines
+    that would collide with the ``__index__:{principal}`` keyring key shape.
+    The spec contract is "sha256 hex" — 64 lowercase hex characters.
+
+    Raises:
+        PrincipalRequiredError: value is empty, wrong type, or fails the
+            ``^[0-9a-f]{64}$`` shape check.
+    """
+    from envoy.connection_vault.errors import PrincipalRequiredError
+
+    if not isinstance(value, str):
+        raise PrincipalRequiredError(
+            f"principal_genesis_id must be str, got {type(value).__name__}"
+        )
+    if not value:
+        raise PrincipalRequiredError(
+            "ConnectionVault requires a non-empty principal_genesis_id "
+            "(see rules/tenant-isolation.md Rule 2)"
+        )
+    if not _PRINCIPAL_GENESIS_ID_RE.match(value):
+        raise PrincipalRequiredError(
+            "principal_genesis_id must be sha256-hex shape "
+            "(64 lowercase hex characters per specs/connection-vault.md § "
+            "Per-entry schema)"
+        )
+
 
 def validate_service_identifier(value: str) -> None:
     """Phase 01 validation per shard 14 § 7.2 disposition.
@@ -125,9 +163,9 @@ class CredentialEntry:
             raise ValueError(
                 f"CredentialEntry.usage_counter must be non-negative (got {self.usage_counter})"
             )
-        # principal_genesis_id is a sha256 hex string per spec; defensive shape check
-        if not self.principal_genesis_id or not isinstance(self.principal_genesis_id, str):
-            raise ValueError("CredentialEntry.principal_genesis_id must be a non-empty string")
+        # principal_genesis_id is a sha256 hex string per spec; full shape check
+        # via the shared validator (security-reviewer M3, 2026-05-24).
+        validate_principal_genesis_id(self.principal_genesis_id)
         validate_service_identifier(self.service_identifier)
 
 
