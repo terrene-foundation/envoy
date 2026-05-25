@@ -1,8 +1,10 @@
 """envoy.boundary_conversation.envelope_assembler — per-state extraction → EnvelopeConfigInput.
 
 ``EnvelopeConfigInputAssembler`` accumulates the structured extraction produced
-at each conversation state (S1..S8) and, at S9 sign-step, assembles a single
-``EnvelopeConfigInput`` for the Envelope Compiler.
+at each envelope-dimension conversation state (S1..S5) and, at S9 sign-step,
+assembles a single ``EnvelopeConfigInput`` for the Envelope Compiler. S6/S7/S8/S9
+are NOT recorded — they feed the template cache / Trust Vault / Shamir backup,
+not the envelope dimensions.
 
 Per `workspaces/phase-01-mvp/01-analysis/08-boundary-conversation-implementation.md`
 § 3.2 + § 4 + § 5.1, the assembler MUST:
@@ -41,11 +43,15 @@ __all__ = ["EnvelopeConfigInputAssembler"]
 
 logger = logging.getLogger(__name__)
 
-# Conversation-state node-ids whose extractions the assembler consumes. S0/S10
-# carry no user answer; S6 (template offer) and S7 (visible secret) feed the
-# runtime (template cache / Trust Vault) rather than the envelope dimensions;
-# S8 (Shamir) configures backup, not the envelope. The dimensions are authored
-# from S1 (money), S2 (people), S3 (topics), S4 (hours), S5 (first task).
+# Conversation-state node-ids whose extractions the assembler consumes — the
+# FIVE envelope-dimension states ONLY. S0/S10 carry no user answer; S6 (template
+# offer) feeds the runtime template cache; S7 (visible secret) is stored via
+# `trust_store.set_visible_secret` — recording it here serialized the secret
+# phrase as plaintext into assembler_json (R1-HIGH-1b); S8 (Shamir) configures
+# backup, not the envelope; S9 (review/sign) carries no authored dimension.
+# None of S6/S7/S8/S9 contribute an authored_constraint dimension, so the
+# assembler must NOT record them. The dimensions are authored from S1 (money),
+# S2 (people), S3 (topics), S4 (hours), S5 (first task).
 _FED_STATES: frozenset[str] = frozenset(
     {
         "S1_money",
@@ -53,9 +59,6 @@ _FED_STATES: frozenset[str] = frozenset(
         "S3_topics",
         "S4_hours",
         "S5_first_task",
-        "S6_template_offer",
-        "S7_visible_secret",
-        "S8_shamir",
     }
 )
 
@@ -91,10 +94,17 @@ class EnvelopeConfigInputAssembler:
     def feed(self, node_id: str, extraction: dict[str, Any]) -> None:
         """Record the structured extraction produced at ``node_id``.
 
+        Only the five envelope-dimension states (S1..S5) are recorded; every
+        other state (S0/S6/S7/S8/S9/S10) is ignored. S7's visible-secret phrase
+        is stored via `trust_store.set_visible_secret`, NOT here — recording it
+        here would serialize the secret as plaintext into assembler_json. A raw
+        ``reply`` key is defensively stripped before storage (the runtime no
+        longer feeds it, but the assembler owns the storage contract).
+
         Re-feeding the same ``node_id`` overwrites the prior extraction (a
         novelty re-prompt at S3/S5 replaces the rejected answer). Unknown /
-        no-answer states (S0, S10) are ignored rather than raising — the runtime
-        calls ``feed`` uniformly per transition and the assembler owns the
+        no-answer states are ignored rather than raising — the runtime calls
+        ``feed`` uniformly per transition and the assembler owns the
         which-states-count decision.
         """
         if not isinstance(extraction, dict):
@@ -107,7 +117,9 @@ class EnvelopeConfigInputAssembler:
                 extra={"node_id": node_id},
             )
             return
-        self._extractions[node_id] = dict(extraction)
+        # Defensively drop a verbatim ``reply`` key — it is not an authored
+        # dimension and must never be serialized into assembler_json.
+        self._extractions[node_id] = {k: v for k, v in extraction.items() if k != "reply"}
         logger.debug(
             "envelope_assembler.feed.recorded",
             extra={"node_id": node_id, "field_count": len(extraction)},

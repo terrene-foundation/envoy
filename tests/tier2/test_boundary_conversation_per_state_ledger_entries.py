@@ -35,7 +35,11 @@ import pytest
 from kailash.trust.audit_store import AuditFilter, InMemoryAuditStore
 
 from envoy.authorship.novelty import NoveltyChecker
-from envoy.boundary_conversation import BoundaryConversationRuntime
+from envoy.boundary_conversation import (
+    BoundaryConversationRuntime,
+    DuressBannerUnacknowledgedError,
+    VisibleSecretMissingError,
+)
 from envoy.envelope import EnvelopeCompiler, LocalTemplateResolver
 from envoy.ledger import EnvoyLedger
 from envoy.shamir import ShamirRitualCoordinator, TrustVaultChecklistPersister
@@ -197,8 +201,9 @@ async def _drive_full_conversation(runtime: BoundaryConversationRuntime) -> str:
     paused = await runtime.advance(ritual_id, "use the default 3-of-5 backup")
     assert paused.state == "PAUSED"
     assert paused.paused_for == "shamir_ritual"
-    # User completes the physical ritual offline → resume clears suspension.
-    runtime.current_plan(ritual_id).suspension = None
+    # User completes the physical ritual offline → resume clears suspension
+    # through the PUBLIC clear-path (R1-HIGH-1).
+    await runtime.resume_from_shamir(ritual_id)
     # S9 review & sign → completes.
     done = await runtime.advance(ritual_id, "yes, sign it")
     assert done.state == "COMPLETE"
@@ -249,3 +254,150 @@ class TestPerStateLedgerEntries:
         await _drive_full_conversation(runtime)
         report = await envoy_ledger.verify_chain()
         assert report.success is True
+
+
+class TestVisibleSecretGate:
+    async def test_boundary_conversation_visible_secret_missing_raises(
+        self,
+        runtime: BoundaryConversationRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """T-018 mitigation: a user who never completes S7 (no visible secret
+        icon/color/phrase) is blocked with VisibleSecretMissingError and forced
+        back to S7 — the secret cannot be silently skipped on the way to sign."""
+        # Make the S7 extraction return blank secret components so the S7 handler
+        # rejects it (no visible secret is ever stored).
+        monkeypatch.setitem(
+            _STATE_JSON, "S7_visible_secret", {"icon": "", "color": "", "phrase": ""}
+        )
+
+        ritual_id = await runtime.start(principal_id=PRINCIPAL)
+        await runtime.advance(ritual_id, "let's begin")  # S0 → S1
+        for state in (
+            "S1_money",
+            "S2_people",
+            "S3_topics",
+            "S4_hours",
+            "S5_first_task",
+            "S6_template_offer",
+        ):
+            out = await runtime.advance(ritual_id, f"answer for {state}")
+            assert out.state == "IN_PROGRESS", (state, out.error)
+
+        # S7 with a blank secret → blocked, forced back to S7.
+        blocked = await runtime.advance(ritual_id, "no secret here")
+        assert blocked.state == "ERROR"
+        assert isinstance(blocked.error, VisibleSecretMissingError)
+        assert blocked.current_state == "S7_visible_secret"
+        assert runtime.current_state(ritual_id) == "S7_visible_secret"
+
+        # The visible secret was never stored.
+        assert await runtime._trust_store.get_visible_secret(PRINCIPAL) is None
+
+
+class TestAssemblerNoPlaintextSecret:
+    async def test_persisted_assembler_excludes_reply_and_secret(
+        self,
+        runtime: BoundaryConversationRuntime,
+        trust_adapter: TrustStoreAdapter,
+    ) -> None:
+        """R1-HIGH-1b regression: the persisted boundary_conversation_state row's
+        assembler_json contains NO `reply` key and NONE of the S7 visible-secret
+        fields (phrase/icon/color) — the secret is never serialized plaintext."""
+        ritual_id = await runtime.start(principal_id=PRINCIPAL)
+        await runtime.advance(ritual_id, "let's begin")  # S0 → S1
+        for state in (
+            "S1_money",
+            "S2_people",
+            "S3_topics",
+            "S4_hours",
+            "S5_first_task",
+            "S6_template_offer",
+            "S7_visible_secret",
+        ):
+            out = await runtime.advance(ritual_id, f"my answer for {state}")
+            assert out.state == "IN_PROGRESS", (state, out.error)
+
+        # Load the persisted row and inspect assembler_json.
+        row = await trust_adapter.load_boundary_conversation_state(ritual_id)
+        assert row is not None
+        assembler_blob = json.dumps(row.assembler_dict)
+        # No raw reply echoed into the persisted assembler.
+        assert "reply" not in assembler_blob
+        # No S7 secret components serialized. The S7 secret phrase from
+        # _STATE_JSON must not appear anywhere in the persisted assembler.
+        secret = _STATE_JSON["S7_visible_secret"]
+        assert secret["phrase"] not in assembler_blob
+        assert "phrase" not in assembler_blob
+        assert "icon" not in assembler_blob
+        assert "color" not in assembler_blob
+        # The five envelope-dimension states ARE recorded.
+        extractions = row.assembler_dict.get("extractions", {})
+        assert set(extractions) == {
+            "S1_money",
+            "S2_people",
+            "S3_topics",
+            "S4_hours",
+            "S5_first_task",
+        }
+
+
+class _DuressSeededAdapter(TrustStoreAdapter):
+    """Real TrustStoreAdapter whose documented `shadow_segment_unread_duress_events`
+    returns one unread duress event — simulating the P02 contract via the same
+    documented surface (P01 returns []). NOT a mock: every store/sqlite/Ed25519
+    path is the real adapter; only the documented duress-query return is seeded.
+    """
+
+    async def shadow_segment_unread_duress_events(self, principal_id: str) -> list:
+        # Honor the real initialize/validation contract, then return a seeded
+        # event (the P02 shape: a list of unread duress event records).
+        await super().shadow_segment_unread_duress_events(principal_id)
+        return [{"duress_event_id": "duress-001", "principal_id": principal_id}]
+
+
+class TestDuressBannerGate:
+    async def test_boundary_conversation_duress_banner_gate(
+        self,
+        envoy_ledger: EnvoyLedger,
+        unlocked_vault: TrustVault,
+        tmp_path: Path,
+    ) -> None:
+        """§ 3.6 post-duress banner gate: when the shadow segment carries an
+        unread duress event, advancing past S0 raises
+        DuressBannerUnacknowledgedError until acknowledge_duress is called."""
+        adapter = _DuressSeededAdapter(vault_path=tmp_path / "alice.vault", principal_id=PRINCIPAL)
+        await adapter.initialize()
+        try:
+            shamir = ShamirRitualCoordinator(
+                master_key_source=_MasterKeySource(unlocked_vault),
+                commitment_binder=_InMemoryGenesisBinder(),
+                paper_renderer=PaperShardRenderer(),
+                checklist_persister=TrustVaultChecklistPersister(
+                    trust_vault=unlocked_vault, principal_id=PRINCIPAL
+                ),
+                principal_id=PRINCIPAL,
+            )
+            runtime = BoundaryConversationRuntime(
+                model_router=_DeterministicRouter(),
+                trust_store=adapter,
+                ledger=envoy_ledger,
+                envelope_compiler=EnvelopeCompiler(
+                    template_resolver=LocalTemplateResolver(tmp_path)
+                ),
+                shamir_coordinator=shamir,
+                novelty_checker=NoveltyChecker(),
+            )
+
+            ritual_id = await runtime.start(principal_id=PRINCIPAL)
+            # Unacknowledged duress banner blocks advancing past S0.
+            with pytest.raises(DuressBannerUnacknowledgedError):
+                await runtime.advance(ritual_id, "let's begin")
+
+            # Acknowledge → the gate unblocks and S0 advances to S1.
+            runtime.acknowledge_duress(ritual_id)
+            out = await runtime.advance(ritual_id, "let's begin")
+            assert out.state == "IN_PROGRESS"
+            assert out.current_state == "S1_money"
+        finally:
+            await adapter.close()
