@@ -700,15 +700,27 @@ Tier 1 coverage: 79 tests across `tests/tier1/test_connection_vault_adapter.py` 
 
 **Source:** Build seq § Wave 1 #envoy.runtime; shard `01-analysis/18-runtime-abstraction-stub.md`.
 
-**Steps:**
+**Steps (as shipped):**
 
-1. Abstract interface contract — Python ABC matching spec; ALL methods declared abstract.
-2. `kailash_py` adapter (sole Phase 01 backend) — implements every ABC method by composing the relevant Envoy primitive.
-3. Feature-flagged `kailash_rs_bindings` slot — empty module raising `RuntimeBackendNotWired` until Phase 02.
+1. **Protocol contract** (NOT ABC) — `envoy/runtime/protocol.py` declares `KailashRuntime` as a PEP 544 `@runtime_checkable Protocol` (deviation from original "ABC" prose; per shard 18 § 3.1 + § 7.1 rationale). All spec methods present per `specs/runtime-abstraction.md` § Abstract interface tables.
+2. **kailash_py adapter** (`envoy/runtime/adapters/kailash_py.py`) — wired methods (lifecycle, runtime*identity, trust_sign, envelope_canonical_form, runtime_sign/verify) forward to upstream `kailash`. Methods whose substrate doesn't exist in Phase 01 (classifier*_, prompt*assemble, tool_output_sanitize, grant_moment_surface, first_time_action_gate, phase_a/b_sign*_, budget\_\*, envelope_check, envelope_re_read_checkpoint) raise typed `Phase02SubstrateNotWiredError` (NOT bare `NotImplementedError` — `rules/zero-tolerance.md` Rule 2 + Rule 6 iterative-TODO exception per workspace todo link).
+3. **Feature-flagged kailash_rs_bindings slot** — `envoy/runtime/adapters/kailash_rs_bindings.py` raises `RsBindingsNotAvailableInPhase01Error` (typed) at construction while `feature_flags.RS_BINDINGS_ENABLED == False`. `envoy/runtime/selection.py::get_runtime()` gates at the factory boundary.
 
-**Capacity check:** ~150 LOC; 3 invariants (every ABC method declared abstract; kailash_py adapter is sole Phase 01 backend; rust slot raises until Phase 02); 2 call-graph hops. Within budget.
+**Capacity check (actual vs estimate):** Estimate ~150 LOC; **actual ~1294 LOC across 8 files** (protocol 256 + kailash_py 482 + kailash_rs_bindings 242 + errors 118 + selection 77 + feature_flags 23 + adapters/**init** 26 + **init** 70). Overage stems from full spec-method enumeration per shard 18 § 3.1 (every method on Protocol per `rules/zero-tolerance.md` Rule 6) + 12 typed errors per spec § Error taxonomy + each Phase02 stub naming its substrate-todo anchor for `grep "Phase02SubstrateNotWiredError" workspaces/` enumeration. 3 invariants hold (Protocol matches spec method-set; kailash_py is sole Phase 01 backend; rs slot raises while flag=False); 2 call-graph hops. Within shard budget despite LOC overage.
 
-**Estimate:** 0.5 session.
+**Estimate:** 0.5 session. **Actual:** 1 session (2026-05-25, merged PR #31 SHA `3ff59db`).
+
+**Status:** ✅ SHIPPED 2026-05-25 on `feat/phase-01-T-01-26-runtime-abstraction` (squash `324470a`). Tier 2 wiring landed via /redteam Round 1 same-shard sweep — `tests/tier2/test_envoy_runtime_wiring.py` (19 cases: get_runtime factory + RS-blocked + lifecycle + sign/verify round-trip + ledger_append/verify + Phase02-stub typed-raise) closes orphan-detection Rule 1 + 2 against the 6-module runtime surface.
+
+**Deviations from shard 18** (per `rules/specs-authority.md` MUST Rule 6 — orchestrator-narrowed scope at /implement launch):
+
+- **Protocol instead of ABC.** Per shard 18 § 3.1 + § 7.1 disposition #1: `KailashRuntime` is a PEP 544 `Protocol`, not `abc.ABC`. Structural-typing of already-typed adapters; runtime_checkable Protocol semantics satisfy the substitution boundary.
+- **NO `@byte_identical` / `@semantically_equivalent` decorators** + NO `__contract_tier__` attribute machinery. Shard 18 § 4.2 encoding 2 deferred to a follow-up shard; conformance-tier dispatch lives in the spec text + this todo's verdict, not in Protocol decorators.
+- **NO return-type wrappers** (`envoy/runtime/types.py` not shipped). Shard 18 § 4.2 encoding 1 deferred; concrete return types from upstream primitives are forwarded as-is.
+- **NO conformance runner + cross-runtime comparator** (`tests/conformance/runner_py.py`). Shard 18 § 6.4 deferred to a Wave-2/conformance-corpus shard.
+- **NO 12-primitive import-discipline migration.** Existing Wave-1 primitives (envelope, trust, ledger, connection_vault) keep direct `kailash` imports. The shard 18 § 5.1 invariant ("primitives import from `envoy.runtime`, never `kailash`") is a load-bearing Phase 02 architectural target; migration is a massive cross-cutting shard separate from this build-of-the-surface.
+
+These deviations are pre-declared narrow-scope decisions per `rules/specs-authority.md` MUST Rule 5c (orchestrator amends todo text at launch when shard scope is narrowed); the additive surface remains forward-compatible with the deferred decorators / wrappers / migration.
 
 ---
 
@@ -728,9 +740,13 @@ Tier 1 coverage: 79 tests across `tests/tier1/test_connection_vault_adapter.py` 
 
 **LOAD-BEARING:** R2-H-02 partition prevents the stub-and-deferred-test mismatch from `rules/orphan-detection.md` Rule 4a. Regression grep MUST verify zero non-test imports of the four `PhaseDeferredError` modules.
 
-**Tests added:** `tests/regression/test_r2_h_02_heartbeat_stub_partition.py` — asserts `client.maybe_record_flag` is invoked by ≥21 emit sites; asserts zero production imports of the 4 deferred modules.
+**Tests added:** `tests/regression/test_r2_h_02_heartbeat_stub_partition.py` — asserts the 5-stub partition shape today + zero non-test imports of the 4 deferred modules. The "≥21 emit-site" assertion (per the original prose) is DEFERRED to a Wave-4-close regression test because the 21 emit-site primitives (Boundary Conversation T-02-40, Daily Digest, Grant Moment, Authorship Score, Posture ladder, Budget tracker, Channel adapters, Runtime stub, Enterprise mode) are owned by Wave 2/3/4 shards that do not exist on main today. Asserting `≥21` today would assert against modules that do not exist.
 
-**Capacity check:** ~100 LOC stubs + 1 regression test; 2 invariants (no-op client; deferred-modules unreachable from production); 1 call-graph hop. Within budget.
+**Capacity check (actual vs estimate):** Estimate ~100 LOC; **actual ~666 LOC across 8 files** (client 64 + errors 138 + payload 129 + 4× PhaseDeferredError modules at 63 each = 252 + **init** 83). Heavy docstring weight (each PhaseDeferredError module ships a full docstring naming its Phase-02 substrate). Load-bearing logic remains ~100 LOC (no-op `maybe_record_flag`, payload validation + T-041 + T-054 defenses); the remainder is documentation + 10 typed errors per spec § Error taxonomy. 2 invariants (no-op client; deferred-modules unreachable from production) + 2 added during code-review (T-041 DuressFlagLeakageRefusedError structural defense; T-054 PayloadSchemaDriftError 21-flag whitelist). 1 call-graph hop. Within shard budget despite LOC overage — invariant count + call-graph depth + describable-in-3-sentences hold.
+
+**Estimate:** 0.25 session. **Actual:** 1 session (2026-05-25, merged PR #33 SHA `1bcd492`). 23 regression tests pass.
+
+**Status:** ✅ SHIPPED 2026-05-25 on `feat/phase-01-T-01-27-heartbeat-stubs` (squash `69de9ac`). 5-stub partition correctly enforces R2-H-02 boundary; regression grep returns ZERO non-test imports of the 4 deferred modules.
 
 **Estimate:** 0.25 session.
 

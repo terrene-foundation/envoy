@@ -301,7 +301,10 @@ class EnvoyProviderRiskAnnotator:
                 ``model_invoke`` to the originating action's Ledger entries
                 per ``rules/observability.md`` Rule 2 correlation contract).
         """
-        logger.info(
+        # INFO→DEBUG per `rules/observability.md` Rule 8: `provider_id` +
+        # `risk_class` are schema-revealing identifiers (deployment-topology
+        # leakage to log aggregators). /redteam Round 1 MEDIUM-1.
+        logger.debug(
             "model.risk_annotation.emit.start",
             extra={
                 "action_id": action_id,
@@ -317,7 +320,11 @@ class EnvoyProviderRiskAnnotator:
             },
             intent_id=action_id,
         )
-        logger.info(
+        # INFO→DEBUG per `rules/observability.md` Rule 8: `provider_id` is
+        # schema-revealing. `entry_id_hint` is already an 8-char hash prefix
+        # (Rule 8 hash form, safe). Demoting whole line keeps contract uniform
+        # with .start. /redteam Round 1 MEDIUM-1.
+        logger.debug(
             "model.risk_annotation.emit.ok",
             extra={
                 "action_id": action_id,

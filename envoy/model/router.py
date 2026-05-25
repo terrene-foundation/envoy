@@ -172,7 +172,10 @@ class EnvoyModelRouter:
             # — model_copy(update={...}) is the canonical mutator.
             deployment = deployment.model_copy(update={"default_model": override_model})
             client = client.with_deployment(deployment)
-            logger.info(
+            # INFO→DEBUG per `rules/observability.md` Rule 8: `default_model`
+            # is a schema-revealing identifier that bleeds to log aggregators.
+            # /redteam Round 1 MEDIUM-1 (commit a52a14d audit).
+            logger.debug(
                 "model.router.for_primitive.override_applied",
                 extra={
                     "primitive": primitive,
@@ -198,7 +201,10 @@ class EnvoyModelRouter:
                         f"envelope's operational dimension."
                     )
 
-        logger.info(
+        # INFO→DEBUG per `rules/observability.md` Rule 8: `preset_name` +
+        # `default_model` are schema-revealing identifiers that bleed to log
+        # aggregators. /redteam Round 1 MEDIUM-1.
+        logger.debug(
             "model.router.for_primitive.ok",
             extra={
                 "primitive": primitive,
