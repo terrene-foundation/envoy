@@ -88,8 +88,11 @@ class VisibleSecret:
     originated from Envoy (a spoofer cannot reproduce the user's chosen
     icon/color/phrase combination).
 
-    Stored in the master-key-encrypted Trust Vault (NOT the Connection
-    Vault — Connection Vault holds API credentials per shard 8 § 3.3).
+    Phase-01: persisted as plaintext-at-rest in a 0o600 sibling SQLite
+    file, consistent with the chain/posture sub-stores; the T-01-13
+    vault-container migration moves all sub-stores into the AES-256-GCM
+    TrustVault uniformly (NOT the Connection Vault — Connection Vault
+    holds API credentials per shard 8 § 3.3).
     """
 
     icon: str
@@ -105,7 +108,10 @@ class BoundaryConversationStateRow:
     33–35) + `01-analysis/08-boundary-conversation-implementation.md`
     § 5.2: every answer transition persists `(ritual_id, principal_id,
     current_state, plan_dict, assembler_dict, updated_at)` to a dedicated
-    table inside the Trust Vault. `load_boundary_conversation_state(ritual_id)`
+    table in the boundary-conversation sub-store (Phase-01: plaintext-at-rest
+    in a 0o600 sibling SQLite file; the T-01-13 vault-container migration moves
+    all sub-stores into the AES-256-GCM TrustVault uniformly).
+    `load_boundary_conversation_state(ritual_id)`
     rehydrates this row; the runtime reconstructs the in-flight `Plan` from
     `plan_dict` and the envelope assembler from `assembler_dict`.
 

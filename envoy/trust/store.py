@@ -238,19 +238,21 @@ class TrustStoreAdapter:
         self._principal_id: PrincipalId = principal_id
         self._vault_path = Path(vault_path)
 
-        # Sub-store paths land alongside the vault path. The vault container
-        # (T-01-13) will wrap these into a single AES-256-GCM file; for now
-        # they live as sibling files for ease of inspection during Wave 1
-        # milestone testing.
+        # Sub-store paths land alongside the vault path. Phase-01: each is
+        # persisted as plaintext-at-rest in a 0o600 sibling SQLite file,
+        # consistent with the chain/posture sub-stores. The T-01-13
+        # vault-container migration moves all sub-stores into the AES-256-GCM
+        # TrustVault uniformly; until then they are unencrypted sibling files.
         self._vault_path.parent.mkdir(parents=True, exist_ok=True)
         chain_db = str(self._vault_path.parent / f"{self._vault_path.stem}.chain.db")
         posture_db = str(self._vault_path.parent / f"{self._vault_path.stem}.posture.db")
         # Boundary Conversation persistence + visible-secret storage live in a
         # dedicated SQLite file alongside the chain/posture sub-stores, matching
-        # the existing sibling-file layout. T-01-13 (Trust Vault container)
-        # wraps every sibling SQLite file into the single AES-256-GCM container;
-        # this file rides inside that container with the others — it is NOT a
-        # parallel persistence path, it is one more region of the same store.
+        # the existing sibling-file layout. Phase-01: plaintext-at-rest in a
+        # 0o600 sibling SQLite file, consistent with the chain/posture
+        # sub-stores; the T-01-13 vault-container migration moves all sub-stores
+        # into the AES-256-GCM TrustVault uniformly. It is NOT a parallel
+        # persistence path — it is one more region of the same store.
         self._bc_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.bc.db")
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
@@ -701,8 +703,10 @@ class TrustStoreAdapter:
     #
     # All three persist through the SAME store the adapter already owns: a
     # dedicated SQLite db file (`self._bc_db_path`) that lives alongside the
-    # chain/posture sub-stores and is wrapped into the single AES-256-GCM Trust
-    # Vault container at T-01-13. Persistence uses the same synchronous
+    # chain/posture sub-stores. Phase-01: plaintext-at-rest in a 0o600 sibling
+    # SQLite file, consistent with the chain/posture sub-stores; the T-01-13
+    # vault-container migration moves all sub-stores into the AES-256-GCM
+    # TrustVault uniformly. Persistence uses the same synchronous
     # `sqlite3` + per-thread connection + WAL + 0o600 idiom kailash-py's
     # `SqliteTrustStore` uses (shard 5 § 70), wrapped in `asyncio.to_thread`
     # for the async public surface (`rules/patterns.md` § Paired Public
@@ -782,8 +786,11 @@ class TrustStoreAdapter:
         Invoked at Boundary Conversation state S7 per
         `01-analysis/08-boundary-conversation-implementation.md` § 5.2. The
         visible secret is the structural anti-spoofing defense rendered into
-        duress modals + Grant-Moment surfaces; it lives in the master-key-
-        encrypted Trust Vault (NOT the Connection Vault — shard 8 § 3.3).
+        duress modals + Grant-Moment surfaces. Phase-01: persisted as
+        plaintext-at-rest in a 0o600 sibling SQLite file, consistent with the
+        chain/posture sub-stores; the T-01-13 vault-container migration moves
+        all sub-stores into the AES-256-GCM TrustVault uniformly (NOT the
+        Connection Vault — shard 8 § 3.3).
 
         Upsert semantics: re-setting the visible secret for the same
         principal_id overwrites the prior value. Paired with

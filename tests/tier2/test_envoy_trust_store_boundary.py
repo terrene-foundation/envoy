@@ -5,16 +5,20 @@ Source: shard 8 § 5.2 (`01-analysis/08-boundary-conversation-implementation.md`
 § Post-duress review step (lines 41–43).
 
 Exercises the four Boundary-Conversation support methods added to
-`TrustStoreAdapter` against a REAL tempfile-backed encrypted Trust Vault store
-(real `sqlite3`, real `SqliteTrustStore`/`SQLitePostureStore` composition, real
-Ed25519 key manager) — NO mocking per `rules/testing.md` § Tier 2. Every write
-is verified by a read-back (Tier-3 discipline carried into Tier 2 for the
-state-persistence surface per `rules/testing.md` § Tier 3 read-back contract).
+`TrustStoreAdapter` against a REAL tempfile-backed Trust Store (real `sqlite3`,
+real `SqliteTrustStore`/`SQLitePostureStore` composition, real Ed25519 key
+manager) — NO mocking per `rules/testing.md` § Tier 2. Phase-01 persists
+plaintext-at-rest in a 0o600 sibling SQLite file (the T-01-13 vault-container
+migration moves all sub-stores into the AES-256-GCM TrustVault uniformly).
+Every write is verified by a read-back (Tier-3 discipline carried into Tier 2
+for the state-persistence surface per `rules/testing.md` § Tier 3 read-back
+contract).
 
 The adapter is constructed exactly as the Tier 1 trust-store tests construct it
 (`vault_path=` + `principal_id=`, then `await initialize()`); the persistence
-flows through the same store the adapter owns (a dedicated SQLite region wrapped
-into the Trust Vault container at T-01-13), not a parallel path.
+flows through the same store the adapter owns (a dedicated SQLite region; the
+T-01-13 vault-container migration wraps all sub-stores uniformly), not a
+parallel path.
 """
 
 from __future__ import annotations
