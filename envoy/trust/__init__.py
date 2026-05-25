@@ -18,10 +18,12 @@ from envoy.trust.errors import (
 )
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.types import (
+    BoundaryConversationStateRow,
     DelegationRequest,
     GenesisSeed,
     PrincipalId,
     SeedResult,
+    VisibleSecret,
 )
 from envoy.trust.vault import DEFAULT_IDLE_TTL_SECONDS, TrustVault
 
@@ -35,8 +37,10 @@ __all__ = [
     "PrincipalRequiredError",
     "TrustStoreError",
     # Types
+    "BoundaryConversationStateRow",
     "DelegationRequest",
     "GenesisSeed",
     "PrincipalId",
     "SeedResult",
+    "VisibleSecret",
 ]
