@@ -23,6 +23,14 @@ type, defeating downstream type-aware compilation. Keeping eager annotations
 preserves precise field types (all annotations here are builtins).
 """
 
+# pyright: reportAssignmentType=false
+# Kaizen Signature DSL: fields are declared `name: type = InputField(...)` /
+# `OutputField(...)` (upstream's own canonical form — see
+# kaizen.signatures.core docstring). The SignatureMeta metaclass reads each
+# field's annotation for the type and the descriptor for config, so the
+# `descriptor assigned to a typed annotation` shape pyright flags is the
+# intended idiom, not a bug. Scoped to this declarations-only module.
+
 from kaizen.signatures.core import InputField, OutputField, Signature
 
 __all__ = [
