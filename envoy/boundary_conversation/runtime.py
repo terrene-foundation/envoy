@@ -42,6 +42,7 @@ from kaizen.l3.plan.suspension import ExplicitCancellationReason, SuspensionReco
 from kaizen.l3.plan.types import Plan, PlanNodeState, PlanState
 from kaizen.signatures.core import Signature
 
+from envoy.authorship.novelty import NoveltyFeedbackBlockError as _AuthorshipNoveltyBlock
 from envoy.boundary_conversation.bet12_telemetry import BET12TelemetryHook
 from envoy.boundary_conversation.envelope_assembler import EnvelopeConfigInputAssembler
 from envoy.boundary_conversation.errors import (
@@ -213,6 +214,38 @@ class BoundaryConversationRuntime:
         """Acknowledge the post-duress banner so the conversation may advance."""
         self._duress_acknowledged[ritual_id] = True
 
+    async def resume_from_shamir(self, ritual_id: str) -> ConversationOutcome:
+        """Clear the S8 Shamir suspension after the user completes the offline
+        physical card distribution, unblocking the S9 sign-step.
+
+        Phase-01: physical card distribution is offline and cannot be
+        programmatically verified, so the user's explicit invocation of this
+        method IS the completion confirmation (per analysis 08 § 5.5). Raises
+        ``InvalidStateTransitionError`` if the conversation is not
+        Shamir-suspended.
+        """
+        self._require_known(ritual_id)
+        plan = self._plans[ritual_id]
+        if plan.suspension is None:
+            raise InvalidStateTransitionError(
+                self._current_state[ritual_id],
+                "no Shamir suspension to resume",
+            )
+        plan.suspension = None
+        plan.state = PlanState.EXECUTING
+        await self._ledger.append(
+            entry_type=_ENTRY_SESSION_BOUNDARY,
+            content={"ritual_id": ritual_id, "resumed_from": "shamir_ritual"},
+        )
+        await self._persist(ritual_id)
+        logger.info(
+            "boundary_conversation.shamir.resumed",
+            extra={"ritual_id": ritual_id, "current_state": self._current_state[ritual_id]},
+        )
+        return ConversationOutcome(
+            state="IN_PROGRESS", current_state=self._current_state[ritual_id]
+        )
+
     def current_plan(self, ritual_id: str) -> Plan:
         """Return the in-flight Plan for ``ritual_id``."""
         return self._plans[self._require_known(ritual_id)]
@@ -354,7 +387,11 @@ class BoundaryConversationRuntime:
             extraction = _parse_structured_output(signature, raw)
         except ValueError as exc:
             raise InvalidStateTransitionError(state, str(exc)) from exc
-        extraction["reply"] = user_input
+        # NOTE: the raw user reply is NOT stored on the extraction. It is fed to
+        # the assembler and persisted into assembler_json; storing the verbatim
+        # reply there serialized the S7 visible-secret phrase + every raw reply
+        # as plaintext-at-rest (R1-HIGH-1b). The novelty gate, S7 secret handler,
+        # and S9 sign-step all read structured fields, never ``reply``.
         return extraction
 
     async def _chat(self, client: Any, prompt: str) -> str:
@@ -399,10 +436,12 @@ class BoundaryConversationRuntime:
         templates = self._template_texts.get(ritual_id, [])
         try:
             self._novelty_checker.assert_novel(authored_text, templates)
-        except Exception as exc:
+        except _AuthorshipNoveltyBlock as exc:
             # The authorship NoveltyFeedbackBlockError carries jaccard/threshold;
             # re-raise as the boundary_conversation taxonomy error carrying the
-            # state so the caller re-prompts S3/S5.
+            # state so the caller re-prompts S3/S5. Only the authorship novelty
+            # block is re-labeled — any other exception (a real checker bug) is
+            # allowed to propagate rather than be masked as a re-prompt (R1-L2).
             jaccard = getattr(exc, "max_jaccard", 0.0)
             raise NoveltyFeedbackBlockError(state, jaccard=jaccard, adversarial=0.0) from exc
 

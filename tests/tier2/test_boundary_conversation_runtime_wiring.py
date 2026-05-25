@@ -244,8 +244,9 @@ class TestRuntimeFullWiringAgainstRealOllama:
         assert paused.state == "PAUSED"
         assert paused.paused_for == "shamir_ritual"
 
-        # Physical ritual complete → clear suspension, then S9 sign.
-        runtime.current_plan(ritual_id).suspension = None
+        # Physical ritual complete → clear suspension via the PUBLIC clear-path,
+        # then S9 sign.
+        await runtime.resume_from_shamir(ritual_id)
         done = await _advance_with_retries(runtime, ritual_id, _REPLIES["S9_review_sign"])
         assert done.state == "COMPLETE", done.error
         assert done.envelope_id, "S9 sign must produce a parseable EnvelopeConfig envelope_id"

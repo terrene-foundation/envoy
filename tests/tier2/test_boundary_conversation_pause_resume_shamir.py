@@ -27,10 +27,12 @@ from collections.abc import AsyncGenerator, Awaitable
 from pathlib import Path
 
 import pytest
+from kailash.trust.audit_store import AuditFilter, InMemoryAuditStore
 
 from envoy.authorship.novelty import NoveltyChecker
 from envoy.boundary_conversation import (
     BoundaryConversationRuntime,
+    InvalidStateTransitionError,
     ShamirRitualIncompleteError,
 )
 from envoy.envelope import EnvelopeCompiler, LocalTemplateResolver
@@ -41,6 +43,7 @@ from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.vault import TrustVault
 
 PRINCIPAL = "alice@example"
+_ENVELOPE_KEY = "_envoy_envelope_v1"
 
 _STATE_JSON: dict[str, dict] = {
     "S1_money": {"monthly_ceiling_microdollars": 250_000_000},
@@ -187,10 +190,60 @@ class TestResumeClearsSuspension:
     ) -> None:
         ritual_id = await _drive_to_shamir_pause(runtime)
         # User completes the physical card distribution offline → the resume
-        # flow clears the Plan suspension.
-        runtime.current_plan(ritual_id).suspension = None
+        # flow clears the Plan suspension through the PUBLIC clear-path.
+        await runtime.resume_from_shamir(ritual_id)
         done = await runtime.advance(ritual_id, "yes, sign it")
         assert done.state == "COMPLETE"
         assert done.envelope_id
         # Suspension cleared on the completed plan.
         assert runtime.current_plan(ritual_id).to_dict()["suspension"] is None
+
+
+class TestShamirResumeClearPath:
+    async def test_boundary_conversation_shamir_resume_clear_path(
+        self,
+        runtime: BoundaryConversationRuntime,
+        audit_store: InMemoryAuditStore,
+    ) -> None:
+        """R1-HIGH-1: the PUBLIC resume_from_shamir clears the S8 suspension,
+        records a `resumed_from:"shamir_ritual"` Ledger entry, and unblocks S9 —
+        a real user who gate-locked at S8→S9 can now sign."""
+        ritual_id = await _drive_to_shamir_pause(runtime)
+
+        # At S8 the Plan is PAUSED with a suspension set.
+        assert runtime.current_plan(ritual_id).suspension is not None
+
+        # PUBLIC clear-path: completion confirmation (offline ritual done).
+        resumed = await runtime.resume_from_shamir(ritual_id)
+        assert resumed.state == "IN_PROGRESS"
+        assert resumed.current_state == "S9_review_sign"
+        # Suspension is cleared.
+        assert runtime.current_plan(ritual_id).suspension is None
+
+        # A resumed_from:"shamir_ritual" Ledger entry was recorded.
+        events = await audit_store.query(AuditFilter(limit=1_000_000))
+        envelopes = [
+            e.metadata[_ENVELOPE_KEY] for e in events if _ENVELOPE_KEY in (e.metadata or {})
+        ]
+        resume_entries = [
+            env
+            for env in envelopes
+            if env["type"] == "session_boundary_crossed"
+            and env["content"].get("resumed_from") == "shamir_ritual"
+        ]
+        assert resume_entries, f"no resumed_from:shamir_ritual entry found: {envelopes}"
+
+        # S9 now completes — the user can sign.
+        done = await runtime.advance(ritual_id, "yes, sign it")
+        assert done.state == "COMPLETE"
+        assert done.envelope_id
+
+    async def test_resume_from_shamir_when_not_suspended_raises(
+        self, runtime: BoundaryConversationRuntime
+    ) -> None:
+        """resume_from_shamir on a conversation that is NOT Shamir-suspended
+        raises InvalidStateTransitionError rather than silently no-op'ing."""
+        ritual_id = await runtime.start(principal_id=PRINCIPAL)
+        await runtime.advance(ritual_id, "begin")  # S0 → S1, no suspension
+        with pytest.raises(InvalidStateTransitionError):
+            await runtime.resume_from_shamir(ritual_id)
