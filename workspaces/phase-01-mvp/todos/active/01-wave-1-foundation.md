@@ -606,11 +606,18 @@ inspect.signature methodology: 5-of-5 clean streak preserved (no kailash symbols
 3. EnvoyProviderRiskAnnotator — preset-name → `ProviderRisk` annotation per spec lines 17-29.
 4. Response-filter pipeline (Phase 01 minimum) — token-budget check; leak-canary stub (Phase 04 corpus); goal-drift classifier stub.
 
-**Capacity check:** ~330 LOC; 5 invariants (LlmClient.from_env contract; per-primitive override resolution; risk annotation semantics; response filter chain order; token-budget enforcement); 3 call-graph hops. Within budget.
+**Capacity check (actual vs estimate):** Estimate ~330 LOC; **actual ~1395 LOC of production code** (router 212 + risk 422 + response_filter 179 + byom_picker 353 + errors 140 + **init** 89) + ~1522 LOC of tests (72 cases). Overage stems from heavy docstrings, full 8-class error taxonomy per spec, full preset→risk map (22 presets), and BYOM picker per shard 13 § 3.1 — no behavior drift, no spec edits. 5 invariants hold (LlmClient.from_env contract; per-primitive override resolution; risk annotation semantics; response filter chain order; token-budget enforcement); 3 call-graph hops. Within shard budget despite LOC overage — invariant count + call-graph depth + describable-in-3-sentences hold.
 
-**Blocks on:** T-01-25 (Connection Vault for secret routing).
+**Blocks on:** T-01-24 (Connection Vault for secret routing) — ✅ shipped 2026-05-25 commit `ecc234a`. (Prior text said "T-01-25" — stale citation corrected 2026-05-25 at integration.)
 
-**Estimate:** 1 session.
+**Estimate:** 1 session. **Actual:** 1 session (2026-05-25, merged PR #32 commit `2160d57`).
+
+**Status:** ✅ SHIPPED 2026-05-25 on `feat/phase-01-T-01-22-model-router` (squash `7adbf30`). 6 modules under `envoy/model/`. Verification: pytest **808/808 pass** on main post-merge. Tier 2 wiring lands at T-01-23. /redteam convergence pending.
+
+**Deviations from shard 13** (per `rules/specs-authority.md` MUST Rule 6):
+
+- `provider_bound` opt-in uses `constraint_id` + `rule_ast` lookup (Phase 01 transitional shape) because `OperationalDimension` dataclass lacks a typed `provider_bound: bool` field today. Phase 02 envelope-compiler upgrade can replace; helper `_envelope_allows_provider_bound` centralizes the contract.
+- Ollama unreachable via kaizen `from_env` selector tier (verified). Reachable via direct preset (`ollama_default_preset()`) or URI tier. T-01-23 Tier 2 exercises real Ollama via direct preset construction.
 
 ---
 
