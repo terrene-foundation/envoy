@@ -21,6 +21,9 @@ would crash inside any pytest-asyncio / Kaizen agent / Nexus handler).
 
 from __future__ import annotations
 
+import asyncio
+import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,10 +102,12 @@ from envoy.trust.errors import (
     TrustChainNotFoundError,
 )
 from envoy.trust.types import (
+    BoundaryConversationStateRow,
     DelegationRequest,
     GenesisSeed,
     PrincipalId,
     SeedResult,
+    VisibleSecret,
 )
 
 
@@ -240,6 +245,13 @@ class TrustStoreAdapter:
         self._vault_path.parent.mkdir(parents=True, exist_ok=True)
         chain_db = str(self._vault_path.parent / f"{self._vault_path.stem}.chain.db")
         posture_db = str(self._vault_path.parent / f"{self._vault_path.stem}.posture.db")
+        # Boundary Conversation persistence + visible-secret storage live in a
+        # dedicated SQLite file alongside the chain/posture sub-stores, matching
+        # the existing sibling-file layout. T-01-13 (Trust Vault container)
+        # wraps every sibling SQLite file into the single AES-256-GCM container;
+        # this file rides inside that container with the others — it is NOT a
+        # parallel persistence path, it is one more region of the same store.
+        self._bc_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.bc.db")
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
         self._posture_store = SQLitePostureStore(db_path=posture_db)
@@ -279,6 +291,7 @@ class TrustStoreAdapter:
             return
         await self._chain_store.initialize()
         await self._authority_registry.initialize()
+        await asyncio.to_thread(self._sync_init_bc_store)
         self._initialized = True
 
     async def close(self) -> None:
@@ -674,6 +687,331 @@ class TrustStoreAdapter:
                 + (f" (+ {len(missing) - 5} more)" if len(missing) > 5 else ""),
             )
         return True
+
+    # ------------------------------------------------------------------
+    # Boundary Conversation persistence + visible secret (shard 8 § 5.2)
+    # ------------------------------------------------------------------
+    #
+    # The Boundary Conversation runtime (built by a separate shard) needs:
+    #   - S7 → store the user's visible secret (icon + color + phrase).
+    #   - after every state transition → upsert per-state ritual progress so
+    #     `envoy init --resume <ritual_id>` can rehydrate.
+    #   - S0 entry → query the shadow segment for unread duress events to gate
+    #     the post-duress banner.
+    #
+    # All three persist through the SAME store the adapter already owns: a
+    # dedicated SQLite db file (`self._bc_db_path`) that lives alongside the
+    # chain/posture sub-stores and is wrapped into the single AES-256-GCM Trust
+    # Vault container at T-01-13. Persistence uses the same synchronous
+    # `sqlite3` + per-thread connection + WAL + 0o600 idiom kailash-py's
+    # `SqliteTrustStore` uses (shard 5 § 70), wrapped in `asyncio.to_thread`
+    # for the async public surface (`rules/patterns.md` § Paired Public
+    # Surface — every adapter method is async). Every query is parameterized
+    # (`?` placeholders) per `rules/trust-plane-security.md` MUST Rule 5.
+
+    _CREATE_VISIBLE_SECRET_SQL = """
+    CREATE TABLE IF NOT EXISTS visible_secret (
+        principal_id TEXT PRIMARY KEY,
+        icon         TEXT NOT NULL,
+        color        TEXT NOT NULL,
+        phrase       TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    )
+    """
+
+    _CREATE_BC_STATE_SQL = """
+    CREATE TABLE IF NOT EXISTS boundary_conversation_state (
+        ritual_id      TEXT PRIMARY KEY,
+        principal_id   TEXT NOT NULL,
+        current_state  TEXT NOT NULL,
+        plan_json      TEXT NOT NULL,
+        assembler_json TEXT NOT NULL,
+        updated_at     TEXT NOT NULL
+    )
+    """
+
+    def _sync_init_bc_store(self) -> None:
+        """Create the visible-secret + boundary-conversation tables.
+
+        Runs on a worker thread via `asyncio.to_thread`. Sets restrictive
+        0o600 permissions on the db file (owner read/write only) per
+        `rules/trust-plane-security.md` MUST Rule 6 — the Trust Vault region
+        holds the visible secret + ritual state, both sensitive.
+        """
+        db_file = Path(self._bc_db_path)
+        if not db_file.exists():
+            db_file.touch(mode=0o600)
+        else:
+            import os as _os
+            import stat as _stat
+
+            try:
+                _os.chmod(db_file, _stat.S_IRUSR | _stat.S_IWUSR)
+            except OSError:
+                # Windows / FS-without-chmod — non-fatal; the touch above set
+                # mode at create time on POSIX.
+                pass
+        conn = self._bc_connect()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(self._CREATE_VISIBLE_SECRET_SQL)
+            conn.execute(self._CREATE_BC_STATE_SQL)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _bc_connect(self) -> sqlite3.Connection:
+        """Open a short-lived SQLite connection to the boundary-conversation db.
+
+        A fresh connection per operation (opened on the `asyncio.to_thread`
+        worker thread) avoids the cross-thread connection-reuse error sqlite3
+        raises by default. Phase 01's single-principal, low-frequency
+        persistence (≤200ms per write per shard 8 § perf) does not need a
+        pooled connection; T-01-13's vault-container migration revisits the
+        connection lifecycle alongside the region-key wiring.
+        """
+        conn = sqlite3.connect(self._bc_db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    async def set_visible_secret(
+        self, principal_id: str, *, icon: str, color: str, phrase: str
+    ) -> None:
+        """Persist the user's visible secret (icon + color + phrase).
+
+        Invoked at Boundary Conversation state S7 per
+        `01-analysis/08-boundary-conversation-implementation.md` § 5.2. The
+        visible secret is the structural anti-spoofing defense rendered into
+        duress modals + Grant-Moment surfaces; it lives in the master-key-
+        encrypted Trust Vault (NOT the Connection Vault — shard 8 § 3.3).
+
+        Upsert semantics: re-setting the visible secret for the same
+        principal_id overwrites the prior value. Paired with
+        `get_visible_secret()` for read-back verification.
+
+        Per `rules/tenant-isolation.md` Rule 2 + `rules/trust-plane-security.md`
+        MUST Rule 2, `principal_id` is required and validated against
+        path-traversal / null-byte / control-char shapes before reaching the
+        SQLite primary key.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
+        now = datetime.now(tz=timezone.utc).isoformat()
+        await asyncio.to_thread(
+            self._sync_set_visible_secret, principal_id, icon, color, phrase, now
+        )
+
+    def _sync_set_visible_secret(
+        self, principal_id: str, icon: str, color: str, phrase: str, now: str
+    ) -> None:
+        conn = self._bc_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO visible_secret
+                    (principal_id, icon, color, phrase, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    icon=excluded.icon,
+                    color=excluded.color,
+                    phrase=excluded.phrase,
+                    updated_at=excluded.updated_at
+                """,
+                (principal_id, icon, color, phrase, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def get_visible_secret(self, principal_id: str) -> VisibleSecret | None:
+        """Return the visible secret for `principal_id`, or None if unset.
+
+        Read-back companion to `set_visible_secret()` (Tier-3 discipline:
+        every write verified by read). Returns None — does NOT raise — when no
+        visible secret has been set for the principal.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
+        row = await asyncio.to_thread(self._sync_get_visible_secret, principal_id)
+        if row is None:
+            return None
+        return VisibleSecret(icon=row["icon"], color=row["color"], phrase=row["phrase"])
+
+    def _sync_get_visible_secret(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._bc_connect()
+        try:
+            cur = conn.execute(
+                "SELECT icon, color, phrase FROM visible_secret WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    async def persist_boundary_conversation_state(
+        self,
+        ritual_id: str,
+        *,
+        plan_dict: dict,
+        assembler_dict: dict,
+        principal_id: str,
+        current_state: str,
+    ) -> None:
+        """Upsert one Boundary Conversation per-state progress row.
+
+        Invoked after every state transition per
+        `01-analysis/08-boundary-conversation-implementation.md` § 5.2 +
+        `specs/boundary-conversation.md` § Persistence + resume (lines 33–35).
+        Stores `(ritual_id, principal_id, current_state, plan_dict,
+        assembler_dict, updated_at)` so `envoy init --resume <ritual_id>` can
+        rehydrate via `load_boundary_conversation_state()`.
+
+        Upsert semantics: re-persisting the same `ritual_id` overwrites the
+        prior row (the conversation advances S0→S10 against one ritual_id; each
+        transition replaces the row with the newer state). `plan_dict` and
+        `assembler_dict` are serialized as canonical JSON (`sort_keys=True`,
+        no whitespace) so the on-disk bytes are deterministic.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(ritual_id, field="ritual_id")
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"boundary-conversation identifier failed safety validation: {exc}",
+            ) from exc
+        plan_json = json.dumps(plan_dict, sort_keys=True, separators=(",", ":"))
+        assembler_json = json.dumps(assembler_dict, sort_keys=True, separators=(",", ":"))
+        now = datetime.now(tz=timezone.utc).isoformat()
+        await asyncio.to_thread(
+            self._sync_persist_bc_state,
+            ritual_id,
+            principal_id,
+            current_state,
+            plan_json,
+            assembler_json,
+            now,
+        )
+
+    def _sync_persist_bc_state(
+        self,
+        ritual_id: str,
+        principal_id: str,
+        current_state: str,
+        plan_json: str,
+        assembler_json: str,
+        now: str,
+    ) -> None:
+        conn = self._bc_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO boundary_conversation_state
+                    (ritual_id, principal_id, current_state, plan_json,
+                     assembler_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(ritual_id) DO UPDATE SET
+                    principal_id=excluded.principal_id,
+                    current_state=excluded.current_state,
+                    plan_json=excluded.plan_json,
+                    assembler_json=excluded.assembler_json,
+                    updated_at=excluded.updated_at
+                """,
+                (ritual_id, principal_id, current_state, plan_json, assembler_json, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def load_boundary_conversation_state(
+        self, ritual_id: str
+    ) -> BoundaryConversationStateRow | None:
+        """Rehydrate a Boundary Conversation per-state row by ritual_id.
+
+        Returns a typed `BoundaryConversationStateRow` or **None if the
+        ritual_id is absent**. Does NOT raise on absence — the runtime layer
+        maps None to its own typed `RitualResumeStateMissingError` (that error
+        lives in the boundary_conversation package, NOT here, per shard 8
+        § Error taxonomy). `plan_dict` / `assembler_dict` are round-tripped
+        from the canonical-JSON columns.
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(ritual_id, field="ritual_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"ritual_id failed identifier safety validation: {exc}",
+            ) from exc
+        row = await asyncio.to_thread(self._sync_load_bc_state, ritual_id)
+        if row is None:
+            return None
+        return BoundaryConversationStateRow(
+            ritual_id=row["ritual_id"],
+            principal_id=row["principal_id"],
+            current_state=row["current_state"],
+            plan_dict=json.loads(row["plan_json"]),
+            assembler_dict=json.loads(row["assembler_json"]),
+            updated_at=row["updated_at"],
+        )
+
+    def _sync_load_bc_state(self, ritual_id: str) -> sqlite3.Row | None:
+        conn = self._bc_connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT ritual_id, principal_id, current_state, plan_json,
+                       assembler_json, updated_at
+                FROM boundary_conversation_state
+                WHERE ritual_id = ?
+                """,
+                (ritual_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    async def shadow_segment_unread_duress_events(self, principal_id: str) -> list:
+        """Return unread duress events for the post-duress banner gate.
+
+        **Phase 01: returns `[]`.** This is COMPLETE Phase-01 behavior, NOT a
+        stub. No duress-detection mechanism is wired in Phase 01 — the shadow
+        segment that would populate duress events is owned by
+        `specs/data-model.md` and its detection path lands in Phase 02+ (per
+        `01-analysis/08-boundary-conversation-implementation.md` § 3.6 +
+        `01-analysis/05-trust-store-implementation.md`). The Boundary
+        Conversation runtime correctly invokes this banner gate at S0 entry;
+        the gate stays inert (empty list → no banner) until Phase 02 wires the
+        shadow segment. Returning `[]` here is the correct, contract-complete
+        Phase-01 answer — when the shadow segment populates in P02+, this method
+        gains the real query against it.
+
+        `principal_id` is validated for the tenant-isolation contract so the
+        signature is stable across the P01→P02 transition (the P02 query will
+        scope the shadow-segment read by `principal_id`).
+        """
+        if not self._initialized:
+            await self.initialize()
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
+        return []
 
     # ------------------------------------------------------------------
     # R2-H-01 algorithm_id wire-form translator (T-01-15, LOAD-BEARING)
