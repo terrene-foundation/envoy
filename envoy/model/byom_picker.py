@@ -292,7 +292,11 @@ def byom_pick(
         rotation_policy=RotationPolicy.NEVER,
     )
     vault_result = import_credentials_from_env(vault, (spec,))
-    logger.info(
+    # INFO→DEBUG per `rules/observability.md` Rule 8: `choice` reveals
+    # provider identity (anthropic/openai/etc.) and `vault_imported` lists
+    # secret-bearing env var names — schema-revealing. /redteam Round 1
+    # MEDIUM-1.
+    logger.debug(
         "model.byom_picker.ok",
         extra={
             "choice": choice,
