@@ -863,7 +863,8 @@ class TrustStoreAdapter:
                 "SELECT icon, color, phrase FROM visible_secret WHERE principal_id = ?",
                 (principal_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
@@ -987,7 +988,8 @@ class TrustStoreAdapter:
                 """,
                 (ritual_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
