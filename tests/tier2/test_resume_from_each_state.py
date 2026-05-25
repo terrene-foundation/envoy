@@ -36,7 +36,6 @@ from envoy.boundary_conversation.envelope_assembler import EnvelopeConfigInputAs
 from envoy.boundary_conversation.resume import RitualResumeCoordinator
 from envoy.trust.store import TrustStoreAdapter
 
-
 PRINCIPAL = "alice@example"
 
 # A representative extraction per state, used to feed the assembler so the

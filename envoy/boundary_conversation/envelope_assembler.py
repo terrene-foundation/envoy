@@ -276,7 +276,7 @@ class EnvelopeConfigInputAssembler:
         return {"extractions": {k: dict(v) for k, v in self._extractions.items()}}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EnvelopeConfigInputAssembler":
+    def from_dict(cls, data: dict[str, Any]) -> EnvelopeConfigInputAssembler:
         """Reconstruct an assembler from a persisted ``to_dict()`` payload."""
         assembler = cls()
         extractions = data.get("extractions", {}) if isinstance(data, dict) else {}
