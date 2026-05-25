@@ -125,7 +125,7 @@ class BoundaryConversationScript:
 
         # Forward chain S0 → S1 → ... → S10.
         for from_state, to_state in zip(
-            BOUNDARY_CONVERSATION_STATES, BOUNDARY_CONVERSATION_STATES[1:]
+            BOUNDARY_CONVERSATION_STATES, BOUNDARY_CONVERSATION_STATES[1:], strict=False
         ):
             edges.append(
                 PlanEdge(
