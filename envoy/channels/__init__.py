@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.cli import CLIChannelAdapter
+from envoy.channels.discord import DiscordChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
     DailyDigestPayload,
@@ -71,6 +72,7 @@ __all__ = [
     "ChannelAdapter",
     # Concrete adapters (Phase 01 foundation surfaces)
     "CLIChannelAdapter",
+    "DiscordChannelAdapter",
     "WebChannelAdapter",
     # Envelope + payloads
     "ChannelCapabilities",
