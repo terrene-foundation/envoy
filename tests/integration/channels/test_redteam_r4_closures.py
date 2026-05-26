@@ -22,7 +22,6 @@ from envoy.channels import (
 )
 from envoy.channels.web import WebChannelConfig
 
-
 # ---------------------------------------------------------------------------
 # H-R4-1 — spec `channel-adapters.md:94` removed `approve_author` from vocab
 # ---------------------------------------------------------------------------

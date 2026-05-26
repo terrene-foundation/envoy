@@ -33,7 +33,6 @@ from __future__ import annotations
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.cli import CLIChannelAdapter
 from envoy.channels.discord import DiscordChannelAdapter
-from envoy.channels.slack import SlackChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
     DailyDigestPayload,
@@ -66,6 +65,7 @@ from envoy.channels.errors import (
     SendTimeoutError,
     StartupTimeoutError,
 )
+from envoy.channels.slack import SlackChannelAdapter
 from envoy.channels.telegram import TelegramChannelAdapter
 from envoy.channels.web import WebChannelAdapter
 

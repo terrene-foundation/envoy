@@ -128,7 +128,7 @@ class SlackChannelAdapter(ChannelAdapter):
         self._closed = False
         self._inbound_queue: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=100)
         # In-flight Grant Moments: request_id → asyncio.Future[GrantMomentDecision]
-        self._pending_decisions: dict[str, "asyncio.Future[GrantMomentDecision]"] = {}
+        self._pending_decisions: dict[str, asyncio.Future[GrantMomentDecision]] = {}
         # Outbound: list of (target_principal_id, payload) pairs for test inspection
         self._outbound_log: list[tuple[str, str]] = []
 
@@ -388,7 +388,7 @@ class SlackChannelAdapter(ChannelAdapter):
         if fut is not None and not fut.done():
             fut.set_result(decision)  # type: ignore[arg-type]
 
-    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
         """M1 dispatch render — no decision await.
 
         Per /redteam R3 HIGH-R3-1 closure: reads canonical `GrantMomentRequest`
@@ -484,7 +484,7 @@ class SlackChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_text(request: "GrantMomentRequest") -> str:
+    def _render_grant_moment_request_text(request: GrantMomentRequest) -> str:
         """M1 render-only text from a `GrantMomentRequest` (no VisibleSecret).
 
         Reads the 5 canonical `GrantMomentRequest` fields: request_id,

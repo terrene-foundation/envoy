@@ -132,16 +132,16 @@ class TestDecisionVocabularyCanonical:
 
     def test_allowed_decisions_does_not_admit_approve_author(self) -> None:
         assert "approve_author" not in _ALLOWED_DECISIONS
-        assert _ALLOWED_DECISIONS == {
+        assert {
             "approve_once",
             "approve_and_author",
             "deny",
             "modify",
-        }
+        } == _ALLOWED_DECISIONS
 
     def test_allowed_decisions_derived_from_literal(self) -> None:
         """MED-R3-04 closure: vocabulary derives from the Literal, no drift."""
-        assert _ALLOWED_DECISIONS == frozenset(typing.get_args(GrantMomentDecision))
+        assert frozenset(typing.get_args(GrantMomentDecision)) == _ALLOWED_DECISIONS
 
 
 # ---------------------------------------------------------------------------

@@ -53,12 +53,10 @@ _PUBLIC_KEY_HEX: str = _PRIVATE_KEY.public_key().public_bytes_raw().hex()
 from envoy.channels.discord import DiscordChannelAdapter, DiscordChannelConfig  # noqa: E402
 from envoy.channels.envelope import (  # noqa: E402
     GrantMomentPayload,
-    InboundMessage,
     MessagePayload,
     VisibleSecret,
 )
 from envoy.channels.errors import NotPrimaryChannelError  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Module-level PII helper (mirrors _hash_pii in discord.py exactly).

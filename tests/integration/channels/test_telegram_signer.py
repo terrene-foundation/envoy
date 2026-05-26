@@ -14,7 +14,6 @@ import pytest
 
 from envoy.channels._telegram_signer import TelegramSigner
 
-
 # ---------------------------------------------------------------------------
 # Constructor validation
 # ---------------------------------------------------------------------------

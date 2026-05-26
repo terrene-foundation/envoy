@@ -26,6 +26,7 @@ INV-6  ``_register_pending`` discipline: no other code path writes to
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import typing
 
@@ -241,20 +242,17 @@ class TestTelegramGrantMoment:
             )
             await asyncio.sleep(0)
             # _coerce_decision maps int 1 → the first sorted member of _ALLOWED_DECISIONS
-            sorted_decisions = sorted(_ALLOWED_DECISIONS)
             adapter.post_decision("gm-2", "1")  # string "1" → prefix "1" → no match
             # Use a proper decision name instead to avoid coerce complexity
-            # (numeric coerce is tested via _coerce_decision unit path)
-            receipt = await task
+            # (numeric coerce is tested via _coerce_decision unit path).
             # "1" as string won't prefix-match "approve_once" etc., but that
             # path goes through InvalidDecisionError. Use "deny" which is in vocab.
+            await task
         except Exception:
             if task is not None:
                 task.cancel()
-                try:
+                with contextlib.suppress(Exception):
                     await task
-                except Exception:
-                    pass
         finally:
             await adapter.shutdown()
 

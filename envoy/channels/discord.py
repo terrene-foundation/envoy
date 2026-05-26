@@ -368,7 +368,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
         """M1 render-only dispatch per `ChannelAdapterProtocol`.
 
         Renders the ``GrantMomentRequest`` to Discord as an embed-style text
@@ -506,7 +506,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_prose(request: "GrantMomentRequest") -> str:
+    def _render_grant_moment_request_prose(request: GrantMomentRequest) -> str:
         """M1 render-only: render a ``GrantMomentRequest`` to Discord text.
 
         Reads the canonical 5 elements available on ``GrantMomentRequest``:

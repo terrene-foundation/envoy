@@ -25,7 +25,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from envoy.channels.slack import SlackChannelAdapter, SlackChannelConfig
 from envoy.channels.envelope import (
     GrantMomentPayload,
     MessagePayload,
@@ -40,6 +39,7 @@ from envoy.channels.errors import (
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
 )
+from envoy.channels.slack import SlackChannelAdapter, SlackChannelConfig
 
 _TEST_SECRET = "8f742231b10e8888abcd99badc0a9199"
 _TEST_BOT_TOKEN = "xoxb-test-token-AAAAAAAAAAAAAAAA"
@@ -493,7 +493,6 @@ class TestSlackRegisterPendingSingleWriteSite:
     @pytest.mark.asyncio
     async def test_pending_decisions_ceiling_error_fires_at_limit(self) -> None:
         """PendingDecisionsCeilingError MUST fire at _MAX_PENDING_DECISIONS (1000)."""
-        from unittest.mock import patch
 
         adapter = _make_adapter()
         await adapter.startup()

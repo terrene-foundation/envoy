@@ -29,7 +29,6 @@ from envoy.channels.envelope import (
 )
 from envoy.channels.web import WebChannelConfig
 
-
 PHASE_01_ADAPTERS = [CLIChannelAdapter, WebChannelAdapter]
 ABSTRACT_METHODS = {
     "channel_id",

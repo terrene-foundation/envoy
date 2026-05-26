@@ -10,8 +10,8 @@ Each test docstring names the R1 finding it pins (e.g. ``H1-security``).
 
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import io
 import logging
 import pathlib
@@ -21,7 +21,6 @@ import pytest
 from envoy.channels import (
     ChannelAdapter,
     CLIChannelAdapter,
-    InvalidDecisionError,
     NotStartedError,
     OverflowDropEvent,
     PendingDecisionsCeilingError,
@@ -33,7 +32,6 @@ from envoy.channels.envelope import (
     GrantMomentPayload,
     InboundMessage,
     MessagePayload,
-    SendReceipt,
     VisibleSecret,
 )
 from envoy.channels.errors import (

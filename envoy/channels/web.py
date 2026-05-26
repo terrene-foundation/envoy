@@ -85,7 +85,7 @@ _DEFAULT_BIND_HOST = "127.0.0.1"
 # frozenset hand-mirrored the Literal — a future addition to the Literal
 # would silently NOT propagate). `typing.get_args(Literal[...])` returns the
 # tuple of values; freezing it produces the canonical allowlist.
-import typing as _typing
+import typing as _typing  # noqa: E402 — deliberate late import (see comment above)
 
 _ALLOWED_DECISIONS: frozenset[str] = frozenset(_typing.get_args(GrantMomentDecision))
 
@@ -378,7 +378,7 @@ class WebChannelAdapter(ChannelAdapter):
             channel_signature=f"web-sig-{uuid.uuid4().hex[:16]}",
         )
 
-    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
         """M1 render-only — satisfies `ChannelAdapterProtocol`.
 
         Foundation shard: registers a pending-decision Future and returns;

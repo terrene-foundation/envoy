@@ -13,6 +13,7 @@ Coverage:
   - Empty body: signature over empty body still verifies correctly.
   - Exception containment: no exceptions leak to the caller.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,7 +23,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from envoy.channels._discord_signer import DiscordSigner
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -218,7 +218,7 @@ def test_truncated_signature_returns_false(signer: DiscordSigner) -> None:
         "X-Signature-Ed25519": "aabbcc" * 5,  # 30 hex chars = 15 bytes < 64 required
         "X-Signature-Timestamp": "1700000010",
     }
-    result = signer.verify(headers, b'test')
+    result = signer.verify(headers, b"test")
     assert result is False
 
 
@@ -253,5 +253,5 @@ def test_non_hex_public_key_raises_at_construction() -> None:
 
 def test_wrong_key_length_raises_at_construction() -> None:
     """A 16-byte key (too short for Ed25519) should fail construction."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         DiscordSigner("aabbccdd" * 4)  # 16 bytes, Ed25519 requires 32
