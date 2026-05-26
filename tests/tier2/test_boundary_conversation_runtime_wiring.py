@@ -36,7 +36,12 @@ from kaizen.llm.client import LlmClient
 from kaizen.llm.presets import ollama_default_preset
 
 from envoy.authorship.novelty import NoveltyChecker
-from envoy.boundary_conversation import BoundaryConversationRuntime
+from envoy.boundary_conversation import (
+    BoundaryConversationRuntime,
+    InvalidStateTransitionError,
+    NoveltyFeedbackBlockError,
+    VisibleSecretMissingError,
+)
 from envoy.envelope import EnvelopeCompiler, LocalTemplateResolver
 from envoy.ledger import EnvoyLedger
 from envoy.shamir import ShamirRitualCoordinator, TrustVaultChecklistPersister
@@ -195,23 +200,39 @@ _REPLIES = {
     "S9_review_sign": "Yes, I confirm and sign.",
 }
 
-_MAX_RETRIES = 4
+_MAX_RETRIES = 8
+
+
+# Parse-retryable gate errors (per shard 8 § 3.4-3.6 same-state self-edge
+# contract). A real local LLM can emit non-conforming JSON
+# (InvalidStateTransitionError) OR can omit a required structured field
+# (VisibleSecretMissingError: model extracted icon+color but not phrase) OR
+# can produce a novelty-block extraction (NoveltyFeedbackBlockError). All
+# three are gate-back self-edges — the caller re-prompts the SAME state.
+# Mirrors the wider tuple landed in
+# tests/tier3/test_boundary_conversation_full_path.py § _RETRYABLE_GATE_ERRORS
+# and journal/0033 § "Recommended structural fix" — same-bug-class fix per
+# rules/autonomous-execution.md MUST Rule 4 (surfaced by pre-push CI parity).
+_RETRYABLE_GATE_ERRORS = (
+    InvalidStateTransitionError,
+    VisibleSecretMissingError,
+    NoveltyFeedbackBlockError,
+)
 
 
 async def _advance_with_retries(runtime, ritual_id, reply: str):  # noqa: ANN001
-    """Advance one state, retrying on InvalidStateTransitionError (a real local
-    model can emit non-conforming JSON; the runtime re-prompts). Surfaces the
-    error after the retry budget rather than masking it."""
-    from envoy.boundary_conversation import InvalidStateTransitionError
-
+    """Advance one state, retrying on parse-retryable gate errors (see the
+    ``_RETRYABLE_GATE_ERRORS`` rationale above). Surfaces the error after the
+    retry budget rather than masking it (model-capability limit becomes a
+    SKIP, not a hung loop)."""
     last_err = None
     for _ in range(_MAX_RETRIES):
         outcome = await runtime.advance(ritual_id, reply)
         if outcome.state != "ERROR":
             return outcome
         last_err = outcome.error
-        if not isinstance(last_err, InvalidStateTransitionError):
-            return outcome  # novelty / gate errors are not parse-retryable here
+        if not isinstance(last_err, _RETRYABLE_GATE_ERRORS):
+            return outcome  # Shamir / unknown gates are not parse-retryable
     pytest.skip(
         f"local model could not produce conforming structured output after "
         f"{_MAX_RETRIES} retries (last error: {last_err}); model-capability "
