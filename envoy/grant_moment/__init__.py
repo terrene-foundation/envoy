@@ -81,6 +81,13 @@ from envoy.grant_moment.signed_consent import (
     GrantMomentResult,
     SignedConsentBuilder,
 )
+from envoy.grant_moment.runtime import (
+    FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM,
+    FRICTION_TOKEN_DOUBLE_TAP,
+    FRICTION_TOKEN_READ_DELAY_COMPLETE,
+    EnvoyGrantMomentRuntime,
+    GrantMomentOutcome,
+)
 from envoy.grant_moment.state_machine import (
     GRANT_MOMENT_TRANSITIONS,
     GrantMomentEvent,
@@ -137,4 +144,10 @@ __all__ = [
     "NoveltyClass",
     "NoveltyClassifier",
     "NoveltySignals",
+    # Runtime facade (Wave-4 — composes M0→M4)
+    "EnvoyGrantMomentRuntime",
+    "GrantMomentOutcome",
+    "FRICTION_TOKEN_READ_DELAY_COMPLETE",
+    "FRICTION_TOKEN_DOUBLE_TAP",
+    "FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM",
 ]
