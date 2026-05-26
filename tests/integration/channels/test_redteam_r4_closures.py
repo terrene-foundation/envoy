@@ -176,7 +176,8 @@ class TestAllInvariantR4:
         raise AssertionError(f"__all__ not found in {path}")
 
     def test_channels_init_all_invariant(self) -> None:
-        assert self._all_len("envoy/channels/__init__.py") == 31
+        # +1 for TelegramChannelAdapter (Wave-A phase-01) = 32
+        assert self._all_len("envoy/channels/__init__.py") == 32
 
     def test_errors_module_all_invariant(self) -> None:
         assert self._all_len("envoy/channels/errors.py") == 16

@@ -440,7 +440,8 @@ class TestAllInvariant:
         # 3 ABC/concrete + 12 envelope payloads/dataclasses + 16 errors = 31
         # (R2 closures: PendingDecisionsCeilingError + InvalidDecisionError
         # added on top of the R1 NotStartedError + PhaseDeferredError hygiene.)
-        assert self._all_len("envoy/channels/__init__.py") == 31
+        # +1 for TelegramChannelAdapter (Wave-A phase-01) = 32
+        assert self._all_len("envoy/channels/__init__.py") == 32
 
     def test_errors_module_all_count(self) -> None:
         # 1 base + 11 spec errors + 4 hygiene
