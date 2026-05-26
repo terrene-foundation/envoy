@@ -40,10 +40,13 @@ async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
 ### Receive / send
 
 ```python
-async def receive_message(self) -> AsyncIterator[InboundMessage]:
+def receive_message(self) -> AsyncIterator[InboundMessage]:
     """
-    Yield inbound messages as they arrive.
-    Backpressure: bounded queue size 100 per channel; overflow drops with `OverflowDropEvent` to Ledger.
+    Yield inbound messages as they arrive. Returns an async iterator
+    (defined as plain `def` returning `AsyncIterator`, NOT `async def` —
+    the function returns the iterator; the caller drives it with `async for`).
+    Backpressure: bounded queue size 100 per channel; overflow drops with `OverflowDropEvent` to Ledger
+    via WARN log (`channel.inbound.overflow_drop`).
     Failure semantics: transport errors propagated as `ChannelTransportError` and fed to runtime's reconnection backoff.
     """
 
@@ -63,7 +66,16 @@ async def send_message(
 
 ### Ritual delivery (Phase 01 surface contract)
 
-Every Phase-01 surface MUST implement the four ritual-delivery methods so Phase 03 rituals route through the adapter contract without channel-specific shims:
+Phase 01 wires **2 of 4** ritual-delivery methods (`send_grant_moment` + `send_digest`); `send_posture_review` + `send_monthly_report` raise `envoy.channels.errors.PhaseDeferredError` from the ABC default and are wired in Phase 02 (`specs/weekly-posture-review.md` + `specs/monthly-trust-report.md`). All four method signatures ship in Phase 01 so Phase 03 rituals route through the adapter contract without channel-specific shims; the two Phase-02 methods MUST NOT be re-implemented to `pass` per `rules/zero-tolerance.md` Rule 2 + Rule 6.
+
+**Phase 01 deviation note** (per `rules/specs-authority.md` Rule 6): the abstract method body for `send_posture_review` + `send_monthly_report` raises `PhaseDeferredError(method_name=..., deferred_to_phase="Phase 02")`. Concrete Phase-01 adapters inherit this default; concrete Phase-02 adapters override.
+
+**Dual M1 dispatch surface** (per `rules/specs-authority.md` Rule 5b sibling re-derivation): the channels ABC also exposes `async def render_grant_moment(request) -> None` matching `envoy.grant_moment.channel_handoff.ChannelAdapterProtocol`. The two surfaces coexist by design:
+
+- `send_grant_moment(target, grant, *, primary_only, timeout_seconds) -> GrantMomentReceipt` — full single-channel ritual (render + await decision + receipt).
+- `render_grant_moment(request) -> None` — M1 dispatch primitive used by `ChannelHandoff.dispatch` to fire render across every active channel WITHOUT awaiting a decision; the decision arrives async via `EnvoyGrantMomentRuntime.post_decision` per `specs/grant-moment.md` § State machine M1→M2.
+
+Every Phase-01 surface MUST implement BOTH methods:
 
 ```python
 async def send_grant_moment(
@@ -75,7 +87,17 @@ async def send_grant_moment(
     raise `NotPrimaryChannelError` (per H-03 primary-channel binding for high-stakes grants).
     Timeout: timeout_seconds (default 30s — user has time to read); on timeout marks grant
     as expired and raises `GrantMomentExpiredError`.
-    Returns `GrantMomentReceipt {grant_id, decision, decided_at, channel_signature}`.
+    Returns `GrantMomentReceipt {request_id, grant_id, decision, decided_at, channel_signature}`
+    — `request_id` extends the original 4-field shape per `rules/specs-authority.md` Rule 6
+    so runtime callers correlate without holding a side-table. `decision` is constrained to
+    the `GrantMomentDecision` closed vocabulary
+    (`approve_once | approve_and_author | deny | modify`) per `specs/grant-moment.md`
+    § Resolution shape; out-of-vocabulary decisions raise at the adapter boundary.
+
+    **Defense-in-depth (H-03 primary-channel binding)**: when `grant.high_stakes is True`,
+    the adapter MUST refuse on a non-primary channel even when the caller forgot
+    `primary_only=True`. Single-layer kwarg gating is insufficient — the payload-level
+    discriminator is the structural defense.
     """
 
 async def send_digest(
@@ -213,6 +235,17 @@ TLS 1.3 minimum. Certificate pinning for Foundation endpoints. Standard OS trust
 
 All errors persisted to Ledger with `content_trust_level: system` and `format_record_id_for_event(target_principal_id)` redaction per specs/classification-policy.md.
 
+### Adapter-internal hygiene errors (NOT in the spec taxonomy table above)
+
+The implementation also ships 4 adapter-internal typed errors that are NOT part of the spec § Error taxonomy contract — they surface programming / config / hygiene failures rather than channel-traffic failures, and they all subclass `ChannelAdapterError` so callers catching the family catch them uniformly:
+
+| Error                          | Trigger                                                                                                              | User action                                       | Retry              |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------ |
+| `NotStartedError`              | `send_*` / `render_grant_moment` called before `startup`                                                             | Caller programming error — call `startup` first   | Never              |
+| `PendingDecisionsCeilingError` | In-flight pending-decision map at ceiling (DoS defense, Web adapter only today)                                      | Wait for existing grants to resolve, then retry   | Auto after drain   |
+| `InvalidDecisionError`         | `_resolve_pending_decision` received a decision string NOT in `GrantMomentDecision` Literal vocabulary               | WS-handler programming / injection — check source | Never              |
+| `PhaseDeferredError`           | Phase-02 ritual surface called (`send_posture_review` / `send_monthly_report`) OR Web `send_message` (Phase-01 hold) | Phase 02 / Wave-4 sibling-shard wiring required   | Never (structural) |
+
 ## Cross-references
 
 - specs/grant-moment.md — adapter.send_grant_moment.
@@ -227,15 +260,18 @@ All errors persisted to Ledger with `content_trust_level: system` and `format_re
 
 ## Test location
 
-- `tests/integration/channels/test_<channel>_adapter_lifecycle.py` — startup/shutdown idempotency, drain timeout (Tier 2, real channel sandbox where available).
-- `tests/integration/channels/test_<channel>_send_message.py` — send_message timeout, rate-limit, payload-too-large per channel.
-- `tests/integration/channels/test_<channel>_ritual_delivery.py` — send_grant_moment, send_digest, send_posture_review, send_monthly_report (Tier 2).
-- `tests/regression/test_t018_visible_secret_per_channel.py` — T-018 visible-secret rendered every channel.
-- `tests/regression/test_t070_clipboard_autoclear.py` — T-070 30s clipboard auto-clear.
-- `tests/regression/test_t080_tls13_pin.py` — T-080 TLS 1.3 + Foundation cert pin.
-- `tests/regression/test_t023_signal_path_b.py` — T-023 Signal Path B legal gate enforcement.
-- `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routing (NotPrimaryChannelError).
-- Cross-channel: `tests/e2e/test_session_continuity_8_channels.py` — single session resolves Grant Moment from any channel.
+**Shipped today** (Phase 01 channels foundation, PR #42):
+
+- `tests/integration/channels/test_<channel>_adapter_lifecycle.py` — startup/shutdown idempotency, drain timeout (Tier 2, real channel sandbox where available). File-pattern template: `<channel>` ∈ {cli, web, telegram, slack, discord, whatsapp, signal, imessage}. Phase 01 foundation ships `cli` + `web`; Wave-A/B siblings populate the remaining channels.
+- `tests/integration/channels/test_adapter_abc_contract.py` — ABC method-signature parity with spec § Adapter contract; Phase-02 ritual surfaces inherit `PhaseDeferredError`.
+- `tests/integration/channels/test_redteam_r{1,2,3}_closures.py` — /redteam round closure pins for the foundation shard.
+- `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routing (`NotPrimaryChannelError`).
+
+**Forward-declared for Wave-A/B sibling shards** (per `rules/spec-accuracy.md` Rule 4 work trackers extracted to `workspaces/phase-01-mvp/todos/active/wave-4-channels-regression-tests.md`):
+
+- `test_<channel>_send_message.py` — send_message timeout, rate-limit, payload-too-large per channel (Wave-A: TG/Slack/Discord; Wave-B: caveated).
+- `test_<channel>_ritual_delivery.py` — `send_grant_moment` / `send_digest` per channel.
+- T-018 visible-secret rendered every channel; T-070 clipboard auto-clear; T-080 TLS 1.3 + cert pin; T-023 Signal Path B; cross-channel session continuity (EC-7).
 
 ## Open questions
 
