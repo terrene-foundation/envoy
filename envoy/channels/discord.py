@@ -465,6 +465,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise PendingDecisionsCeilingError(
                 channel_id=_DISCORD_CHANNEL_ID,
                 ceiling=_PENDING_DECISIONS_CEILING,
+                current_count=len(self._pending_decisions),
             )
         self._pending_decisions.add(request_id)
 
@@ -582,7 +583,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise InvalidDecisionError(
                 channel_id=_DISCORD_CHANNEL_ID,
                 decision=sanitized,
-                valid_decisions=list(options),
+                allowed=tuple(options),
             )
 
         # Parsed a valid-vocabulary decision not in this grant's option set;
