@@ -336,17 +336,30 @@ class CLIChannelAdapter(ChannelAdapter):
         runtime mandates an M1-only surface (`render_grant_moment` per
         `envoy.grant_moment.channel_handoff` Protocol).
 
-        Per /redteam R2 HIGH-R2-02 closure: H-03 primary-channel binding is
-        enforced HERE too. `request.high_stakes is True` on a non-primary
-        adapter raises `NotPrimaryChannelError`.
+        Per /redteam R3 HIGH-R3-1 closure: H-03 binding reads the canonical
+        `GrantMomentRequest` discriminators (`novelty_class == "high_stakes"`
+        and `primary_only is True`) rather than the pre-R3 `high_stakes`
+        field that does not exist on the real dataclass.
         """
         self._require_started("render_grant_moment")
-        high_stakes = bool(getattr(request, "high_stakes", False))
-        if high_stakes and self._config.primary_channel_id != _CLI_CHANNEL_ID:
+        novelty_class = getattr(request, "novelty_class", "")
+        primary_only = bool(getattr(request, "primary_only", False))
+        must_be_primary = primary_only or novelty_class == "high_stakes"
+        if must_be_primary and self._config.primary_channel_id != _CLI_CHANNEL_ID:
             raise NotPrimaryChannelError(
                 channel_id=_CLI_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
             )
+        request_id = getattr(request, "request_id", None)
+        logger.info(
+            "channel.render_grant_moment",
+            extra={
+                "channel_id": _CLI_CHANNEL_ID,
+                "request_id": request_id,
+                "novelty_class": novelty_class,
+                "primary_only": primary_only,
+            },
+        )
         out = self._config.output_stream or sys.stdout
         rendered = self._render_grant_moment_request_prose(request)
         await asyncio.to_thread(out.write, rendered)
@@ -418,40 +431,41 @@ class CLIChannelAdapter(ChannelAdapter):
 
     @staticmethod
     def _render_grant_moment_request_prose(request: "GrantMomentRequest") -> str:
-        # M1 render-only — uses the `GrantMomentRequest` shape from the
-        # runtime. Per /redteam R2 LOW-R2-10 closure, renders the 5 spec
-        # elements named by `envoy/grant_moment/channel_handoff.py:11-15`
-        # ("visible secret, proposed action, why asking, consequence
-        # preview, options") when present on the request; falls through to
-        # the available subset otherwise. Attribute access is duck-typed —
-        # the structural contract is "if it has the field, render it" —
-        # NOT silent-fallback per `rules/zero-tolerance.md` Rule 3:
-        # missing required fields raise from the caller's path (the
-        # GrantMomentRequest dataclass enforces shape at construction).
+        # M1 render-only — reads the canonical `GrantMomentRequest` shape
+        # from `envoy.grant_moment.signed_consent` (per /redteam R3 MED-R3-02
+        # closure: pre-R3 the renderer read `visible_secret`/`body`/
+        # `decision_options` which do NOT exist on the dataclass, silently
+        # falling through to empty defaults — the silent-fallback pattern in
+        # `rules/zero-tolerance.md` Rule 3). The canonical 5 elements
+        # available on `GrantMomentRequest` are: request_id + tool_name +
+        # why_asking + consequence_preview (4 sub-fields) + novelty_class.
+        # The visible-secret render happens in the full-ritual
+        # `_render_grant_moment_prose` path (consumes the runtime-resolved
+        # `VisibleSecret`); the M1 dispatch surface does not carry it.
         request_id = getattr(request, "request_id", None)
-        if request_id is None:
+        if not request_id:
             raise ValueError("GrantMomentRequest is missing request_id; cannot render.")
-        visible_secret = getattr(request, "visible_secret", None)
-        body = getattr(request, "body", "")
+        tool_name = getattr(request, "tool_name", "")
         why = getattr(request, "why_asking", "")
-        consequence = getattr(request, "consequence_preview", "")
-        options = getattr(request, "decision_options", ())
+        consequence = getattr(request, "consequence_preview", None)
         lines = [f"\n--- Grant Moment ({request_id}) ---"]
-        if visible_secret is not None:
-            phrase = getattr(visible_secret, "phrase", "")
-            icon = getattr(visible_secret, "icon", "")
-            if phrase or icon:
-                lines.append(f"Safety phrase: {icon} {phrase}")
-        if body:
-            lines.append(f"Proposed action: {body}")
+        if tool_name:
+            lines.append(f"Proposed action: {tool_name}")
         if why:
             lines.append(f"Why asking: {why}")
-        if consequence:
-            lines.append(f"If you approve: {consequence}")
-        if options:
-            lines.append("Options:")
-            for idx, opt in enumerate(options, start=1):
-                lines.append(f"  {idx}) {opt}")
+        if consequence is not None:
+            # Render each `ConsequencePreview` field explicitly per
+            # /redteam R3 MED-R3-03 closure (avoid bare dataclass repr
+            # interpolation that would leak schema-level fields wholesale).
+            budget = getattr(consequence, "budget_microdollars", None)
+            reversibility = getattr(consequence, "reversibility", "")
+            classification = getattr(consequence, "data_classification", "")
+            if budget is not None:
+                lines.append(f"Estimated spend: ${budget / 1_000_000:.4f}")
+            if reversibility:
+                lines.append(f"Reversibility: {reversibility}")
+            if classification:
+                lines.append(f"Data sensitivity: {classification}")
         lines.append("")
         return "\n".join(lines)
 

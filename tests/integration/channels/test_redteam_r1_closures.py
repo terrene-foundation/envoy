@@ -55,7 +55,7 @@ def _make_grant(
     request_id: str = "r-1",
     *,
     high_stakes: bool = False,
-    options: tuple[str, ...] = ("approve_once", "approve_author", "deny", "modify"),
+    options: tuple[str, ...] = ("approve_once", "approve_and_author", "deny", "modify"),
 ) -> GrantMomentPayload:
     return GrantMomentPayload(
         request_id=request_id,

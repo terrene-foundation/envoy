@@ -235,6 +235,17 @@ TLS 1.3 minimum. Certificate pinning for Foundation endpoints. Standard OS trust
 
 All errors persisted to Ledger with `content_trust_level: system` and `format_record_id_for_event(target_principal_id)` redaction per specs/classification-policy.md.
 
+### Adapter-internal hygiene errors (NOT in the spec taxonomy table above)
+
+The implementation also ships 4 adapter-internal typed errors that are NOT part of the spec § Error taxonomy contract — they surface programming / config / hygiene failures rather than channel-traffic failures, and they all subclass `ChannelAdapterError` so callers catching the family catch them uniformly:
+
+| Error                          | Trigger                                                                                                              | User action                                       | Retry              |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------ |
+| `NotStartedError`              | `send_*` / `render_grant_moment` called before `startup`                                                             | Caller programming error — call `startup` first   | Never              |
+| `PendingDecisionsCeilingError` | In-flight pending-decision map at ceiling (DoS defense, Web adapter only today)                                      | Wait for existing grants to resolve, then retry   | Auto after drain   |
+| `InvalidDecisionError`         | `_resolve_pending_decision` received a decision string NOT in `GrantMomentDecision` Literal vocabulary               | WS-handler programming / injection — check source | Never              |
+| `PhaseDeferredError`           | Phase-02 ritual surface called (`send_posture_review` / `send_monthly_report`) OR Web `send_message` (Phase-01 hold) | Phase 02 / Wave-4 sibling-shard wiring required   | Never (structural) |
+
 ## Cross-references
 
 - specs/grant-moment.md — adapter.send_grant_moment.

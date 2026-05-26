@@ -31,24 +31,33 @@ from envoy.channels.web import WebChannelConfig
 # Minimal duck-typed request shim — mirrors the GrantMomentRequest fields
 # the adapter reads via getattr. Avoids importing the heavy runtime type.
 class _Request:
+    """Duck-typed shim mirroring the canonical `GrantMomentRequest` fields.
+
+    Per /redteam R3 H-R3-1 closure: the adapter reads `novelty_class` +
+    `primary_only` (the actual `GrantMomentRequest` discriminators), NOT a
+    non-existent `high_stakes` field. The shim accepts `high_stakes=True`
+    as a convenience flag that sets `novelty_class="high_stakes"` so test
+    callsites stay readable.
+    """
+
     def __init__(
         self,
         *,
         request_id: str = "r-r2",
         high_stakes: bool = False,
-        body: str = "",
-        visible_secret: object | None = None,
+        novelty_class: str | None = None,
+        primary_only: bool = False,
+        tool_name: str = "",
         why_asking: str = "",
-        consequence_preview: str = "",
-        decision_options: tuple[str, ...] = (),
+        consequence_preview: object | None = None,
     ) -> None:
         self.request_id = request_id
-        self.high_stakes = high_stakes
-        self.body = body
-        self.visible_secret = visible_secret
+        # Translate the test convenience flag to the canonical discriminator.
+        self.novelty_class = novelty_class or ("high_stakes" if high_stakes else "familiar_repeat")
+        self.primary_only = primary_only
+        self.tool_name = tool_name
         self.why_asking = why_asking
         self.consequence_preview = consequence_preview
-        self.decision_options = decision_options
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +118,7 @@ class TestRenderGrantMomentH03:
         try:
             with pytest.raises(NotPrimaryChannelError) as excinfo:
                 await adapter.render_grant_moment(
-                    _Request(request_id="r-1", high_stakes=True, body="x")
+                    _Request(request_id="r-1", high_stakes=True, tool_name="x")
                 )
             assert excinfo.value.channel_id == "cli"
             assert excinfo.value.primary_channel_id == "web"

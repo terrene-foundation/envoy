@@ -47,7 +47,7 @@ def _make_adapter(
 
 def _make_grant(
     request_id: str = "r-1",
-    options: tuple[str, ...] = ("approve_once", "approve_author", "deny", "modify"),
+    options: tuple[str, ...] = ("approve_once", "approve_and_author", "deny", "modify"),
     high_stakes: bool = False,
 ) -> GrantMomentPayload:
     return GrantMomentPayload(

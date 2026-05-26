@@ -31,11 +31,15 @@ from envoy.trust.types import VisibleSecret
 
 # Closed vocabulary for `GrantMomentReceipt.decision` per
 # `specs/grant-moment.md` § Resolution shape — adapter MUST NOT silently coin
-# an out-of-vocabulary decision string.
+# an out-of-vocabulary decision string. Synchronised verbatim with
+# `envoy.grant_moment.signed_consent.GrantMomentResult.decision`. Per /redteam
+# R3 HIGH-R3-2 closure: `approve_author` (typo) is NOT a valid value — the
+# canonical name is `approve_and_author`; production resolution paths never
+# emit `approve_author`, so accepting it at the adapter boundary was the
+# divergent-vocabulary failure mode.
 GrantMomentDecision = Literal[
     "approve_once",
     "approve_and_author",
-    "approve_author",
     "deny",
     "modify",
 ]

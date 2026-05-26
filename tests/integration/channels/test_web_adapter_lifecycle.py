@@ -35,7 +35,7 @@ def _make_grant(request_id: str | None = None, *, high_stakes: bool = False) -> 
     return GrantMomentPayload(
         request_id=request_id or f"r-{uuid.uuid4().hex[:8]}",
         intent_id="i-1",
-        decision_options=("approve_once", "approve_author", "deny", "modify"),
+        decision_options=("approve_once", "approve_and_author", "deny", "modify"),
         visible_secret=VisibleSecret(icon="fox", color="cobalt", phrase="cobalt-marshmallow"),
         body="Allow OAuth read access?",
         high_stakes=high_stakes,

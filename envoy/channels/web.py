@@ -80,13 +80,14 @@ assert _DEFAULT_ALLOWED_ORIGINS, (
 )
 _DEFAULT_BIND_HOST = "127.0.0.1"
 
-# Closed vocabulary for `GrantMomentDecision` Literal — enforced at the
-# adapter boundary on every decision crossing into the M2→M3 flow per
-# /redteam R2 HIGH-R2-03 closure. Synchronised with
-# `envoy.channels.envelope.GrantMomentDecision`.
-_ALLOWED_DECISIONS: frozenset[str] = frozenset(
-    {"approve_once", "approve_and_author", "approve_author", "deny", "modify"}
-)
+# Closed vocabulary derived from the `GrantMomentDecision` Literal so the
+# two surfaces cannot drift (per /redteam R3 MED-R3-04 closure: pre-R3 the
+# frozenset hand-mirrored the Literal — a future addition to the Literal
+# would silently NOT propagate). `typing.get_args(Literal[...])` returns the
+# tuple of values; freezing it produces the canonical allowlist.
+import typing as _typing
+
+_ALLOWED_DECISIONS: frozenset[str] = frozenset(_typing.get_args(GrantMomentDecision))
 
 
 def _hash_pii(value: str) -> str:
@@ -236,13 +237,31 @@ class WebChannelAdapter(ChannelAdapter):
         any prose string into the M2→M3 flow.
         """
         if decision not in _ALLOWED_DECISIONS:
+            # Per /redteam R3 MED-R3-05 closure: truncate attacker-influenced
+            # input to a printable ASCII subset before letting it interpolate
+            # into the error message (reflected-input log defense; even
+            # though `_resolve_pending_decision` does not log directly today,
+            # the WS handler that calls it will).
+            safe_repr = "".join(c for c in decision[:32] if c.isprintable())
             raise InvalidDecisionError(
                 channel_id=_WEB_CHANNEL_ID,
-                decision=decision,
+                decision=safe_repr,
                 allowed=tuple(sorted(_ALLOWED_DECISIONS)),
             )
         fut = self._pending_decisions.get(request_id)
-        if fut is not None and not fut.done():
+        if fut is None:
+            # Per /redteam R3 LOW-R3-2 closure: surface the no-op via WARN
+            # so a WS-handler bug delivering decisions for unknown requests
+            # is operator-visible. Hash the request_id per Rule 8.
+            logger.warning(
+                "channel.resolve_pending_decision.unknown_request",
+                extra={
+                    "channel_id": _WEB_CHANNEL_ID,
+                    "request_hash": _hash_pii(request_id),
+                },
+            )
+            return
+        if not fut.done():
             fut.set_result(decision)
 
     def _register_pending(self, request_id: str) -> asyncio.Future[str]:
@@ -343,6 +362,17 @@ class WebChannelAdapter(ChannelAdapter):
             ) from exc
         finally:
             self._pending_decisions.pop(grant.request_id, None)
+        # Per /redteam R3 M-R3-1 closure: mirror CLI by emitting `.ok` on
+        # the success exit path. `rules/observability.md` Rule 1 requires
+        # endpoint entry + exit + error each log.
+        logger.info(
+            "channel.send_grant_moment.ok",
+            extra={
+                "channel_id": _WEB_CHANNEL_ID,
+                "request_id": grant.request_id,
+                "decision": decision,
+            },
+        )
         return GrantMomentReceipt(
             request_id=grant.request_id,
             grant_id=str(uuid.uuid4()),
@@ -373,8 +403,15 @@ class WebChannelAdapter(ChannelAdapter):
             # runtime guarantees `request_id` is present per spec, so this
             # is structural defense, not user-input handling.
             raise ValueError("GrantMomentRequest is missing request_id; cannot dispatch.")
-        high_stakes = bool(getattr(request, "high_stakes", False))
-        if high_stakes and self._config.primary_channel_id != _WEB_CHANNEL_ID:
+        # H-03 binding via the canonical `GrantMomentRequest` discriminators
+        # per /redteam R3 HIGH-R3-1 closure: the pre-R3 check read a
+        # non-existent `high_stakes` attribute and was dead against the
+        # real dataclass. The canonical discriminators are
+        # `novelty_class == "high_stakes"` AND `primary_only is True`.
+        novelty_class = getattr(request, "novelty_class", "")
+        primary_only = bool(getattr(request, "primary_only", False))
+        must_be_primary = primary_only or novelty_class == "high_stakes"
+        if must_be_primary and self._config.primary_channel_id != _WEB_CHANNEL_ID:
             raise NotPrimaryChannelError(
                 channel_id=_WEB_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
@@ -387,7 +424,8 @@ class WebChannelAdapter(ChannelAdapter):
             extra={
                 "channel_id": _WEB_CHANNEL_ID,
                 "request_id": request_id,
-                "high_stakes": high_stakes,
+                "novelty_class": novelty_class,
+                "primary_only": primary_only,
             },
         )
 
