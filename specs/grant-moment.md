@@ -171,7 +171,7 @@ The following test files exercise behaviors that depend on the M0→M4
 runtime facade (timeout loop, dedup store, channel-render driver, queue
 manager, friction enforcer, two-phase Ledger signer) — the facade composes
 this spec's structural primitives. Both the facade and these tests ship
-with the Wave-4 milestone per `briefs/00-phase-01-mvp-scope.md` § Surfaces
+with the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md` § Surfaces
 
 - `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4.
 
