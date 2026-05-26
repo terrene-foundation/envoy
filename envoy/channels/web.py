@@ -20,6 +20,7 @@ default in-memory queue so Tier-2 wiring tests exercise the contract today.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import uuid
@@ -44,10 +45,12 @@ from envoy.channels.envelope import (
 from envoy.channels.errors import (
     AlreadyStartedError,
     GrantMomentExpiredError,
+    InvalidDecisionError,
     NotPrimaryChannelError,
     NotStartedError,
     OverflowDropEvent,
     PayloadTooLargeError,
+    PendingDecisionsCeilingError,
     PhaseDeferredError,
 )
 
@@ -67,7 +70,35 @@ _DEFAULT_ALLOWED_ORIGINS: tuple[str, ...] = tuple(
     for host in ("localhost", "127.0.0.1")
     for port in _DEFAULT_DEV_PORTS
 )
+# Module-load assertion per /redteam R2 MED-R2-04: if a future maintainer
+# empties `_DEFAULT_DEV_PORTS` the validation would still catch the empty
+# allowlist at construction, but the failure would surface to every consumer.
+# Fail loudly at import-time instead.
+assert _DEFAULT_ALLOWED_ORIGINS, (
+    "_DEFAULT_DEV_PORTS produced an empty _DEFAULT_ALLOWED_ORIGINS tuple; "
+    "WebChannelAdapter would refuse to start with the default config."
+)
 _DEFAULT_BIND_HOST = "127.0.0.1"
+
+# Closed vocabulary for `GrantMomentDecision` Literal — enforced at the
+# adapter boundary on every decision crossing into the M2→M3 flow per
+# /redteam R2 HIGH-R2-03 closure. Synchronised with
+# `envoy.channels.envelope.GrantMomentDecision`.
+_ALLOWED_DECISIONS: frozenset[str] = frozenset(
+    {"approve_once", "approve_and_author", "approve_author", "deny", "modify"}
+)
+
+
+def _hash_pii(value: str) -> str:
+    """SHA-256 hex digest truncated to 8 chars for PII-adjacent log fields.
+
+    Per /redteam R2 MED-R2-07/08: `session_id` + `target_principal_id` are
+    principal-correlatable; log aggregators have broader access than the
+    production database, so the raw values MUST NOT bleed into WARN/INFO
+    log lines (`rules/observability.md` Rule 8 + `rules/security.md`
+    § "No secrets in logs").
+    """
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +151,16 @@ class WebChannelAdapter(ChannelAdapter):
     async def startup(self, config: object | None = None) -> None:
         if self._started:
             raise AlreadyStartedError(channel_id=_WEB_CHANNEL_ID)
+        # Per /redteam R2 MED-R2-05: a non-`WebChannelConfig` config arg
+        # is loud-refused. The pre-R2 path silently dropped non-matching
+        # types, letting callers think they had updated config when the
+        # adapter still ran with __init__-time values.
+        if config is not None and not isinstance(config, WebChannelConfig):
+            raise TypeError(
+                f"WebChannelAdapter.startup expected WebChannelConfig "
+                f"(or None to reuse construction config), got "
+                f"{type(config).__name__}."
+            )
         if isinstance(config, WebChannelConfig):
             self._validate_bind_host(config.bind_host)
             self._validate_allowed_origins(config.allowed_origins)
@@ -175,7 +216,7 @@ class WebChannelAdapter(ChannelAdapter):
                 "channel.inbound.overflow_drop",
                 extra={
                     "channel_id": _WEB_CHANNEL_ID,
-                    "session_id": msg.session_id,
+                    "session_hash": _hash_pii(msg.session_id),
                     "dropped_count": drop.dropped_count,
                 },
             )
@@ -183,14 +224,50 @@ class WebChannelAdapter(ChannelAdapter):
     async def _resolve_pending_decision(self, request_id: str, decision: str) -> None:
         """Test/runtime hook: a Web modal user clicked ``decision``.
 
-        Resolves the awaiting Future inside `send_grant_moment`. The
-        production wiring lands when the Nexus WS handler dispatches
-        decision messages; for foundation testability the runtime can call
-        this directly.
+        Resolves the awaiting Future inside `send_grant_moment` or
+        `render_grant_moment`. The production wiring lands when the Nexus
+        WS handler dispatches decision messages; for foundation testability
+        the runtime can call this directly.
+
+        Per /redteam R2 HIGH-R2-03 closure: `decision` is validated against
+        `_ALLOWED_DECISIONS` BEFORE the future resolves. Out-of-vocabulary
+        decisions raise `InvalidDecisionError` so a misconfigured WS handler
+        / injected message / runtime bug cannot inject `"force_approve"` or
+        any prose string into the M2→M3 flow.
         """
+        if decision not in _ALLOWED_DECISIONS:
+            raise InvalidDecisionError(
+                channel_id=_WEB_CHANNEL_ID,
+                decision=decision,
+                allowed=tuple(sorted(_ALLOWED_DECISIONS)),
+            )
         fut = self._pending_decisions.get(request_id)
         if fut is not None and not fut.done():
             fut.set_result(decision)
+
+    def _register_pending(self, request_id: str) -> asyncio.Future[str]:
+        """Single write site for `_pending_decisions` (ceiling-enforced).
+
+        Both `send_grant_moment` and `render_grant_moment` write to
+        `_pending_decisions`; the pre-R2 path ceiling-checked only the
+        former. The helper consolidates the check so the bound applies
+        to every write site uniformly (per /redteam R2 HIGH-R2-01 closure).
+        Idempotent: re-registering the same `request_id` returns the
+        existing Future without re-counting.
+        """
+        existing = self._pending_decisions.get(request_id)
+        if existing is not None:
+            return existing
+        if len(self._pending_decisions) >= _MAX_PENDING_DECISIONS:
+            raise PendingDecisionsCeilingError(
+                channel_id=_WEB_CHANNEL_ID,
+                ceiling=_MAX_PENDING_DECISIONS,
+                current_count=len(self._pending_decisions),
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._pending_decisions[request_id] = future
+        return future
 
     async def send_message(
         self,
@@ -237,18 +314,10 @@ class WebChannelAdapter(ChannelAdapter):
                 channel_id=_WEB_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
             )
-        # Bounded in-flight pending-decision map — production DoS defense
-        # for the case where a malicious / buggy runtime fires send faster
-        # than decisions resolve.
-        if len(self._pending_decisions) >= _MAX_PENDING_DECISIONS:
-            raise RuntimeError(
-                f"WebChannelAdapter has {len(self._pending_decisions)} pending "
-                f"Grant Moments (ceiling {_MAX_PENDING_DECISIONS}); refuse new "
-                "until existing ones resolve."
-            )
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        self._pending_decisions[grant.request_id] = future
+        # Bounded in-flight pending-decision map per /redteam R1 M3 + R2 HIGH-R2-01:
+        # routed through `_register_pending` so the ceiling enforces on every
+        # write site (this method AND `render_grant_moment`).
+        future = self._register_pending(grant.request_id)
         logger.info(
             "channel.send_grant_moment.start",
             extra={
@@ -289,6 +358,13 @@ class WebChannelAdapter(ChannelAdapter):
         the WS handler resolves the future via `_resolve_pending_decision`
         when the user clicks the modal. Distinct from `send_grant_moment`
         (which awaits the decision inline).
+
+        Per /redteam R2 HIGH-R2-02 closure: H-03 primary-channel binding
+        is enforced HERE too — `request.high_stakes is True` on a non-primary
+        adapter raises `NotPrimaryChannelError`. Pre-R2 the check lived only
+        on `send_grant_moment`; the asymmetry meant the M1 dispatch path
+        could land high-stakes renders on non-primary adapters whenever the
+        external `ChannelHandoff.dispatch` guard was bypassed or buggy.
         """
         self._require_started("render_grant_moment")
         request_id = getattr(request, "request_id", None)
@@ -297,14 +373,21 @@ class WebChannelAdapter(ChannelAdapter):
             # runtime guarantees `request_id` is present per spec, so this
             # is structural defense, not user-input handling.
             raise ValueError("GrantMomentRequest is missing request_id; cannot dispatch.")
-        loop = asyncio.get_running_loop()
-        if request_id not in self._pending_decisions:
-            self._pending_decisions[request_id] = loop.create_future()
+        high_stakes = bool(getattr(request, "high_stakes", False))
+        if high_stakes and self._config.primary_channel_id != _WEB_CHANNEL_ID:
+            raise NotPrimaryChannelError(
+                channel_id=_WEB_CHANNEL_ID,
+                primary_channel_id=self._config.primary_channel_id,
+            )
+        # Per /redteam R2 HIGH-R2-01 closure: registration goes through the
+        # ceiling-enforced helper, NOT direct dict assignment.
+        self._register_pending(request_id)
         logger.info(
             "channel.render_grant_moment",
             extra={
                 "channel_id": _WEB_CHANNEL_ID,
                 "request_id": request_id,
+                "high_stakes": high_stakes,
             },
         )
 

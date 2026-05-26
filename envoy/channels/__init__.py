@@ -52,10 +52,12 @@ from envoy.channels.errors import (
     ChannelAdapterError,
     ChannelTransportError,
     GrantMomentExpiredError,
+    InvalidDecisionError,
     NotPrimaryChannelError,
     NotStartedError,
     OverflowDropEvent,
     PayloadTooLargeError,
+    PendingDecisionsCeilingError,
     PhaseDeferredError,
     PrincipalNotFoundError,
     RateLimitExceededError,
@@ -83,17 +85,20 @@ __all__ = [
     "SendReceipt",
     "VisibleSecret",
     "WeeklyPostureReviewPayload",
-    # 11 typed errors per spec § Error taxonomy + 2 hygiene errors
-    # (NotStartedError + PhaseDeferredError)
+    # 11 typed errors per spec § Error taxonomy + 1 base + 4 adapter-internal
+    # hygiene errors (NotStartedError + PendingDecisionsCeilingError +
+    # InvalidDecisionError + PhaseDeferredError) = 16 total
     "AlreadyStartedError",
     "AuthenticationError",
     "ChannelAdapterError",
     "ChannelTransportError",
     "GrantMomentExpiredError",
+    "InvalidDecisionError",
     "NotPrimaryChannelError",
     "NotStartedError",
     "OverflowDropEvent",
     "PayloadTooLargeError",
+    "PendingDecisionsCeilingError",
     "PhaseDeferredError",
     "PrincipalNotFoundError",
     "RateLimitExceededError",

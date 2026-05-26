@@ -21,8 +21,10 @@ import pytest
 from envoy.channels import (
     ChannelAdapter,
     CLIChannelAdapter,
+    InvalidDecisionError,
     NotStartedError,
     OverflowDropEvent,
+    PendingDecisionsCeilingError,
     PhaseDeferredError,
     WebChannelAdapter,
 )
@@ -435,14 +437,16 @@ class TestAllInvariant:
         raise AssertionError(f"__all__ not found in {path}")
 
     def test_channels_init_all_count(self) -> None:
-        # 3 ABC/concrete + 12 envelope payloads/dataclasses + 14 errors = 29
-        # (NotStartedError added in R1 closures; canonical VisibleSecret
-        # re-exported from envoy.trust.types preserves the surface count.)
-        assert self._all_len("envoy/channels/__init__.py") == 29
+        # 3 ABC/concrete + 12 envelope payloads/dataclasses + 16 errors = 31
+        # (R2 closures: PendingDecisionsCeilingError + InvalidDecisionError
+        # added on top of the R1 NotStartedError + PhaseDeferredError hygiene.)
+        assert self._all_len("envoy/channels/__init__.py") == 31
 
     def test_errors_module_all_count(self) -> None:
-        # 1 base + 11 spec errors + 2 hygiene (NotStartedError + PhaseDeferredError) = 14
-        assert self._all_len("envoy/channels/errors.py") == 14
+        # 1 base + 11 spec errors + 4 hygiene
+        # (NotStartedError + PendingDecisionsCeilingError +
+        #  InvalidDecisionError + PhaseDeferredError) = 16
+        assert self._all_len("envoy/channels/errors.py") == 16
 
 
 # ---------------------------------------------------------------------------
@@ -535,8 +539,10 @@ class TestPendingDecisionsBounded:
             loop = asyncio.get_running_loop()
             for i in range(web_mod._MAX_PENDING_DECISIONS):
                 adapter._pending_decisions[f"pre-{i}"] = loop.create_future()
-            with pytest.raises(RuntimeError, match="pending Grant Moments"):
+            with pytest.raises(PendingDecisionsCeilingError) as excinfo:
                 await adapter.send_grant_moment("p", _make_grant("over-ceiling"), timeout_seconds=1)
+            assert excinfo.value.channel_id == "web"
+            assert excinfo.value.ceiling == web_mod._MAX_PENDING_DECISIONS
         finally:
             # Cancel all pre-loaded futures so shutdown doesn't hang.
             for fut in adapter._pending_decisions.values():

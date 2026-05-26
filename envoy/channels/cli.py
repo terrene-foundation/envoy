@@ -16,6 +16,7 @@ landing in a sibling Wave-4 shard) dispatches across registered adapters.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sys
 import uuid
@@ -57,6 +58,16 @@ _CLI_CHANNEL_ID = "cli"
 _CLI_MAX_MESSAGE_LENGTH = 4096
 
 
+def _hash_pii(value: str) -> str:
+    """SHA-256 hex digest truncated to 8 chars for PII-adjacent log fields.
+
+    Per `rules/observability.md` Rule 8 (schema/identifier names at INFO/WARN
+    bleed to aggregators with broader access than the production database).
+    Used for `session_id` + `target_principal_id` in adapter log emissions.
+    """
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
 @dataclass(frozen=True, slots=True)
 class CLIChannelConfig:
     """Construction-time config for `CLIChannelAdapter`.
@@ -85,6 +96,16 @@ class CLIChannelAdapter(ChannelAdapter):
     matches it against `GrantMomentPayload.decision_options`. Unknown
     response raises `GrantMomentExpiredError` after `timeout_seconds`
     (no retry loop — Phase 01 single-attempt; Phase 02 wires the retry UX).
+
+    **TTY caveat (per /redteam R2 M-R2-2 closure):** when `output_stream` is
+    the real `sys.stdout` connected to a terminal, writes are line-buffered;
+    when piped (CI, headless), stdout becomes block-buffered until newline
+    or `flush()`. The send path always calls `flush` so the modal renders
+    promptly. When `input_stream` is `sys.stdin` connected to a non-terminal
+    (closed pipe, EOF), `readline()` returns `""` immediately — the coercion
+    fall-through routes that through `"modify"` per the unparseable-response
+    security default. The `asyncio.to_thread` wrap is what makes the
+    `asyncio.timeout` cancellation possible on a stuck synchronous read.
     """
 
     def __init__(self, config: CLIChannelConfig | None = None) -> None:
@@ -100,6 +121,15 @@ class CLIChannelAdapter(ChannelAdapter):
     async def startup(self, config: object | None = None) -> None:
         if self._started:
             raise AlreadyStartedError(channel_id=_CLI_CHANNEL_ID)
+        # Per /redteam R2 MED-R2-05: a non-`CLIChannelConfig` config arg is
+        # loud-refused so callers can't silently pass dicts/JSON that the
+        # adapter would drop on the floor.
+        if config is not None and not isinstance(config, CLIChannelConfig):
+            raise TypeError(
+                f"CLIChannelAdapter.startup expected CLIChannelConfig "
+                f"(or None to reuse construction config), got "
+                f"{type(config).__name__}."
+            )
         if isinstance(config, CLIChannelConfig):
             self._config = config
         self._started = True
@@ -152,7 +182,7 @@ class CLIChannelAdapter(ChannelAdapter):
                 "channel.inbound.overflow_drop",
                 extra={
                     "channel_id": _CLI_CHANNEL_ID,
-                    "session_id": msg.session_id,
+                    "session_hash": _hash_pii(msg.session_id),
                     "dropped_count": drop.dropped_count,
                 },
             )
@@ -186,7 +216,7 @@ class CLIChannelAdapter(ChannelAdapter):
             "channel.send_message.start",
             extra={
                 "channel_id": _CLI_CHANNEL_ID,
-                "target_principal_id": target_principal_id,
+                "target_principal_hash": _hash_pii(target_principal_id),
                 "kind": payload.kind,
             },
         )
@@ -243,6 +273,16 @@ class CLIChannelAdapter(ChannelAdapter):
                 channel_id=_CLI_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
             )
+        # Per /redteam R2 MED M-R2-1 (reviewer): mirror Web's structured-log
+        # shape on the start/expired/ok transitions.
+        logger.info(
+            "channel.send_grant_moment.start",
+            extra={
+                "channel_id": _CLI_CHANNEL_ID,
+                "request_id": grant.request_id,
+                "high_stakes": grant.high_stakes,
+            },
+        )
         out = self._config.output_stream or sys.stdout
         inp = self._config.input_stream or sys.stdin
         rendered = self._render_grant_moment_prose(grant)
@@ -252,11 +292,27 @@ class CLIChannelAdapter(ChannelAdapter):
                 await asyncio.to_thread(out.flush)
                 response = (await asyncio.to_thread(inp.readline)).strip()
         except asyncio.TimeoutError as exc:
+            logger.warning(
+                "channel.send_grant_moment.expired",
+                extra={
+                    "channel_id": _CLI_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
             raise GrantMomentExpiredError(
                 request_id=grant.request_id,
                 timeout_seconds=timeout_seconds,
             ) from exc
         decision = self._coerce_decision(response, grant.decision_options)
+        logger.info(
+            "channel.send_grant_moment.ok",
+            extra={
+                "channel_id": _CLI_CHANNEL_ID,
+                "request_id": grant.request_id,
+                "decision": decision,
+            },
+        )
         return GrantMomentReceipt(
             request_id=grant.request_id,
             grant_id=str(uuid.uuid4()),
@@ -279,8 +335,18 @@ class CLIChannelAdapter(ChannelAdapter):
         a full-ritual surface (`send_grant_moment` per spec line 69) AND the
         runtime mandates an M1-only surface (`render_grant_moment` per
         `envoy.grant_moment.channel_handoff` Protocol).
+
+        Per /redteam R2 HIGH-R2-02 closure: H-03 primary-channel binding is
+        enforced HERE too. `request.high_stakes is True` on a non-primary
+        adapter raises `NotPrimaryChannelError`.
         """
         self._require_started("render_grant_moment")
+        high_stakes = bool(getattr(request, "high_stakes", False))
+        if high_stakes and self._config.primary_channel_id != _CLI_CHANNEL_ID:
+            raise NotPrimaryChannelError(
+                channel_id=_CLI_CHANNEL_ID,
+                primary_channel_id=self._config.primary_channel_id,
+            )
         out = self._config.output_stream or sys.stdout
         rendered = self._render_grant_moment_request_prose(request)
         await asyncio.to_thread(out.write, rendered)
@@ -353,11 +419,41 @@ class CLIChannelAdapter(ChannelAdapter):
     @staticmethod
     def _render_grant_moment_request_prose(request: "GrantMomentRequest") -> str:
         # M1 render-only — uses the `GrantMomentRequest` shape from the
-        # runtime. Attribute access is duck-typed so this method works with
-        # any request-like object the dispatcher hands across.
-        request_id = getattr(request, "request_id", "<unknown>")
+        # runtime. Per /redteam R2 LOW-R2-10 closure, renders the 5 spec
+        # elements named by `envoy/grant_moment/channel_handoff.py:11-15`
+        # ("visible secret, proposed action, why asking, consequence
+        # preview, options") when present on the request; falls through to
+        # the available subset otherwise. Attribute access is duck-typed —
+        # the structural contract is "if it has the field, render it" —
+        # NOT silent-fallback per `rules/zero-tolerance.md` Rule 3:
+        # missing required fields raise from the caller's path (the
+        # GrantMomentRequest dataclass enforces shape at construction).
+        request_id = getattr(request, "request_id", None)
+        if request_id is None:
+            raise ValueError("GrantMomentRequest is missing request_id; cannot render.")
+        visible_secret = getattr(request, "visible_secret", None)
         body = getattr(request, "body", "")
-        return f"\n--- Grant Moment ({request_id}) ---\n{body}\n"
+        why = getattr(request, "why_asking", "")
+        consequence = getattr(request, "consequence_preview", "")
+        options = getattr(request, "decision_options", ())
+        lines = [f"\n--- Grant Moment ({request_id}) ---"]
+        if visible_secret is not None:
+            phrase = getattr(visible_secret, "phrase", "")
+            icon = getattr(visible_secret, "icon", "")
+            if phrase or icon:
+                lines.append(f"Safety phrase: {icon} {phrase}")
+        if body:
+            lines.append(f"Proposed action: {body}")
+        if why:
+            lines.append(f"Why asking: {why}")
+        if consequence:
+            lines.append(f"If you approve: {consequence}")
+        if options:
+            lines.append("Options:")
+            for idx, opt in enumerate(options, start=1):
+                lines.append(f"  {idx}) {opt}")
+        lines.append("")
+        return "\n".join(lines)
 
     @staticmethod
     def _coerce_decision(response: str, options: tuple[str, ...]) -> GrantMomentDecision:

@@ -29,6 +29,8 @@ __all__ = [
     "PayloadTooLargeError",
     # Adapter-internal API-hygiene errors (NOT in spec § Error taxonomy)
     "NotStartedError",
+    "PendingDecisionsCeilingError",
+    "InvalidDecisionError",
     # Phase-02-defer hygiene (NOT a runtime channel-traffic error;
     # raised by abstract methods Phase 01 hasn't wired yet)
     "PhaseDeferredError",
@@ -326,6 +328,61 @@ class NotStartedError(ChannelAdapterError):
             message = (
                 f"The {channel_id} channel is not running. Call `startup()` "
                 f"before `{method_name}()`."
+            )
+        super().__init__(message)
+
+
+class PendingDecisionsCeilingError(ChannelAdapterError):
+    """Adapter refuses a new Grant Moment because the in-flight ceiling is hit.
+
+    Production DoS defense for the case where a runtime fires Grant Moments
+    faster than decisions resolve. Carries the configured `ceiling` and the
+    observed `current_count` so the runtime UX can render the wait state.
+    """
+
+    def __init__(
+        self,
+        channel_id: str,
+        ceiling: int,
+        current_count: int,
+        message: str | None = None,
+    ) -> None:
+        self.channel_id = channel_id
+        self.ceiling = ceiling
+        self.current_count = current_count
+        if message is None:
+            message = (
+                f"{channel_id} has {current_count} Grant Moments waiting "
+                f"(ceiling {ceiling}); please resolve some before new ones."
+            )
+        super().__init__(message)
+
+
+class InvalidDecisionError(ChannelAdapterError):
+    """Decision string is not in the `GrantMomentDecision` closed vocabulary.
+
+    Raised by `_resolve_pending_decision` when the WS handler (or any
+    runtime caller) attempts to resolve a Grant Moment with an
+    out-of-vocabulary decision string. Defense-in-depth at the adapter
+    boundary so the closed-vocabulary contract is enforced everywhere a
+    decision crosses into the M2→M3 flow, not only where the runtime
+    enforces it.
+    """
+
+    def __init__(
+        self,
+        channel_id: str,
+        decision: str,
+        allowed: tuple[str, ...],
+        message: str | None = None,
+    ) -> None:
+        self.channel_id = channel_id
+        self.decision = decision
+        self.allowed = allowed
+        if message is None:
+            message = (
+                f"{channel_id} received decision {decision!r} which is not in "
+                f"the allowed vocabulary {allowed}."
             )
         super().__init__(message)
 
