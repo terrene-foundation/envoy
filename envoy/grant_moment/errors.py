@@ -278,16 +278,36 @@ class NoveltyFrictionRequiredError(GrantMomentError):
     """Caller attempted to bypass 5s read-delay / double-tap on novel pattern.
 
     Carries the ``required_friction`` description and ``request_id``.
+
+    ``friction_kind`` is the structural discriminator for which friction
+    branch fired — one of:
+
+    - ``"read_delay_wallclock"`` — wall-clock elapsed below the configured
+      read-delay window.
+    - ``"read_delay_token_missing"`` — wall-clock window elapsed but the
+      ``FRICTION_TOKEN_READ_DELAY_COMPLETE`` ack token was never recorded.
+    - ``"double_tap_missing"`` — novel-class grant attempted without the
+      ``FRICTION_TOKEN_DOUBLE_TAP`` ack token.
+
+    Tests assert on this discriminator (structural) rather than substring
+    matching on the user-facing prose (semantic; would be
+    ``rules/probe-driven-verification.md`` MUST-1 violation).
     """
+
+    KIND_READ_DELAY_WALLCLOCK = "read_delay_wallclock"
+    KIND_READ_DELAY_TOKEN_MISSING = "read_delay_token_missing"
+    KIND_DOUBLE_TAP_MISSING = "double_tap_missing"
 
     def __init__(
         self,
         request_id: str,
         required_friction: str,
+        friction_kind: str | None = None,
         message: str | None = None,
     ) -> None:
         self.request_id = request_id
         self.required_friction = required_friction
+        self.friction_kind = friction_kind
         if message is None:
             message = (
                 "This is a new kind of request. Please complete the "

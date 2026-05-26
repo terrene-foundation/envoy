@@ -172,6 +172,21 @@ class ChannelHandoff:
         # call (deterministic for replay + audit).
         self._dispatch_order = self._build_primary_first_order(adapters, primary_channel_id)
 
+    @property
+    def primary_channel_id(self) -> str:
+        """The primary channel id this handoff binds high-stakes grants to."""
+        return self._primary_channel_id
+
+    @property
+    def adapter_channel_ids(self) -> tuple[str, ...]:
+        """All configured adapter channel ids, in registration order.
+
+        Exposed so the runtime can validate caller-supplied channel ids
+        (e.g. ``confirm_channel_id`` on the high-stakes cross-channel
+        confirm leg) against the configured channel set.
+        """
+        return tuple(a.channel_id for a in self._adapters)
+
     @staticmethod
     def _build_primary_first_order(
         adapters: tuple[ChannelAdapterProtocol, ...],

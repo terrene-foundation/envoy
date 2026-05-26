@@ -95,9 +95,35 @@ Every dialog shows:
 
 Raising velocity limits CANNOT be approved inline. Requires Weekly Posture Review OR cross-channel Grant Moment with 24h cooling-off.
 
+**Phase 01 known limitation (per `rules/specs-authority.md` Rule 6):**
+The Phase 01 cooling-off uses `time.time()` (wall-clock) so the 24h
+math matches the user-facing claim AND so the ratchet survives process
+restart in the same calendar window. Forward clock skew (NTP catch-up
+jump, admin clock change, container clock adjustment) can shorten the
+window; backward skew is benign. Phase 02 persists the last-approved
+timestamp into the TrustVault alongside a monotonic baseline so
+forward-skew becomes detectable.
+**User impact:** Phase 01 deployments on systems with managed clocks
+(typical) experience the documented 24h gate; deployments on systems
+where the operator can move the clock forward MUST treat the gate as
+advisory until Phase 02 lands.
+
 ## Cross-principal (Phase 03)
 
 Dual-signed if affects both principals. First principal's dialog → second principal's dialog on their channel. Action executes only after both signed. 24h cooling-off for high-stakes.
+
+**Phase 01 deviation (per `rules/specs-authority.md` Rule 6):**
+The Phase 01 `EnvoyGrantMomentRuntime` REFUSES every cross-principal grant
+at the M0 boundary (`issue_grant_moment` raises
+`DualSignatureRequiredError`) because Phase 01 lacks a co-signature
+verification path. A single principal able to populate
+`co_signer_principal_genesis_id` without a matching `co_signature_hex`
+would otherwise produce a "cross-principal grant" without the second
+principal's actual signature — exactly the wire-shape-only-defense gap
+security review surfaced. Phase 03 wires the verify path + the 24h
+cooling-off + the channel hop and lifts the M0 refusal.
+**User impact:** Phase 01 ships single-principal grants only; cross-principal
+attempts surface a typed error naming Phase 03 as the implementation target.
 
 ## Timeout
 
@@ -165,15 +191,17 @@ same boundary:
 Run `pytest -m regression` to select the threat-mitigation contract pins
 across the Wave-3 + Boundary Conversation test surfaces.
 
-### Runtime layer (deferred to Wave-4 facade) — `EnvoyGrantMomentRuntime`
+### Runtime layer (landed) — `EnvoyGrantMomentRuntime`
 
 The following test files exercise behaviors that depend on the M0→M4
 runtime facade (timeout loop, dedup store, channel-render driver, queue
 manager, friction enforcer, two-phase Ledger signer) — the facade composes
-this spec's structural primitives. Both the facade and these tests ship
-with the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md` § Surfaces
+this spec's structural primitives. Both the facade and these tests landed
+in the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md` § Surfaces
 
-- `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4.
+- `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4. The
+  runtime facade ships at `envoy/grant_moment/runtime.py::EnvoyGrantMomentRuntime`
+- the shared test harness at `tests/helpers/grant_moment_harness.py`.
 
 * `tests/integration/test_grant_moment_state_machine.py` — Tier-2 runtime
   M0→M4 with 5-minute timeout against the facade.
@@ -201,6 +229,19 @@ with the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-sc
   ceiling behavior.
 * `tests/e2e/test_grant_moment_real_to_honeypot_latency_parity.py` — duress
   latency distinguisher prevention.
+* `tests/e2e/test_grant_moment_3_resolution_shapes_with_cascade.py` —
+  EC-2 acceptance gate (3 resolution shapes execute end-to-end through the
+  runtime facade) + EC-8 cascade-revocation anchor (root + 3 expected
+  descendants — Phase 01 exercises the runtime's verification half of
+  the contract; the BFS itself lives in upstream
+  `kailash.trust.cascade_revoke`). Phase 02 lifts the test to a literal
+  3-deep delegation tree once Trust Vault container persistence lands.
+* `tests/integration/test_grant_moment_cross_channel_confirm_failed.py` —
+  `CrossChannelConfirmFailedError` runtime raise paths (analyst-R1 HIGH-1):
+  missing confirm leg AND confirm-channel-same-as-decided collapse.
+* `tests/integration/test_grant_moment_friction_token_vocabulary.py` —
+  closed-vocabulary friction-token validation (security-R1 MED-1): typo'd
+  tokens are rejected loudly so the enforcer cannot be silently bypassed.
 
 ## Open questions
 
