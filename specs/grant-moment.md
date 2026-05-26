@@ -165,15 +165,17 @@ same boundary:
 Run `pytest -m regression` to select the threat-mitigation contract pins
 across the Wave-3 + Boundary Conversation test surfaces.
 
-### Runtime layer (deferred to Wave-4 facade) — `EnvoyGrantMomentRuntime`
+### Runtime layer (landed) — `EnvoyGrantMomentRuntime`
 
 The following test files exercise behaviors that depend on the M0→M4
 runtime facade (timeout loop, dedup store, channel-render driver, queue
 manager, friction enforcer, two-phase Ledger signer) — the facade composes
-this spec's structural primitives. Both the facade and these tests ship
-with the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md` § Surfaces
+this spec's structural primitives. Both the facade and these tests landed
+in the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md` § Surfaces
 
-- `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4.
+- `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4. The
+  runtime facade ships at `envoy/grant_moment/runtime.py::EnvoyGrantMomentRuntime`
+- the shared test harness at `tests/helpers/grant_moment_harness.py`.
 
 * `tests/integration/test_grant_moment_state_machine.py` — Tier-2 runtime
   M0→M4 with 5-minute timeout against the facade.
@@ -201,6 +203,9 @@ with the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-sc
   ceiling behavior.
 * `tests/e2e/test_grant_moment_real_to_honeypot_latency_parity.py` — duress
   latency distinguisher prevention.
+* `tests/e2e/test_grant_moment_3_resolution_shapes_with_cascade.py` —
+  EC-2 acceptance gate (3 resolution shapes execute end-to-end through the
+  runtime facade) + EC-8 cascade revocation anchor (3-deep delegation tree).
 
 ## Open questions
 
