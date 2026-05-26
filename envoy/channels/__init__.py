@@ -64,6 +64,7 @@ from envoy.channels.errors import (
     SendTimeoutError,
     StartupTimeoutError,
 )
+from envoy.channels.telegram import TelegramChannelAdapter
 from envoy.channels.web import WebChannelAdapter
 
 __all__ = [
@@ -71,6 +72,7 @@ __all__ = [
     "ChannelAdapter",
     # Concrete adapters (Phase 01 foundation surfaces)
     "CLIChannelAdapter",
+    "TelegramChannelAdapter",
     "WebChannelAdapter",
     # Envelope + payloads
     "ChannelCapabilities",
