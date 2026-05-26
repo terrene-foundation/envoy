@@ -49,6 +49,13 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "slack-sdk>=3.27",
     "discord.py>=2.3",
+    # Ollama Python client — Phase 01 default Boundary-Conversation LLM backend
+    # per shard 8 § 6.3 (Ollama is the load-bearing CI tier). Used by the kaizen
+    # `LlmClient.from_deployment(ollama_default_preset(...))` chat path AND
+    # imported as the OLLAMA_AVAILABLE probe in tests/tier2 + tests/tier3.
+    # BYOM users may swap to OpenAI/Anthropic/etc. via EnvoyModelRouter env keys;
+    # the dep stays declared per rules/dependencies.md § "Declared = Imported".
+    "ollama>=0.4",
     # Scheduler (Daily Digest — shard 11)
     "apscheduler>=3.10",
     # Utilities
