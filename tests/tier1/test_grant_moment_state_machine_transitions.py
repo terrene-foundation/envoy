@@ -462,34 +462,72 @@ class TestWireFormCanonicalization:
 
 
 class TestErrorTaxonomy:
-    """Each spec § Error taxonomy class carries the spec-promised attributes."""
+    """Each spec § Error taxonomy class carries the spec-promised attributes.
 
+    These tests cover the contract-shape of the 10 spec error entries —
+    they verify each error class's structural surface (attribute names +
+    types + plain-language message + GrantMomentError base). The runtime
+    RAISE-path tests for each threat live with the future
+    EnvoyGrantMomentRuntime facade (see envoy/grant_moment/errors.py
+    Layer attribution). Marking with @pytest.mark.regression pins the
+    contract for the threat-mitigation surface so it cannot silently
+    regress; pytest -m regression selects them alongside other regression
+    tests for the threat coverage sweep per rules/testing.md MUST
+    "Verify security mitigations have tests".
+    """
+
+    @pytest.mark.regression
     def test_grant_moment_expired_carries_request_and_timeout(self) -> None:
+        """Contract pin: GrantMomentExpiredError surface (M2 timeout path)."""
         err = GrantMomentExpiredError(request_id="r1", timeout_seconds=300)
         assert err.request_id == "r1"
         assert err.timeout_seconds == 300
         assert isinstance(err, GrantMomentError)
 
+    @pytest.mark.regression
     def test_grant_moment_timeout_carries_channel(self) -> None:
+        """Contract pin: GrantMomentTimeoutError surface (channel render hang)."""
         err = GrantMomentTimeoutError(request_id="r1", channel_id="telegram")
         assert err.channel_id == "telegram"
 
+    @pytest.mark.regression
     def test_dual_signature_required_carries_co_signer(self) -> None:
+        """Contract pin: DualSignatureRequiredError surface (Phase-03 cross-principal)."""
         err = DualSignatureRequiredError(request_id="r1", awaiting_co_signer="bob")
         assert err.awaiting_co_signer == "bob"
 
+    @pytest.mark.regression
     def test_not_primary_channel_carries_both_channels(self) -> None:
+        """Contract pin: H-03 primary-channel binding for NotPrimaryChannelError.
+
+        Threat mitigation: high-stakes Grant Moments approved from a
+        non-primary channel MUST raise this typed error at M3
+        sign-or-decline (NOT at M1 dispatch — ChannelHandoff records
+        refusals structurally; see envoy/grant_moment/channel_handoff.py
+        Layer split). The error names both the routed-to channel and the
+        principal's primary channel so UX can surface the corrective path.
+        """
         err = NotPrimaryChannelError(channel_id="slack", primary_channel_id="signal")
         assert err.channel_id == "slack"
         assert err.primary_channel_id == "signal"
 
+    @pytest.mark.regression
     def test_velocity_raise_cooling_off_carries_24h_default(self) -> None:
+        """Contract pin: T-093 R2-H4 velocity-raise 24h cooling-off ratchet."""
         err = VelocityRaiseCoolingOffError(elapsed_seconds=3600)
         # 24h cooling off per T-093 R2-H4
         assert err.required_seconds == 24 * 60 * 60
         assert err.elapsed_seconds == 3600
 
+    @pytest.mark.regression
     def test_grant_moment_replay_carries_nonce_kind_and_prior_id(self) -> None:
+        """Contract pin: T-008 nonce-replay defense surface.
+
+        Threat mitigation: GrantMomentReplayError carries the duplicate
+        value, its kind (nonce | intent_id), and the prior request_id so
+        the runtime dedup store surfaces structural collision per spec
+        T-008 nonce defense.
+        """
         err = GrantMomentReplayError(
             duplicate_value="abcd1234",
             duplicate_kind="nonce",
@@ -499,7 +537,14 @@ class TestErrorTaxonomy:
         assert err.duplicate_kind == "nonce"
         assert err.prior_request_id == "r_prior"
 
+    @pytest.mark.regression
     def test_visible_secret_mismatch_carries_hashes_not_phrase(self) -> None:
+        """Contract pin: T-018 dialog-spoofing defense — phrase MUST NOT leak.
+
+        Threat mitigation: VisibleSecretMismatchError structurally cannot
+        carry the visible-secret phrase content (only hashes) per spec
+        T-018 + rules/security.md "No secrets in logs".
+        """
         # Spec-aligned: error MUST NOT carry the phrase content (leak surface).
         err = VisibleSecretMismatchError(
             expected_phrase_hash="sha256:exp",
@@ -510,18 +555,24 @@ class TestErrorTaxonomy:
         # No phrase attribute exists — only hashes.
         assert not hasattr(err, "phrase")
 
+    @pytest.mark.regression
     def test_novelty_friction_required_carries_friction_description(self) -> None:
+        """Contract pin: T-019 habituation defense — 5s+double-tap friction."""
         err = NoveltyFrictionRequiredError(
             request_id="r1", required_friction="5s read-delay + double-tap"
         )
         assert err.required_friction == "5s read-delay + double-tap"
 
+    @pytest.mark.regression
     def test_back_pressure_queue_full_carries_depth_and_ceiling(self) -> None:
+        """Contract pin: back-pressure ceiling surface (concurrent grants)."""
         err = BackPressureQueueFullError(queue_ceiling=5, queue_depth=5)
         assert err.queue_ceiling == 5
         assert err.queue_depth == 5
 
+    @pytest.mark.regression
     def test_cross_channel_confirm_failed_carries_confirm_channel(self) -> None:
+        """Contract pin: cross-channel confirm leg failure surface (high-stakes)."""
         err = CrossChannelConfirmFailedError(request_id="r1", confirm_channel_id="signal")
         assert err.confirm_channel_id == "signal"
 

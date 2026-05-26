@@ -21,9 +21,17 @@ Spec invariants this module enforces:
 
 - Sequential dispatch: ``await`` each adapter's ``render_grant_moment``
   in order (primary first, then siblings in adapter-list order). This
-  matches the spec's primary-binding intent and keeps Phase 01 simple;
-  concurrent dispatch is a Phase 02 optimization once render-time
-  contention becomes load-bearing.
+  matches the spec's primary-binding intent. Concurrent dispatch is a
+  future optimization once render-time contention becomes load-bearing
+  enough to justify the per-channel-race observability cost.
+
+- Layer split — ``NotPrimaryChannelError`` does NOT fire here. The
+  ``NotPrimaryChannelError`` in ``envoy.grant_moment.errors`` is raised
+  at M3 sign-or-decline when a high-stakes ``GrantMomentResult`` arrives
+  from a non-primary ``decided_on_channel_id`` (see ``errors.py`` §
+  "Layer attribution"). The M1 dispatch surface implemented here uses
+  structural ``HandoffPlan.refused_channels`` records instead — at M1
+  no decision exists yet to check the decided-on channel against.
 
 - Adapter failure isolation: when an adapter raises during render, the
   dispatch loop catches the exception, records the failure as a refused

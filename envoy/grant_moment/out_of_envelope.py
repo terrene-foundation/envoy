@@ -9,11 +9,16 @@ takes one of six closed-vocabulary values:
     envelope_violation | composition_rule | first_time |
     velocity_raise    | cross_principal  | data_access_classifier
 
-Phase 01 (this shard) classifies four of the six structurally — every
-classification rule is a set-membership or callable check against the
-caller-supplied ``EnvelopeContext``. ``cross_principal`` and
-``data_access_classifier`` are Wave-4 scope (Daily Digest data-access
-surfaces): see `briefs/00-phase-01-mvp-scope.md` § Surfaces.
+The detector classifies four of the six values structurally
+(``envelope_violation``, ``first_time``, ``velocity_raise``,
+``composition_rule``); every classification rule is a set-membership
+or callable check against the caller-supplied ``EnvelopeContext``.
+``cross_principal`` and ``data_access_classifier`` are NOT implemented
+in this module — they need additional context the dispatch surface
+(Daily Digest data-access surface, cross-principal request manifest)
+provides; the classifier here returns ``in_envelope=True`` for those
+patterns and the dispatch surface that owns the additional context
+raises the appropriate Grant Moment from its own observation site.
 
 Per `rules/agent-reasoning.md`: this module is structural plumbing
 (envelope set-membership + caller-supplied composition_rule_check).

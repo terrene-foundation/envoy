@@ -11,6 +11,70 @@ The taxonomy has 10 entries from the spec table; this module also exposes
 state-machine plumbing error is NOT in the spec § Error taxonomy table —
 it is internal-API hygiene.
 
+## Layer attribution — which surface raises each error
+
+The error taxonomy IS the consumer-facing contract; raise sites land
+alongside the runtime surfaces that detect each condition. The dispatch
++ classifier surfaces in this package (``ChannelHandoff``,
+``OutOfEnvelopeDetector``, ``CascadeRevocationOrchestrator``,
+``PlanSuspensionBridge``) handle the structural layer; the per-error
+raise sites distribute across the structural + runtime surfaces:
+
+- ``InvalidGrantMomentTransitionError`` — raised here, by
+  ``envoy.grant_moment.state_machine.next_state`` at every forbidden
+  ``(state, event)`` pair.
+- ``CascadeIncompleteError`` (defined in
+  ``envoy.grant_moment.cascade_orchestrator``, not this module) —
+  raised by ``CascadeRevocationOrchestrator.revoke_and_verify`` when
+  the runtime's ``trust_cascade_revoke`` returned a set missing one
+  or more expected descendants.
+- ``GrantMomentExpiredError`` — raised by the M2-await timeout path of
+  the future ``EnvoyGrantMomentRuntime`` facade (the M0→M4 driver that
+  composes Trust Vault + Ledger + ChannelHandoff). Wired as a wire-shape
+  contract in this PR; raised when the runtime layer that owns the
+  timeout loop lands.
+- ``GrantMomentTimeoutError`` — raised by the runtime channel-render
+  path when a channel adapter's ``render_grant_moment`` exceeds its
+  per-channel timeout budget.
+- ``DualSignatureRequiredError`` — raised by the Phase-03 cross-principal
+  decision pipeline when the first principal signed and the second is
+  pending. Phase 01 does not exercise this path (single principal); the
+  contract carries because the wire shape supports it.
+- ``NotPrimaryChannelError`` — raised at M3 sign-or-decline by the
+  runtime when a high-stakes ``GrantMomentResult`` arrives from a
+  ``decided_on_channel_id`` that does not match the principal's
+  designated primary channel. NOT raised at M1 dispatch (the
+  ``ChannelHandoff`` M1 layer uses structural refusal via
+  ``HandoffPlan.refused_channels`` because at M1 no decision exists yet
+  to check).
+- ``VelocityRaiseCoolingOffError`` — raised by the runtime when a
+  velocity-raise request arrives before 24h have elapsed since the
+  prior velocity raise (per T-093 R2-H4); structural ratchet enforced
+  at the budget-tracker integration layer.
+- ``GrantMomentReplayError`` — raised by the runtime nonce-or-intent_id
+  deduplication store on a second observation of an already-seen value
+  (per T-008 nonce defense). The wire shape supports detection
+  (``nonce`` + ``intent_id`` pinned in canonical bytes); the dedup
+  store is the runtime layer.
+- ``VisibleSecretMismatchError`` — raised by the channel-adapter render
+  path when the secret it would render does not match the Trust-Vault
+  stored secret (per T-018 dialog-spoofing defense). The error carries
+  only hashes (never the phrase) per ``rules/security.md`` § "No secrets
+  in logs".
+- ``NoveltyFrictionRequiredError`` — raised by the runtime when a caller
+  attempts to bypass the 5s read-delay or double-tap friction on a
+  novel-pattern Grant Moment (per T-019 habituation defense).
+- ``BackPressureQueueFullError`` — raised by the runtime grant-queue
+  manager when concurrent grants exceed the configured ceiling.
+- ``CrossChannelConfirmFailedError`` — raised by the runtime when a
+  high-stakes cross-channel confirm leg fails to complete on the
+  designated confirm channel.
+
+The Wave-3 PR ships the ENTIRE error taxonomy as the consumer-facing
+contract so downstream catch sites compile and type-check today; the
+per-error raise sites live with the runtime-facade shard that composes
+the structural primitives this PR ships.
+
 This module is pure Python; ZERO dependencies on other envoy packages.
 """
 
