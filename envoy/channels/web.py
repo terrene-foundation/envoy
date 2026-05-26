@@ -20,16 +20,19 @@ default in-memory queue so Tier-2 wiring tests exercise the contract today.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, cast
 
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
     DailyDigestPayload,
+    GrantMomentDecision,
     GrantMomentPayload,
     GrantMomentReceipt,
     InboundMessage,
@@ -42,17 +45,27 @@ from envoy.channels.errors import (
     AlreadyStartedError,
     GrantMomentExpiredError,
     NotPrimaryChannelError,
+    NotStartedError,
+    OverflowDropEvent,
     PayloadTooLargeError,
-    SendTimeoutError,
+    PhaseDeferredError,
 )
+
+if TYPE_CHECKING:
+    from envoy.grant_moment.runtime import GrantMomentRequest
+
+logger = logging.getLogger(__name__)
 
 
 _WEB_CHANNEL_ID = "web"
 _WEB_MAX_MESSAGE_LENGTH = 65536
-_RATE_LIMIT_NEVER_RESETS = datetime(9999, 12, 31, tzinfo=timezone.utc)
-_DEFAULT_ALLOWED_ORIGINS: tuple[str, ...] = (
-    "http://localhost:*",
-    "http://127.0.0.1:*",
+_MAX_PENDING_DECISIONS = 1000
+_DEFAULT_DEV_PORTS: tuple[int, ...] = (3000, 5173, 8000, 8080, 8765)
+_DEFAULT_ALLOWED_ORIGINS: tuple[str, ...] = tuple(
+    f"{scheme}://{host}:{port}"
+    for scheme in ("http",)
+    for host in ("localhost", "127.0.0.1")
+    for port in _DEFAULT_DEV_PORTS
 )
 _DEFAULT_BIND_HOST = "127.0.0.1"
 
@@ -113,6 +126,7 @@ class WebChannelAdapter(ChannelAdapter):
             self._config = config
         self._started = True
         self._closed = False
+        logger.info("channel.startup", extra={"channel_id": _WEB_CHANNEL_ID})
 
     async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
         if not self._started or self._closed:
@@ -125,12 +139,18 @@ class WebChannelAdapter(ChannelAdapter):
             if not fut.done():
                 fut.cancel()
         self._pending_decisions.clear()
+        # In-flight `send_grant_moment` tasks observe their futures cancelled
+        # above; they will raise `GrantMomentExpiredError` cleanly. The
+        # InboundRouter shard adds a separate drain for SSE/WS outbound
+        # tasks when `send_message` is wired (today it raises PhaseDeferredError
+        # so no outbound task can be in flight).
         try:
             async with asyncio.timeout(drain_timeout_seconds):
                 while not self._inbound_queue.empty():
                     self._inbound_queue.get_nowait()
         except (asyncio.TimeoutError, asyncio.QueueEmpty):
             pass
+        logger.info("channel.shutdown", extra={"channel_id": _WEB_CHANNEL_ID})
 
     async def receive_message(self) -> AsyncIterator[InboundMessage]:
         while not self._closed:
@@ -140,13 +160,25 @@ class WebChannelAdapter(ChannelAdapter):
                 return
 
     async def _inject_inbound(self, msg: InboundMessage) -> None:
-        """Test-only hook: push an `InboundMessage` onto the queue.
+        """Test/runtime hook: push an `InboundMessage` onto the queue.
 
         Production Web inbound flows from the Nexus WS handler into this
         queue; Tier-2 tests use the hook to exercise `receive_message`
-        without a real WebSocket.
+        without a real WebSocket. On queue overflow, the message is dropped
+        and an `OverflowDropEvent` WARN log fires per spec line 46.
         """
-        await self._inbound_queue.put(msg)
+        try:
+            self._inbound_queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            drop = OverflowDropEvent(channel_id=_WEB_CHANNEL_ID, dropped_count=1)
+            logger.warning(
+                "channel.inbound.overflow_drop",
+                extra={
+                    "channel_id": _WEB_CHANNEL_ID,
+                    "session_id": msg.session_id,
+                    "dropped_count": drop.dropped_count,
+                },
+            )
 
     async def _resolve_pending_decision(self, request_id: str, decision: str) -> None:
         """Test/runtime hook: a Web modal user clicked ``decision``.
@@ -168,29 +200,23 @@ class WebChannelAdapter(ChannelAdapter):
         visible_secret: VisibleSecret | None = None,
         timeout_seconds: int = 10,
     ) -> SendReceipt:
-        self._require_started()
+        # Phase 01 deferral per `rules/zero-tolerance.md` Rule 2 (no fake
+        # dispatch). The SSE/WS dispatch hook lands in the InboundRouter
+        # shard; until then this surface MUST refuse with a typed error
+        # rather than return a success receipt for a no-op send. Both args
+        # are inspected so the refusal is callable-shape-compatible: the
+        # caller cannot mistake `PhaseDeferredError` for "delivered."
+        self._require_started("send_message")
         if len(payload.body) > _WEB_MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
                 channel_id=_WEB_CHANNEL_ID,
                 actual_length=len(payload.body),
                 max_length=_WEB_MAX_MESSAGE_LENGTH,
             )
-        try:
-            async with asyncio.timeout(timeout_seconds):
-                # Phase 01 foundation: the SSE/WS dispatch wiring lands in
-                # the InboundRouter shard. Today we acknowledge the send by
-                # constructing a receipt; the runtime can verify the
-                # adapter accepted the payload without a real WS handler.
-                await asyncio.sleep(0)
-        except asyncio.TimeoutError as exc:
-            raise SendTimeoutError(
-                channel_id=_WEB_CHANNEL_ID,
-                timeout_seconds=timeout_seconds,
-            ) from exc
-        return SendReceipt(
-            message_id=str(uuid.uuid4()),
-            delivered_at=datetime.now(timezone.utc),
-            channel_native_id=f"web-{uuid.uuid4().hex[:12]}",
+        _ = (target_principal_id, visible_secret, timeout_seconds)
+        raise PhaseDeferredError(
+            method_name="WebChannelAdapter.send_message",
+            deferred_to_phase="Wave-4 InboundRouter shard",
         )
 
     async def send_grant_moment(
@@ -201,18 +227,47 @@ class WebChannelAdapter(ChannelAdapter):
         primary_only: bool = False,
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
-        self._require_started()
-        if primary_only and self._config.primary_channel_id != _WEB_CHANNEL_ID:
+        self._require_started("send_grant_moment")
+        # H-03 primary-channel binding (spec lines 183-185) — defense-in-depth:
+        # `grant.high_stakes is True` MUST ALSO require the primary channel
+        # even when `primary_only=False`.
+        must_be_primary = primary_only or grant.high_stakes
+        if must_be_primary and self._config.primary_channel_id != _WEB_CHANNEL_ID:
             raise NotPrimaryChannelError(
                 channel_id=_WEB_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
             )
+        # Bounded in-flight pending-decision map — production DoS defense
+        # for the case where a malicious / buggy runtime fires send faster
+        # than decisions resolve.
+        if len(self._pending_decisions) >= _MAX_PENDING_DECISIONS:
+            raise RuntimeError(
+                f"WebChannelAdapter has {len(self._pending_decisions)} pending "
+                f"Grant Moments (ceiling {_MAX_PENDING_DECISIONS}); refuse new "
+                "until existing ones resolve."
+            )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
         self._pending_decisions[grant.request_id] = future
+        logger.info(
+            "channel.send_grant_moment.start",
+            extra={
+                "channel_id": _WEB_CHANNEL_ID,
+                "request_id": grant.request_id,
+                "high_stakes": grant.high_stakes,
+            },
+        )
         try:
             decision = await asyncio.wait_for(future, timeout=timeout_seconds)
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            logger.warning(
+                "channel.send_grant_moment.expired",
+                extra={
+                    "channel_id": _WEB_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
             raise GrantMomentExpiredError(
                 request_id=grant.request_id,
                 timeout_seconds=timeout_seconds,
@@ -222,9 +277,35 @@ class WebChannelAdapter(ChannelAdapter):
         return GrantMomentReceipt(
             request_id=grant.request_id,
             grant_id=str(uuid.uuid4()),
-            decision=decision,
+            decision=cast("GrantMomentDecision", decision),
             decided_at=datetime.now(timezone.utc),
             channel_signature=f"web-sig-{uuid.uuid4().hex[:16]}",
+        )
+
+    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+        """M1 render-only — satisfies `ChannelAdapterProtocol`.
+
+        Foundation shard: registers a pending-decision Future and returns;
+        the WS handler resolves the future via `_resolve_pending_decision`
+        when the user clicks the modal. Distinct from `send_grant_moment`
+        (which awaits the decision inline).
+        """
+        self._require_started("render_grant_moment")
+        request_id = getattr(request, "request_id", None)
+        if request_id is None:
+            # No correlation key — cannot register a pending decision; the
+            # runtime guarantees `request_id` is present per spec, so this
+            # is structural defense, not user-input handling.
+            raise ValueError("GrantMomentRequest is missing request_id; cannot dispatch.")
+        loop = asyncio.get_running_loop()
+        if request_id not in self._pending_decisions:
+            self._pending_decisions[request_id] = loop.create_future()
+        logger.info(
+            "channel.render_grant_moment",
+            extra={
+                "channel_id": _WEB_CHANNEL_ID,
+                "request_id": request_id,
+            },
         )
 
     async def send_digest(
@@ -234,6 +315,8 @@ class WebChannelAdapter(ChannelAdapter):
         *,
         timeout_seconds: int = 10,
     ) -> SendReceipt:
+        # send_digest delegates to send_message which currently raises
+        # PhaseDeferredError until the InboundRouter shard wires SSE/WS.
         body = f"# Daily Digest {digest.digest_date}\n\n{digest.markdown_body}"
         payload = MessagePayload(kind="system_notice", body=body)
         return await self.send_message(
@@ -256,7 +339,7 @@ class WebChannelAdapter(ChannelAdapter):
     async def rate_limit_status(self) -> RateLimitStatus:
         return RateLimitStatus(
             requests_remaining=10**9,
-            window_resets_at=_RATE_LIMIT_NEVER_RESETS,
+            window_resets_at=None,
             soft_quota_warning=False,
         )
 
@@ -277,13 +360,19 @@ class WebChannelAdapter(ChannelAdapter):
 
     @staticmethod
     def _validate_allowed_origins(origins: tuple[str, ...]) -> None:
+        # Per H4 (R1 audit closure 2026-05-26): `:*` port wildcards are
+        # refused — the kailash-py #673 matcher's glob-vs-literal semantics
+        # are not pinned in our boundary contract, so we conservatively
+        # enforce explicit numeric ports. Defaults ship dev ports
+        # (3000/5173/8000/8080/8765) covering Vite, CRA, Next, common
+        # dev-server configs.
         if not origins:
             raise ValueError(
                 "WebChannelAdapter requires a non-empty allowed_origins "
                 "allowlist; refusing to start with no Origin gate "
                 "(rules/security.md § Network Transport Hardening)."
             )
-        permitted = re.compile(r"^https?://(?:localhost|127\.0\.0\.1)(?::\*|:\d+)?$")
+        permitted = re.compile(r"^https?://(?:localhost|127\.0\.0\.1):\d+$")
         for origin in origins:
             if origin == "*":
                 raise ValueError(
@@ -291,13 +380,20 @@ class WebChannelAdapter(ChannelAdapter):
                     "wildcard Origin breaks the DNS-rebind defense "
                     "(rules/security.md § Network Transport Hardening)."
                 )
+            if "*" in origin:
+                raise ValueError(
+                    f"WebChannelAdapter allowed_origins entry {origin!r} "
+                    "contains a wildcard. Phase 01 requires explicit "
+                    "numeric ports; the kailash-py Nexus matcher's "
+                    "glob semantics are not pinned by this contract."
+                )
             if not permitted.match(origin):
                 raise ValueError(
                     f"WebChannelAdapter allowed_origins entry {origin!r} "
-                    "must match http(s)://localhost[:port|:*] or "
-                    "http(s)://127.0.0.1[:port|:*] per Phase 01 binding."
+                    "must match http(s)://localhost:<port> or "
+                    "http(s)://127.0.0.1:<port> per Phase 01 binding."
                 )
 
-    def _require_started(self) -> None:
+    def _require_started(self, method_name: str = "send_*") -> None:
         if not self._started or self._closed:
-            raise RuntimeError(f"{type(self).__name__} not started; call startup() before send_*.")
+            raise NotStartedError(channel_id=_WEB_CHANNEL_ID, method_name=method_name)

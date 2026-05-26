@@ -16,17 +16,19 @@ landing in a sibling Wave-4 shard) dispatches across registered adapters.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
     DailyDigestPayload,
+    GrantMomentDecision,
     GrantMomentPayload,
     GrantMomentReceipt,
     InboundMessage,
@@ -39,14 +41,20 @@ from envoy.channels.errors import (
     AlreadyStartedError,
     GrantMomentExpiredError,
     NotPrimaryChannelError,
+    NotStartedError,
+    OverflowDropEvent,
     PayloadTooLargeError,
     SendTimeoutError,
 )
 
+if TYPE_CHECKING:
+    from envoy.grant_moment.runtime import GrantMomentRequest
+
+logger = logging.getLogger(__name__)
+
 
 _CLI_CHANNEL_ID = "cli"
 _CLI_MAX_MESSAGE_LENGTH = 4096
-_RATE_LIMIT_NEVER_RESETS = datetime(9999, 12, 31, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +104,7 @@ class CLIChannelAdapter(ChannelAdapter):
             self._config = config
         self._started = True
         self._closed = False
+        logger.info("channel.startup", extra={"channel_id": _CLI_CHANNEL_ID})
 
     async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
         if not self._started or self._closed:
@@ -109,6 +118,7 @@ class CLIChannelAdapter(ChannelAdapter):
                     self._inbound_queue.get_nowait()
         except (asyncio.TimeoutError, asyncio.QueueEmpty):
             pass
+        logger.info("channel.shutdown", extra={"channel_id": _CLI_CHANNEL_ID})
 
     async def receive_message(self) -> AsyncIterator[InboundMessage]:
         # The CLI adapter's inbound stream is driven by external test harnesses
@@ -126,8 +136,26 @@ class CLIChannelAdapter(ChannelAdapter):
         Production CLI inbound flows through `envoy.cli` ↔ `_inbound_queue`;
         Tier-2 tests use this hook to exercise `receive_message` without an
         actual terminal.
+
+        On queue overflow (>100 messages buffered), the message is dropped
+        with an `OverflowDropEvent` written to the Ledger via a WARN log
+        per spec § Receive (line 46 — "overflow drops with `OverflowDropEvent`
+        to Ledger") + `rules/observability.md` Rule 7 (bulk-op partial-failure
+        WARN). The producer does NOT block — Phase 01 contract is drop-with-audit,
+        NOT backpressure-block.
         """
-        await self._inbound_queue.put(msg)
+        try:
+            self._inbound_queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            drop = OverflowDropEvent(channel_id=_CLI_CHANNEL_ID, dropped_count=1)
+            logger.warning(
+                "channel.inbound.overflow_drop",
+                extra={
+                    "channel_id": _CLI_CHANNEL_ID,
+                    "session_id": msg.session_id,
+                    "dropped_count": drop.dropped_count,
+                },
+            )
 
     async def send_message(
         self,
@@ -137,7 +165,7 @@ class CLIChannelAdapter(ChannelAdapter):
         visible_secret: VisibleSecret | None = None,
         timeout_seconds: int = 10,
     ) -> SendReceipt:
-        self._require_started()
+        self._require_started("send_message")
         if len(payload.body) > _CLI_MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
                 channel_id=_CLI_CHANNEL_ID,
@@ -146,8 +174,22 @@ class CLIChannelAdapter(ChannelAdapter):
             )
         out = self._config.output_stream or sys.stdout
         line = f"[{payload.kind}] {payload.body}\n"
+        # Per T-018 + `rules/security.md` § "No secrets in logs":
+        # `visible_secret.phrase` MUST NEVER appear in send_message output —
+        # the icon-only render is intentional (Grant Moment is the ONLY surface
+        # that renders the phrase; messages render the icon as a visual
+        # provenance hint without leaking the secret). The asymmetry is pinned
+        # by `tests/integration/channels/test_visible_secret_redaction.py`.
         if visible_secret is not None:
             line = f"({visible_secret.icon}) {line}"
+        logger.info(
+            "channel.send_message.start",
+            extra={
+                "channel_id": _CLI_CHANNEL_ID,
+                "target_principal_id": target_principal_id,
+                "kind": payload.kind,
+            },
+        )
         try:
             async with asyncio.timeout(timeout_seconds):
                 # stdout writes are sync but quick; the timeout exists so a
@@ -156,15 +198,30 @@ class CLIChannelAdapter(ChannelAdapter):
                 await asyncio.to_thread(out.write, line)
                 await asyncio.to_thread(out.flush)
         except asyncio.TimeoutError as exc:
+            logger.warning(
+                "channel.send_message.timeout",
+                extra={
+                    "channel_id": _CLI_CHANNEL_ID,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
             raise SendTimeoutError(
                 channel_id=_CLI_CHANNEL_ID,
                 timeout_seconds=timeout_seconds,
             ) from exc
-        return SendReceipt(
+        receipt = SendReceipt(
             message_id=str(uuid.uuid4()),
             delivered_at=datetime.now(timezone.utc),
             channel_native_id=f"cli-{uuid.uuid4().hex[:12]}",
         )
+        logger.info(
+            "channel.send_message.ok",
+            extra={
+                "channel_id": _CLI_CHANNEL_ID,
+                "message_id": receipt.message_id,
+            },
+        )
+        return receipt
 
     async def send_grant_moment(
         self,
@@ -174,8 +231,14 @@ class CLIChannelAdapter(ChannelAdapter):
         primary_only: bool = False,
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
-        self._require_started()
-        if primary_only and self._config.primary_channel_id != _CLI_CHANNEL_ID:
+        self._require_started("send_grant_moment")
+        # H-03 primary-channel binding (spec lines 183-185). Defense-in-depth:
+        # `grant.high_stakes is True` ALSO requires the primary channel even
+        # when the caller forgot `primary_only=True`. Single-layer kwarg
+        # gating is insufficient — the adapter MUST also enforce on the
+        # payload-level discriminator.
+        must_be_primary = primary_only or grant.high_stakes
+        if must_be_primary and self._config.primary_channel_id != _CLI_CHANNEL_ID:
             raise NotPrimaryChannelError(
                 channel_id=_CLI_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
@@ -201,6 +264,27 @@ class CLIChannelAdapter(ChannelAdapter):
             decided_at=datetime.now(timezone.utc),
             channel_signature="",
         )
+
+    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+        """M1 render-only — satisfies `envoy.grant_moment.channel_handoff.ChannelAdapterProtocol`.
+
+        Writes the rendering prose to the output stream WITHOUT awaiting a
+        user decision; the decision arrives async via
+        `EnvoyGrantMomentRuntime.post_decision`. Returns on successful render;
+        raises on transport / IO failure so `ChannelHandoff` records the
+        adapter in `HandoffPlan.refused_channels`.
+
+        Distinct from `send_grant_moment` (the full ritual; collects the
+        decision inline). The two surfaces coexist because the spec mandates
+        a full-ritual surface (`send_grant_moment` per spec line 69) AND the
+        runtime mandates an M1-only surface (`render_grant_moment` per
+        `envoy.grant_moment.channel_handoff` Protocol).
+        """
+        self._require_started("render_grant_moment")
+        out = self._config.output_stream or sys.stdout
+        rendered = self._render_grant_moment_request_prose(request)
+        await asyncio.to_thread(out.write, rendered)
+        await asyncio.to_thread(out.flush)
 
     async def send_digest(
         self,
@@ -233,10 +317,11 @@ class CLIChannelAdapter(ChannelAdapter):
         )
 
     async def rate_limit_status(self) -> RateLimitStatus:
-        # CLI has no upstream quota; report unbounded remaining + sentinel reset.
+        # CLI has no upstream quota; `window_resets_at=None` signals "no
+        # enforced rate limit applies" per `RateLimitStatus` docstring.
         return RateLimitStatus(
             requests_remaining=10**9,
-            window_resets_at=_RATE_LIMIT_NEVER_RESETS,
+            window_resets_at=None,
             soft_quota_warning=False,
         )
 
@@ -244,12 +329,13 @@ class CLIChannelAdapter(ChannelAdapter):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _require_started(self) -> None:
+    def _require_started(self, method_name: str = "send_*") -> None:
         if not self._started or self._closed:
-            # Programming error — call startup() first. Surfaces as a typed
-            # error rather than `AttributeError` per `rules/zero-tolerance.md`
+            # Surfaces as a typed `ChannelAdapterError` subclass so callers
+            # catching the family don't miss this case. Replaces the pre-R1
+            # bare `RuntimeError` per `rules/zero-tolerance.md`
             # Rule 3a (typed delegate guards for None backing objects).
-            raise RuntimeError(f"{type(self).__name__} not started; call startup() before send_*.")
+            raise NotStartedError(channel_id=_CLI_CHANNEL_ID, method_name=method_name)
 
     @staticmethod
     def _render_grant_moment_prose(grant: GrantMomentPayload) -> str:
@@ -265,14 +351,23 @@ class CLIChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _coerce_decision(response: str, options: tuple[str, ...]) -> str:
+    def _render_grant_moment_request_prose(request: "GrantMomentRequest") -> str:
+        # M1 render-only — uses the `GrantMomentRequest` shape from the
+        # runtime. Attribute access is duck-typed so this method works with
+        # any request-like object the dispatcher hands across.
+        request_id = getattr(request, "request_id", "<unknown>")
+        body = getattr(request, "body", "")
+        return f"\n--- Grant Moment ({request_id}) ---\n{body}\n"
+
+    @staticmethod
+    def _coerce_decision(response: str, options: tuple[str, ...]) -> GrantMomentDecision:
         # Accept either the literal option name OR a 1-based index.
         if response in options:
-            return response
+            return cast("GrantMomentDecision", response)
         if response.isdigit():
             idx = int(response) - 1
             if 0 <= idx < len(options):
-                return options[idx]
+                return cast("GrantMomentDecision", options[idx])
         # Unknown response — coerce to a "modify" decision so the runtime
         # routes through the modification path rather than treating an
         # unparseable line as a silent approval (security default).
@@ -280,6 +375,6 @@ class CLIChannelAdapter(ChannelAdapter):
             return "modify"
         if "deny" in options:
             return "deny"
-        # Fall back to the first option; should never happen because every
-        # GrantMomentPayload carries at least one option by construction.
-        return options[0]
+        # `GrantMomentPayload.__post_init__` enforces non-empty `options` so
+        # `options[0]` is structurally safe.
+        return cast("GrantMomentDecision", options[0])

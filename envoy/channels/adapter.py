@@ -134,12 +134,39 @@ class ChannelAdapter(ABC):
         primary_only: bool = False,
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
-        """Render Grant Moment + collect user response.
+        """Render Grant Moment + collect user response (spec § Ritual delivery).
 
         If `primary_only=True` AND this adapter is not the user's primary
         channel, raises `NotPrimaryChannelError` (H-03 primary-channel
-        binding). On `timeout_seconds` elapse without response, raises
-        `GrantMomentExpiredError`.
+        binding). Defense-in-depth: when `grant.high_stakes is True` the
+        adapter MUST also enforce the binding even when `primary_only=False`
+        — see concrete adapters' implementations. On `timeout_seconds`
+        elapse without response, raises `GrantMomentExpiredError`.
+
+        Distinct from `render_grant_moment` (M1 render-only surface used by
+        `envoy.grant_moment.channel_handoff.ChannelHandoff.dispatch`):
+        `send_grant_moment` is the full single-channel ritual (render +
+        await + receipt); `render_grant_moment` is the multi-channel M1
+        dispatch primitive that fires render across every active channel
+        without awaiting a decision (the decision arrives async via
+        `EnvoyGrantMomentRuntime.post_decision`).
+        """
+
+    @abstractmethod
+    async def render_grant_moment(self, request: Any) -> None:
+        """M1 dispatch render — invoked by `ChannelHandoff.dispatch`.
+
+        Renders the Grant Moment on this channel WITHOUT awaiting the user's
+        decision. The decision flows back through
+        `EnvoyGrantMomentRuntime.post_decision` per `specs/grant-moment.md`
+        § State machine M1→M2.
+
+        `request` is a `GrantMomentRequest` (from `envoy.grant_moment.runtime`)
+        — typed `Any` here to avoid a circular import; concrete adapters
+        narrow via local TYPE_CHECKING import.
+
+        Raises on transport / render failure so `ChannelHandoff` records the
+        adapter in `HandoffPlan.refused_channels` per its dispatch contract.
         """
 
     @abstractmethod

@@ -21,6 +21,25 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+# Canonical `VisibleSecret` ships in `envoy.trust.types` per
+# `specs/boundary-conversation.md` § Questions S7 (set-visible-secret) — the
+# Trust Vault is the authoritative producer; channels are consumers. Importing
+# rather than redefining closes the spec H-1 finding (shape divergence) and
+# satisfies `rules/specs-authority.md` Rule 5b (full-sibling re-derivation
+# requires one canonical shape across the trust + channels boundary).
+from envoy.trust.types import VisibleSecret
+
+# Closed vocabulary for `GrantMomentReceipt.decision` per
+# `specs/grant-moment.md` § Resolution shape — adapter MUST NOT silently coin
+# an out-of-vocabulary decision string.
+GrantMomentDecision = Literal[
+    "approve_once",
+    "approve_and_author",
+    "approve_author",
+    "deny",
+    "modify",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelCapabilities:
@@ -50,30 +69,15 @@ class RateLimitStatus:
 
     Soft warning at 80% utilisation flips `soft_quota_warning=True`. The hard
     quota path raises `RateLimitExceededError` from `send_*` methods.
+
+    `window_resets_at` is `None` when the channel has no enforced rate limit
+    (e.g. CLI, Web — local-only surfaces). External-quota channels carry the
+    UTC datetime at which the quota window rolls.
     """
 
     requests_remaining: int
-    window_resets_at: datetime
+    window_resets_at: datetime | None
     soft_quota_warning: bool
-
-
-@dataclass(frozen=True, slots=True)
-class VisibleSecret:
-    """Per-channel visible-secret carrier (T-018 dialog-spoofing defense).
-
-    The phrase travels with the GrantMomentRequest dispatched to a channel
-    so the adapter can render the secret next to the action prompt. The
-    `phrase` field is treated as a plaintext string at this layer; the
-    Trust Vault stores the canonical form and the renderer compares hashes.
-
-    Per `rules/security.md` § "No secrets in logs", VisibleSecret MUST NEVER
-    appear in a log line — adapters that log a VisibleSecret are blocked by
-    `tests/regression/test_t070_clipboard_autoclear.py` and the redaction
-    review gate.
-    """
-
-    phrase: str
-    icon: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +101,11 @@ class GrantMomentPayload:
     The runtime constructs this from `envoy.grant_moment.runtime` M0 issue
     and dispatches via `ChannelHandoff.dispatch(request, channel, timeout)`
     per `01-analysis/16-channel-adapters-implementation.md` § 3 line 36.
+
+    `__post_init__` enforces non-empty `decision_options` — an empty options
+    tuple makes `_coerce_decision` reach an out-of-bounds index AND lets a
+    caller silently dispatch a grant the user cannot resolve. Fail loud at
+    construction per `rules/zero-tolerance.md` Rule 3a (typed delegate guards).
     """
 
     request_id: str
@@ -106,20 +115,34 @@ class GrantMomentPayload:
     body: str
     high_stakes: bool
 
+    def __post_init__(self) -> None:
+        if not self.decision_options:
+            raise ValueError(
+                "GrantMomentPayload.decision_options MUST be non-empty — "
+                "a Grant Moment with no decision options cannot resolve."
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class GrantMomentReceipt:
     """Wire-shape return of `send_grant_moment` (spec lines 78-79).
 
     `decision` is the option from `GrantMomentPayload.decision_options` the
-    user picked; `channel_signature` is a channel-native attestation
-    (CLI: empty; Web: SHA-256 of session cookie; messaging: per-vendor
-    callback nonce verified by the WebhookSigner).
+    user picked (constrained to the `GrantMomentDecision` closed vocabulary);
+    `channel_signature` is a channel-native attestation (CLI: empty; Web:
+    SHA-256 of session cookie; messaging: per-vendor callback nonce verified
+    by the WebhookSigner).
+
+    `request_id` extends the spec's 4-field shape (lines 78-79) by one field
+    — the original-request correlation token. The extension is documented in
+    `specs/channel-adapters.md` § Ritual delivery § Receipt shape (deviation
+    note per `rules/specs-authority.md` Rule 6: receipt carries `request_id`
+    so the runtime can correlate without holding a side-table).
     """
 
     request_id: str
     grant_id: str
-    decision: str
+    decision: GrantMomentDecision
     decided_at: datetime
     channel_signature: str
 

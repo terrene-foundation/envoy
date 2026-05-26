@@ -53,6 +53,7 @@ from envoy.channels.errors import (
     ChannelTransportError,
     GrantMomentExpiredError,
     NotPrimaryChannelError,
+    NotStartedError,
     OverflowDropEvent,
     PayloadTooLargeError,
     PhaseDeferredError,
@@ -82,13 +83,15 @@ __all__ = [
     "SendReceipt",
     "VisibleSecret",
     "WeeklyPostureReviewPayload",
-    # 11 typed errors per spec § Error taxonomy + 1 phase-defer hygiene error
+    # 11 typed errors per spec § Error taxonomy + 2 hygiene errors
+    # (NotStartedError + PhaseDeferredError)
     "AlreadyStartedError",
     "AuthenticationError",
     "ChannelAdapterError",
     "ChannelTransportError",
     "GrantMomentExpiredError",
     "NotPrimaryChannelError",
+    "NotStartedError",
     "OverflowDropEvent",
     "PayloadTooLargeError",
     "PhaseDeferredError",

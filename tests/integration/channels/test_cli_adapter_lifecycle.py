@@ -54,7 +54,9 @@ def _make_grant(
         request_id=request_id,
         intent_id="i-1",
         decision_options=options,
-        visible_secret=VisibleSecret(phrase="thunderclap-tangerine", icon="🌩️"),
+        visible_secret=VisibleSecret(
+            icon="thunderclap", color="amber", phrase="thunderclap-tangerine"
+        ),
         body="Allow draft 3 hour focus block?",
         high_stakes=high_stakes,
     )

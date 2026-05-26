@@ -27,6 +27,8 @@ __all__ = [
     "PrincipalNotFoundError",
     "AuthenticationError",
     "PayloadTooLargeError",
+    # Adapter-internal API-hygiene errors (NOT in spec § Error taxonomy)
+    "NotStartedError",
     # Phase-02-defer hygiene (NOT a runtime channel-traffic error;
     # raised by abstract methods Phase 01 hasn't wired yet)
     "PhaseDeferredError",
@@ -303,6 +305,27 @@ class PayloadTooLargeError(ChannelAdapterError):
                 f"This message is too long for {channel_id} "
                 f"({actual_length} chars; limit is {max_length}). "
                 "Please shorten or split it."
+            )
+        super().__init__(message)
+
+
+class NotStartedError(ChannelAdapterError):
+    """A `send_*` was called before `startup` — adapter-internal API hygiene.
+
+    Sibling of `AlreadyStartedError` (spec line 203): startup-state
+    mismatch surfaces as a typed `ChannelAdapterError` so callers can catch
+    the family without naming each member (per `rules/zero-tolerance.md`
+    Rule 3a — typed delegate guards beat opaque `AttributeError` /
+    `RuntimeError` propagation).
+    """
+
+    def __init__(self, channel_id: str, method_name: str, message: str | None = None) -> None:
+        self.channel_id = channel_id
+        self.method_name = method_name
+        if message is None:
+            message = (
+                f"The {channel_id} channel is not running. Call `startup()` "
+                f"before `{method_name}()`."
             )
         super().__init__(message)
 

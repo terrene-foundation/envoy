@@ -40,10 +40,13 @@ async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
 ### Receive / send
 
 ```python
-async def receive_message(self) -> AsyncIterator[InboundMessage]:
+def receive_message(self) -> AsyncIterator[InboundMessage]:
     """
-    Yield inbound messages as they arrive.
-    Backpressure: bounded queue size 100 per channel; overflow drops with `OverflowDropEvent` to Ledger.
+    Yield inbound messages as they arrive. Returns an async iterator
+    (defined as plain `def` returning `AsyncIterator`, NOT `async def` —
+    the function returns the iterator; the caller drives it with `async for`).
+    Backpressure: bounded queue size 100 per channel; overflow drops with `OverflowDropEvent` to Ledger
+    via WARN log (`channel.inbound.overflow_drop`).
     Failure semantics: transport errors propagated as `ChannelTransportError` and fed to runtime's reconnection backoff.
     """
 
@@ -63,7 +66,16 @@ async def send_message(
 
 ### Ritual delivery (Phase 01 surface contract)
 
-Every Phase-01 surface MUST implement the four ritual-delivery methods so Phase 03 rituals route through the adapter contract without channel-specific shims:
+Phase 01 wires **2 of 4** ritual-delivery methods (`send_grant_moment` + `send_digest`); `send_posture_review` + `send_monthly_report` raise `envoy.channels.errors.PhaseDeferredError` from the ABC default and are wired in Phase 02 (`specs/weekly-posture-review.md` + `specs/monthly-trust-report.md`). All four method signatures ship in Phase 01 so Phase 03 rituals route through the adapter contract without channel-specific shims; the two Phase-02 methods MUST NOT be re-implemented to `pass` per `rules/zero-tolerance.md` Rule 2 + Rule 6.
+
+**Phase 01 deviation note** (per `rules/specs-authority.md` Rule 6): the abstract method body for `send_posture_review` + `send_monthly_report` raises `PhaseDeferredError(method_name=..., deferred_to_phase="Phase 02")`. Concrete Phase-01 adapters inherit this default; concrete Phase-02 adapters override.
+
+**Dual M1 dispatch surface** (per `rules/specs-authority.md` Rule 5b sibling re-derivation): the channels ABC also exposes `async def render_grant_moment(request) -> None` matching `envoy.grant_moment.channel_handoff.ChannelAdapterProtocol`. The two surfaces coexist by design:
+
+- `send_grant_moment(target, grant, *, primary_only, timeout_seconds) -> GrantMomentReceipt` — full single-channel ritual (render + await decision + receipt).
+- `render_grant_moment(request) -> None` — M1 dispatch primitive used by `ChannelHandoff.dispatch` to fire render across every active channel WITHOUT awaiting a decision; the decision arrives async via `EnvoyGrantMomentRuntime.post_decision` per `specs/grant-moment.md` § State machine M1→M2.
+
+Every Phase-01 surface MUST implement BOTH methods:
 
 ```python
 async def send_grant_moment(
@@ -75,7 +87,17 @@ async def send_grant_moment(
     raise `NotPrimaryChannelError` (per H-03 primary-channel binding for high-stakes grants).
     Timeout: timeout_seconds (default 30s — user has time to read); on timeout marks grant
     as expired and raises `GrantMomentExpiredError`.
-    Returns `GrantMomentReceipt {grant_id, decision, decided_at, channel_signature}`.
+    Returns `GrantMomentReceipt {request_id, grant_id, decision, decided_at, channel_signature}`
+    — `request_id` extends the original 4-field shape per `rules/specs-authority.md` Rule 6
+    so runtime callers correlate without holding a side-table. `decision` is constrained to
+    the `GrantMomentDecision` closed vocabulary
+    (`approve_once | approve_and_author | approve_author | deny | modify`) per `specs/grant-moment.md`
+    § Resolution shape; out-of-vocabulary decisions raise at the adapter boundary.
+
+    **Defense-in-depth (H-03 primary-channel binding)**: when `grant.high_stakes is True`,
+    the adapter MUST refuse on a non-primary channel even when the caller forgot
+    `primary_only=True`. Single-layer kwarg gating is insufficient — the payload-level
+    discriminator is the structural defense.
     """
 
 async def send_digest(
