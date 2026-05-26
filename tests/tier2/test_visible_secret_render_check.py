@@ -52,7 +52,6 @@ from envoy.trust.vault import TrustVault
 
 
 PRINCIPAL = "alice@example"
-_ENVELOPE_KEY = "_envoy_envelope_v1"
 
 # Canonical per-state extractions — identical to the schedule pinned in
 # test_boundary_conversation_per_state_ledger_entries.py.
@@ -250,7 +249,12 @@ class TestVisibleSecretSurvivesRuntimeRestart:
         assert got.phrase == _VISIBLE_SECRET_PHRASE
 
 
+@pytest.mark.regression
 class TestVisibleSecretPhraseNeverInLedger:
+    """Regression pin for commit `883e6ba` (R1-HIGH-1b). Selectable via
+    `pytest -m regression` per `rules/testing.md` § Regression Testing —
+    these tests reproduce a fixed bug and MUST NEVER be deleted."""
+
     async def test_phrase_never_appears_in_any_ledger_entry_content(
         self,
         trust_adapter: TrustStoreAdapter,
@@ -285,19 +289,24 @@ class TestVisibleSecretPhraseNeverInLedger:
         done = await runtime.advance(ritual_id, "yes confirm and sign")
         assert done.state == "COMPLETE"
 
-        # Sweep every Ledger entry's content for the phrase. Plain-substring
-        # check on the JSON-serialised content — if the phrase appears at any
-        # depth in any nested structure, the JSON dump will surface it.
+        # Sweep EVERY audit event's full surface for the phrase, not just the
+        # envoy-envelope-keyed metadata slot — closes the RT-1 HIGH finding
+        # (sweep-scope mismatch with docstring claim). If a future refactor
+        # writes the phrase to event.description, event.metadata directly,
+        # event.action, or any other content-bearing field, the leak MUST
+        # still be caught. We serialise every dataclass field of every event
+        # via dataclasses.asdict + json.dumps and substring-check.
+        from dataclasses import asdict
+
         events = await audit_store.query(AuditFilter(limit=1_000_000))
-        envelopes = [
-            e.metadata[_ENVELOPE_KEY] for e in events if _ENVELOPE_KEY in (e.metadata or {})
-        ]
-        for env in envelopes:
-            content_json = json.dumps(env.get("content", {}), default=str)
-            assert _VISIBLE_SECRET_PHRASE not in content_json, (
+        for event in events:
+            event_json = json.dumps(asdict(event), default=str)
+            assert _VISIBLE_SECRET_PHRASE not in event_json, (
                 f"R1-HIGH-1b regression: phrase {_VISIBLE_SECRET_PHRASE!r} "
-                f"leaked into Ledger entry of type {env.get('type')!r}: "
-                f"{content_json[:300]}"
+                f"leaked into AuditEvent {getattr(event, 'event_id', '?')!r} "
+                f"(action={getattr(event, 'action', '?')!r}, "
+                f"event_type={getattr(event, 'event_type', '?')!r}): "
+                f"{event_json[:300]}"
             )
 
 

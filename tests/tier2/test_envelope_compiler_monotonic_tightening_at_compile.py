@@ -2,7 +2,7 @@
 
 Source: shard 8 § 5.1 + § 6.1 row
 "test_envelope_compiler_monotonic_tightening_at_compile" +
-`specs/envelope-model.md` § Schema + `specs/envelope-compiler.md` § Compile order.
+`specs/envelope-model.md` § Schema (canonicalized authored_constraints).
 
 T-02-44 prescribed coverage gap: byte-stability + JCS-canonical-order is
 covered by `test_boundary_conversation_envelope_config_input_canonical.py`,
