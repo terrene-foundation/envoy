@@ -32,8 +32,8 @@ class TelegramSigner:
     HEADER_NAME: str = "X-Telegram-Bot-Api-Secret-Token"
 
     def __init__(self, secret_token: str) -> None:
-        if not secret_token:
-            raise ValueError("secret_token must not be empty")
+        if not secret_token or not secret_token.strip():
+            raise ValueError("secret_token must not be empty or whitespace-only")
         # Store as bytes once; avoids repeated encode() calls per request.
         self._expected: bytes = secret_token.encode()
 

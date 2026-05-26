@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import typing
 import uuid
@@ -44,6 +45,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 
 from envoy.channels._discord_signer import DiscordSigner
 from envoy.channels.adapter import ChannelAdapter
@@ -61,6 +63,8 @@ from envoy.channels.envelope import (
 )
 from envoy.channels.errors import (
     AlreadyStartedError,
+    AuthenticationError,
+    ChannelTransportError,
     GrantMomentExpiredError,
     InvalidDecisionError,
     NotPrimaryChannelError,
@@ -68,7 +72,9 @@ from envoy.channels.errors import (
     OverflowDropEvent,
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
+    PrincipalNotFoundError,
     SendTimeoutError,
+    StartupTimeoutError,
 )
 
 if TYPE_CHECKING:
@@ -94,6 +100,69 @@ def _hash_pii(value: str) -> str:
     emissions.
     """
     return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
+# SSRF-blocked prefixes and hostnames (stdlib-only, no new deps).
+_SSRF_BLOCKED_HOSTS: frozenset[str] = frozenset(
+    {
+        "metadata.google.internal",
+        "metadata.internal",
+        "169.254.169.254",  # AWS / GCP IMDSv1
+    }
+)
+_SSRF_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),    # loopback
+    ipaddress.ip_network("10.0.0.0/8"),     # RFC-1918 private A
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC-1918 private B
+    ipaddress.ip_network("192.168.0.0/16"), # RFC-1918 private C
+    ipaddress.ip_network("169.254.0.0/16"), # link-local / IMDS
+    ipaddress.ip_network("::1/128"),        # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),       # IPv6 ULA
+)
+
+
+def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
+    """Reject webhook URLs that point at loopback, private, or IMDS addresses.
+
+    Uses stdlib ``urllib.parse.urlparse`` + ``ipaddress`` only — no new deps.
+    Raises ``ChannelTransportError`` if the URL fails the SSRF guard.
+    """
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise ChannelTransportError(
+            channel_id=channel_id,
+            message=f"webhook_url has no hostname: {url!r}",
+        )
+    if hostname in _SSRF_BLOCKED_HOSTS:
+        raise ChannelTransportError(
+            channel_id=channel_id,
+            message=f"webhook_url targets blocked host (SSRF guard): {hostname!r}",
+        )
+    try:
+        ip = ipaddress.ip_address(hostname)
+        for net in _SSRF_BLOCKED_NETWORKS:
+            if ip in net:
+                raise ChannelTransportError(
+                    channel_id=channel_id,
+                    message=(
+                        f"webhook_url targets blocked IP range (SSRF guard): "
+                        f"{hostname!r} is in {net}"
+                    ),
+                )
+    except ValueError:
+        # Not an IP literal — hostname only; DNS lookup deferred to transport.
+        pass
+
+
+async def _discord_startup_work() -> None:
+    """Async startup coroutine for ``asyncio.wait_for`` timeout wrapping.
+
+    Phase 01: no real I/O; yields to the event loop once to preserve async
+    contract.  Phase 02 replaces this body with actual Discord API health
+    check (e.g. GET /gateway or validate bot token via /users/@me).
+    """
+    await asyncio.sleep(0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +219,10 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._inbound_queue: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=100)
         # Single write-site invariant (invariant 3): all pending-decision
         # registration goes through ``_register_pending``.
-        self._pending_decisions: set[str] = set()
+        # request_id → asyncio.Future[GrantMomentDecision] (CRIT-1 closure:
+        # per-request isolation so concurrent send_grant_moment calls do not
+        # steal each other's responses from the shared inbound queue).
+        self._pending_decisions: dict[str, asyncio.Future[GrantMomentDecision]] = {}
 
     @property
     def channel_id(self) -> str:
@@ -174,6 +246,30 @@ class DiscordChannelAdapter(ChannelAdapter):
             self._config = config
             # Re-create signer when config is replaced.
             self._signer = DiscordSigner(config.application_public_key)
+        # AUTH check: blank credentials → AuthenticationError before any I/O.
+        if not self._config.bot_token or not self._config.bot_token.strip():
+            raise AuthenticationError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                credential_kind="bot_token",
+                message="bot_token must not be blank",
+            )
+        if not self._config.application_public_key or not self._config.application_public_key.strip():
+            raise AuthenticationError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                credential_kind="application_public_key",
+                message="application_public_key must not be blank",
+            )
+        # SSRF guard for webhook_url (stdlib-only, no new deps).
+        if self._config.webhook_url is not None:
+            _validate_webhook_url_ssrf(self._config.webhook_url, _DISCORD_CHANNEL_ID)
+        try:
+            await asyncio.wait_for(_discord_startup_work(), timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise StartupTimeoutError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                timeout_seconds=10,
+                message="Discord adapter startup timed out after 10 seconds",
+            ) from exc
         self._started = True
         self._closed = False
         logger.info("channel.startup", extra={"channel_id": _DISCORD_CHANNEL_ID})
@@ -189,6 +285,11 @@ class DiscordChannelAdapter(ChannelAdapter):
                     self._inbound_queue.get_nowait()
         except (asyncio.TimeoutError, asyncio.QueueEmpty):
             pass
+        # Cancel any in-flight Grant Moment futures cleanly.
+        for fut in self._pending_decisions.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending_decisions.clear()
         logger.info("channel.shutdown", extra={"channel_id": _DISCORD_CHANNEL_ID})
 
     def receive_message(self) -> AsyncIterator[InboundMessage]:  # type: ignore[override]
@@ -316,8 +417,17 @@ class DiscordChannelAdapter(ChannelAdapter):
                 primary_channel_id=self._config.primary_channel_id,
             )
 
+        # Guard: empty target_principal_id is always a caller error.
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must not be blank",
+            )
+
         # Invariant 3: single write-site for pending-decisions state.
-        self._register_pending(grant.request_id)
+        # _register_pending creates and stores the per-request Future (CRIT-1).
+        decision_future = self._register_pending(grant.request_id)
 
         logger.info(
             "channel.send_grant_moment.start",
@@ -325,6 +435,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 "channel_id": _DISCORD_CHANNEL_ID,
                 "request_id": grant.request_id,
                 "high_stakes": grant.high_stakes,
+                "target_principal_hash": _hash_pii(target_principal_id),
             },
         )
 
@@ -332,8 +443,11 @@ class DiscordChannelAdapter(ChannelAdapter):
         try:
             async with asyncio.timeout(timeout_seconds):
                 await self._deliver_message(rendered)
-                # Wait for the user's decision to arrive on the inbound queue.
-                response_msg = await self._inbound_queue.get()
+                # Await the per-request Future resolved by post_decision().
+                # CRIT-1: using a Future instead of reading from the shared
+                # inbound queue prevents concurrent send_grant_moment calls from
+                # stealing each other's responses.
+                decision = await decision_future
         except asyncio.TimeoutError as exc:
             logger.warning(
                 "channel.send_grant_moment.expired",
@@ -343,14 +457,16 @@ class DiscordChannelAdapter(ChannelAdapter):
                     "timeout_seconds": timeout_seconds,
                 },
             )
-            self._pending_decisions.discard(grant.request_id)
+            self._pending_decisions.pop(grant.request_id, None)
             raise GrantMomentExpiredError(
                 request_id=grant.request_id,
                 timeout_seconds=timeout_seconds,
             ) from exc
-
-        decision = self._coerce_decision(response_msg.payload.body, grant.decision_options)
-        self._pending_decisions.discard(grant.request_id)
+        except asyncio.CancelledError:
+            self._pending_decisions.pop(grant.request_id, None)
+            raise
+        finally:
+            self._pending_decisions.pop(grant.request_id, None)
 
         logger.info(
             "channel.send_grant_moment.ok",
@@ -453,11 +569,19 @@ class DiscordChannelAdapter(ChannelAdapter):
         if not self._started or self._closed:
             raise NotStartedError(channel_id=_DISCORD_CHANNEL_ID, method_name=method_name)
 
-    def _register_pending(self, request_id: str) -> None:
+    def _register_pending(self, request_id: str) -> asyncio.Future[GrantMomentDecision]:
         """Invariant 3: single write-site for pending-decisions state.
 
-        Raises ``PendingDecisionsCeilingError`` when the pending set is at
-        capacity to prevent unbounded queue growth under sustained load.
+        Creates a new ``asyncio.Future[GrantMomentDecision]`` for the given
+        ``request_id``, stores it in ``_pending_decisions``, and returns it.
+        The caller awaits this future; ``post_decision`` resolves it.
+
+        CRIT-1 closure: per-request futures prevent concurrent
+        ``send_grant_moment`` calls from stealing each other's responses from
+        a shared inbound queue.
+
+        Raises ``PendingDecisionsCeilingError`` when the in-flight map is at
+        capacity to prevent unbounded memory growth under sustained load.
         """
         if len(self._pending_decisions) >= _PENDING_DECISIONS_CEILING:
             raise PendingDecisionsCeilingError(
@@ -465,21 +589,48 @@ class DiscordChannelAdapter(ChannelAdapter):
                 ceiling=_PENDING_DECISIONS_CEILING,
                 current_count=len(self._pending_decisions),
             )
-        self._pending_decisions.add(request_id)
+        loop = asyncio.get_running_loop()
+        decision_future: asyncio.Future[GrantMomentDecision] = loop.create_future()
+        self._pending_decisions[request_id] = decision_future
+        return decision_future
+
+    def post_decision(self, request_id: str, decision: str) -> None:
+        """Resolve an in-flight Grant Moment decision by ``request_id``.
+
+        Called by the Discord interaction handler (webhook route) when the
+        user submits a button click or reply.  Validates the closed vocabulary
+        before resolving the future so ``send_grant_moment`` never sees an
+        invalid ``GrantMomentDecision``.
+
+        Mirrors ``TelegramChannelAdapter.post_decision`` in naming so the
+        framework layer can call the same method name on every adapter.
+
+        Silently ignores unknown ``request_id`` values (the grant may have
+        already expired or been cancelled).
+        """
+        if decision not in _VALID_DECISIONS:
+            # Sanitize to 32 printable chars (CWE-117 defence).
+            sanitized = "".join(c for c in decision if c.isprintable())[:32]
+            raise InvalidDecisionError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                decision=sanitized,
+                allowed=tuple(sorted(_VALID_DECISIONS)),
+            )
+        fut = self._pending_decisions.get(request_id)
+        if fut is not None and not fut.done():
+            fut.set_result(decision)  # type: ignore[arg-type]
 
     async def _deliver_message(self, content: str) -> None:
         """Deliver a text string to Discord via webhook or bot API.
 
-        Phase 01 implementation: noop stub that logs and returns
-        immediately.  Phase 02 will wire the real ``aiohttp`` / discord.py
-        client.  This surface is the single outbound-delivery call-site;
-        tests exercise the adapter logic without real network I/O.
+        Phase 01 implementation: raises ``ChannelTransportError`` to signal
+        that the transport is not yet wired.  Phase 02 will replace this body
+        with a real ``aiohttp`` / discord.py HTTP call.
 
-        Note: This is an internal method that does NOT constitute a
-        stub in the ``rules/zero-tolerance.md`` Rule 2 sense — it is a
-        deliberate Phase-01 boundary that records the contract for the
-        Phase-02 transport wiring. The ``_deliver_message`` contract is
-        documented here and the Phase-02 implementer replaces this body.
+        Per ``rules/zero-tolerance.md`` Rule 2, a noop ``asyncio.sleep(0)``
+        is NOT acceptable as a Phase-01 delivery stub — callers must know
+        that delivery failed so they can surface the error rather than
+        silently dropping messages.
         """
         logger.debug(
             "channel.deliver_message",
@@ -488,8 +639,10 @@ class DiscordChannelAdapter(ChannelAdapter):
                 "content_length": len(content),
             },
         )
-        # Phase 01: log-only delivery. Phase 02 wires bot API / webhook HTTP.
-        await asyncio.sleep(0)  # yield to event loop; preserve async contract
+        raise ChannelTransportError(
+            channel_id=_DISCORD_CHANNEL_ID,
+            message="Phase 01 transport not implemented — Discord delivery not wired",
+        )
 
     @staticmethod
     def _render_grant_moment_prose(grant: GrantMomentPayload) -> str:
@@ -567,12 +720,9 @@ class DiscordChannelAdapter(ChannelAdapter):
             if 0 <= idx < len(options):
                 return cast("GrantMomentDecision", options[idx])
 
-        # Closed-vocabulary check: if the raw input IS a valid decision but
-        # NOT in the provided options for this grant moment, raise with
-        # CWE-117 sanitization (InvalidDecisionError sanitizes at
-        # construction per errors.py).
+        # Closed-vocabulary check: reject any response not in _VALID_DECISIONS.
         if stripped not in _VALID_DECISIONS:
-            # Sanitize to 32 printable chars before passing to error.
+            # Sanitize to 32 printable chars before passing to error (CWE-117).
             sanitized = "".join(c for c in stripped if c.isprintable())[:32]
             raise InvalidDecisionError(
                 channel_id=_DISCORD_CHANNEL_ID,
@@ -580,12 +730,14 @@ class DiscordChannelAdapter(ChannelAdapter):
                 allowed=tuple(options),
             )
 
-        # Parsed a valid-vocabulary decision not in this grant's option set;
-        # treat as unknown — security default.
-        if "modify" in options:
-            return "modify"
-        if "deny" in options:
-            return "deny"
-        # ``GrantMomentPayload.__post_init__`` enforces non-empty ``options``
-        # so ``options[0]`` is structurally safe.
-        return cast("GrantMomentDecision", options[0])
+        # The response is a valid GrantMomentDecision vocabulary word but is
+        # NOT offered in this specific grant's ``decision_options``.
+        # Per CRIT-1/HIGH-R1-4: silently falling back to "modify"/"deny"/
+        # options[0] is a security risk (would silently approve an unparseable
+        # input or return a decision the grant never offered).  Raise instead.
+        sanitized = "".join(c for c in stripped if c.isprintable())[:32]
+        raise InvalidDecisionError(
+            channel_id=_DISCORD_CHANNEL_ID,
+            decision=sanitized,
+            allowed=tuple(options),
+        )

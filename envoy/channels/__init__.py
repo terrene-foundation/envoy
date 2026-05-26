@@ -16,9 +16,9 @@ This shard ships:
   localhost-bound with Origin allowlist enforcement per
   `rules/security.md` § "Network Transport Hardening".
 
-Wave-4 next shards (deferred to siblings of this PR):
+Wave-4 shipped Telegram, Slack, and Discord adapters (this PR). Deferred
+to later shards:
 
-- Telegram + Slack + Discord adapters wrapping `nexus.transports.webhook`.
 - WhatsApp + iMessage + Signal caveated channels.
 - `InboundRouter` concurrent fan-out across registered adapters.
 - `envoy.daily_digest` scheduler producing `DailyDigestPayload` payloads.
@@ -91,9 +91,8 @@ __all__ = [
     "SendReceipt",
     "VisibleSecret",
     "WeeklyPostureReviewPayload",
-    # 11 typed errors per spec § Error taxonomy + 1 base + 4 adapter-internal
-    # hygiene errors (NotStartedError + PendingDecisionsCeilingError +
-    # InvalidDecisionError + PhaseDeferredError) = 16 total
+    # 14 typed errors per spec § Error taxonomy (OverflowDropEvent is Ledger-only,
+    # not raised directly) + 1 base class (ChannelAdapterError) = 15 exported symbols.
     "AlreadyStartedError",
     "AuthenticationError",
     "ChannelAdapterError",

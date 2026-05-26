@@ -105,17 +105,15 @@ class TestTelegramSignerVerify:
         headers = {"X-Telegram-Bot-Api-Secret-Token": secret}
         assert signer.verify(b"body", headers) is True
 
-    def test_whitespace_only_token_accepted_if_not_empty(self) -> None:
-        """A whitespace-only token is technically non-empty and must match exactly."""
-        signer = TelegramSigner("   ")
-        headers = {"X-Telegram-Bot-Api-Secret-Token": "   "}
-        assert signer.verify(b"body", headers) is True
+    def test_whitespace_only_token_rejected(self) -> None:
+        """A whitespace-only token is rejected as equivalent to empty (R1 security hardening)."""
+        with pytest.raises(ValueError, match="secret_token must not be empty"):
+            TelegramSigner("   ")
 
-    def test_whitespace_token_does_not_match_trimmed_version(self) -> None:
-        signer = TelegramSigner("   ")
-        # Trimmed value must NOT match the padded secret.
-        headers = {"X-Telegram-Bot-Api-Secret-Token": " "}
-        assert signer.verify(b"body", headers) is False
+    def test_single_space_token_rejected(self) -> None:
+        """A single-space token is rejected as whitespace-only (R1 security hardening)."""
+        with pytest.raises(ValueError, match="secret_token must not be empty"):
+            TelegramSigner(" ")
 
     def test_multiple_headers_first_matching_wins(self) -> None:
         """When multiple header keys match (case-insensitively), first match is used."""

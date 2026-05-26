@@ -32,6 +32,7 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import datetime, timezone
 from typing import Any
 
+from envoy.channels._telegram_signer import TelegramSigner
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
@@ -47,13 +48,17 @@ from envoy.channels.envelope import (
 )
 from envoy.channels.errors import (
     AlreadyStartedError,
+    AuthenticationError,
     GrantMomentExpiredError,
     InvalidDecisionError,
     NotPrimaryChannelError,
     NotStartedError,
     OverflowDropEvent,
     PayloadTooLargeError,
+    PendingDecisionsCeilingError,
+    PrincipalNotFoundError,
     SendTimeoutError,
+    StartupTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +77,9 @@ _DEFAULT_SEND_TIMEOUT: int = 10
 
 # Telegram channel ID constant.
 _TELEGRAM_CHANNEL_ID = "telegram"
+
+# DoS ceiling: maximum concurrent in-flight grant moments.
+_MAX_PENDING_DECISIONS: int = 1000
 
 
 def _hash_pii(value: str) -> str:
@@ -149,11 +157,15 @@ class TelegramChannelAdapter(ChannelAdapter):
         send_fn: _SendCallable | None = None,
         inbound_queue: asyncio.Queue[InboundMessage] | None = None,
         send_timeout: int = _DEFAULT_SEND_TIMEOUT,
+        secret_token: str = "",
     ) -> None:
         self._primary_channel_id = primary_channel_id
         self._send_fn = send_fn
         self._inbound_queue: asyncio.Queue[InboundMessage] | None = inbound_queue
         self._send_timeout = send_timeout
+        self._secret_token = secret_token
+        # Signer is None until startup (when secret_token is validated).
+        self._signer: TelegramSigner | None = None
 
         self._started: bool = False
         # INV-3/6: single write-site for grant moment state.
@@ -172,12 +184,36 @@ class TelegramChannelAdapter(ChannelAdapter):
     # ChannelAdapter: lifecycle
     # ------------------------------------------------------------------
 
-    async def startup(self, config: Any = None) -> None:  # noqa: ARG002
+    async def startup(self, config: Any = None) -> None:
         """Initialise the adapter.  Raises ``AlreadyStartedError`` if called twice."""
         if self._started:
             raise AlreadyStartedError(channel_id=_TELEGRAM_CHANNEL_ID)
+        # Accept an optional updated secret_token via config dict.
+        if isinstance(config, dict) and "secret_token" in config:
+            self._secret_token = config["secret_token"]
+        # Auth guard: reject blank secret_token before attempting connection.
+        if not self._secret_token or not self._secret_token.strip():
+            raise AuthenticationError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                credential_kind="secret_token",
+                message="secret_token must be non-empty",
+            )
+        # Wire the signer now that the secret_token is validated.
+        self._signer = TelegramSigner(secret_token=self._secret_token)
         if self._inbound_queue is None:
             self._inbound_queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+
+        async def _telegram_startup_work() -> None:
+            await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(_telegram_startup_work(), timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise StartupTimeoutError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                timeout_seconds=10,
+                message="Telegram startup exceeded 10s",
+            ) from exc
         self._started = True
         logger.info(
             "channel.startup",
@@ -187,11 +223,19 @@ class TelegramChannelAdapter(ChannelAdapter):
             },
         )
 
-    async def shutdown(self, drain_timeout_seconds: int = 5) -> None:  # noqa: ARG002
+    async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
         """Tear down the adapter.  Idempotent — safe to call multiple times."""
         if not self._started:
             return
         self._started = False
+        # Drain the inbound queue best-effort within the window.
+        if self._inbound_queue is not None:
+            try:
+                async with asyncio.timeout(drain_timeout_seconds):
+                    while not self._inbound_queue.empty():
+                        self._inbound_queue.get_nowait()
+            except (asyncio.TimeoutError, asyncio.QueueEmpty):
+                pass
         self._pending_grants.clear()
         logger.info("channel.shutdown", extra={"channel_id": _TELEGRAM_CHANNEL_ID})
 
@@ -285,6 +329,12 @@ class TelegramChannelAdapter(ChannelAdapter):
             If the underlying send callable does not complete in time.
         """
         self._require_started("send_message")
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
 
         if len(payload.body) > _MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
@@ -342,7 +392,17 @@ class TelegramChannelAdapter(ChannelAdapter):
     # ------------------------------------------------------------------
 
     def _register_pending(self, request_id: str, response_queue: asyncio.Queue[str]) -> None:
-        """INV-3/6: Single write-site for pending grant moment state."""
+        """INV-3/6: Single write-site for pending grant moment state.
+
+        Raises ``PendingDecisionsCeilingError`` if the in-flight count would
+        exceed ``_MAX_PENDING_DECISIONS`` (DoS protection).
+        """
+        if len(self._pending_grants) >= _MAX_PENDING_DECISIONS:
+            raise PendingDecisionsCeilingError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                ceiling=_MAX_PENDING_DECISIONS,
+                current_count=len(self._pending_grants),
+            )
         self._pending_grants[request_id] = response_queue
 
     async def send_grant_moment(
@@ -368,6 +428,12 @@ class TelegramChannelAdapter(ChannelAdapter):
             If no decision arrives within ``timeout_seconds``.
         """
         self._require_started("send_grant_moment")
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
 
         # INV-4: defense-in-depth — enforce even when primary_only=False.
         must_be_primary = primary_only or grant.high_stakes
@@ -403,7 +469,7 @@ class TelegramChannelAdapter(ChannelAdapter):
                     extra={
                         "channel_id": _TELEGRAM_CHANNEL_ID,
                         "request_id": grant.request_id,
-                        "error": str(exc),
+                        "error_type": type(exc).__name__,
                     },
                 )
 
@@ -504,7 +570,7 @@ class TelegramChannelAdapter(ChannelAdapter):
                     extra={
                         "channel_id": _TELEGRAM_CHANNEL_ID,
                         "request_id": request_id,
-                        "error": str(exc),
+                        "error_type": type(exc).__name__,
                     },
                 )
                 raise
@@ -517,6 +583,16 @@ class TelegramChannelAdapter(ChannelAdapter):
                 "principal_hash": _hash_pii(principal_id) if principal_id else "",  # INV-5
             },
         )
+
+    def verify_inbound(self, headers: dict[str, str], body: bytes) -> bool:
+        """Verify the ``X-Telegram-Bot-Api-Secret-Token`` header.
+
+        Returns ``True`` iff the header matches the configured secret token.
+        Returns ``False`` if the adapter has not been started (signer not wired).
+        """
+        if self._signer is None:
+            return False
+        return self._signer.verify(body=body, headers=headers)
 
     def post_decision(self, request_id: str, raw_decision: str) -> bool:
         """Inject a decision for a pending grant moment.

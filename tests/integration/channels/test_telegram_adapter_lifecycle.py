@@ -58,12 +58,14 @@ _ALLOWED_DECISIONS: frozenset[str] = frozenset(typing.get_args(GrantMomentDecisi
 def _make_adapter(
     primary: str = "telegram",
     *,
+    secret_token: str = "test-secret",
     send_fn=None,
     inbound_queue: asyncio.Queue | None = None,
 ) -> TelegramChannelAdapter:
     """Return a ``TelegramChannelAdapter`` wired with injected send callable."""
     return TelegramChannelAdapter(
         primary_channel_id=primary,
+        secret_token=secret_token,
         send_fn=send_fn,
         inbound_queue=inbound_queue,
     )

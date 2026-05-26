@@ -129,7 +129,9 @@ class TestSlackSendMessage:
             assert receipt.channel_native_id.startswith("slack-")
             assert len(adapter._outbound_log) == 1
             target_id, text = adapter._outbound_log[0]
-            assert target_id == "principal-a"
+            # R1 security hardening: _outbound_log stores hashed PII, not raw principal IDs
+            expected_hash = hashlib.sha256(b"principal-a").hexdigest()[:8]
+            assert target_id == expected_hash
             assert "hello from test" in text
         finally:
             await adapter.shutdown()

@@ -169,12 +169,13 @@ async def test_discord_vocab_canonical_discriminator_payload_vs_request() -> Non
         # (a) send_grant_moment with high_stakes=False on non-primary:
         #     the auto-gate should NOT fire, so no exception is raised.
         #     We catch GrantMomentExpiredError (the inevitable timeout
-        #     since no user response arrives) — that confirms we got
-        #     PAST the primary-channel gate check.
-        from envoy.channels.errors import GrantMomentExpiredError
+        #     since no user response arrives) OR ChannelTransportError
+        #     (no real webhook in tests) — either confirms we got PAST
+        #     the primary-channel gate check.
+        from envoy.channels.errors import ChannelTransportError, GrantMomentExpiredError
 
         grant_low = _make_grant(high_stakes=False)
-        with pytest.raises(GrantMomentExpiredError):
+        with pytest.raises((GrantMomentExpiredError, ChannelTransportError)):
             await adapter.send_grant_moment(
                 "principal-test-001",
                 grant_low,
@@ -206,7 +207,15 @@ async def test_discord_vocab_canonical_discriminator_payload_vs_request() -> Non
             body="low stakes render test",
         )
         # Should complete without raising NotPrimaryChannelError.
-        await adapter.render_grant_moment(request_low)
+        # ChannelTransportError is acceptable — it means the gate did NOT fire.
+        # (No real webhook in tests; the test verifies absence of NotPrimaryChannelError,
+        # not that delivery succeeded.)
+        from contextlib import suppress
+
+        from envoy.channels.errors import ChannelTransportError
+
+        with suppress(ChannelTransportError):
+            await adapter.render_grant_moment(request_low)
 
     finally:
         await adapter.shutdown()
@@ -233,7 +242,14 @@ async def test_discord_principal_id_pii_hash_in_logs(
         raw_principal = "user-secret-principal-1234"
         expected_hash = _hash_pii(raw_principal)
 
-        with caplog.at_level(logging.INFO, logger="envoy.channels.discord"):
+        from contextlib import suppress
+
+        from envoy.channels.errors import ChannelTransportError
+
+        with caplog.at_level(logging.INFO, logger="envoy.channels.discord"), suppress(ChannelTransportError):
+            # suppress ChannelTransportError — no real webhook in tests.
+            # The PII hash is logged at INFO *before* _deliver_message fires,
+            # so the log record is still present for our assertion.
             await adapter.send_message(
                 target_principal_id=raw_principal,
                 payload=MessagePayload(kind="text", body="hello discord"),
@@ -263,26 +279,29 @@ async def test_discord_principal_id_pii_hash_in_logs(
 # ---------------------------------------------------------------------------
 
 
-def test_discord_register_pending_single_write_site() -> None:
+@pytest.mark.asyncio
+async def test_discord_register_pending_single_write_site() -> None:
     """Invariant 3: ``_register_pending`` is the ONLY place that writes
     to ``self._pending_decisions``.
 
-    Calls ``_register_pending`` directly (no async required — it is a
-    synchronous method) and verifies:
+    Calls ``_register_pending`` directly and verifies:
     (a) The request_id is now in ``_pending_decisions``.
-    (b) A second call with the same id is idempotent (set semantics).
+    (b) A second call with the same id is idempotent (dict semantics).
     (c) A different id is also accepted.
     (d) ``_pending_decisions`` contains EXACTLY the expected ids and
         nothing else — confirming no other code path has injected extras.
 
+    R1: ``_pending_decisions`` is now ``dict[str, asyncio.Future[GrantMomentDecision]]``.
+    ``_register_pending`` calls ``asyncio.get_running_loop()`` to create
+    a Future, so the test MUST be async (requires a running event loop).
     The adapter is constructed but NOT started — ``_register_pending``
-    does not gate on ``_started``, so the test stays synchronous and
-    avoids the event-loop complexity of startup/shutdown.
+    does not gate on ``_started``.
     """
     adapter = _make_adapter(primary=True)
 
     # Initially empty.
-    assert adapter._pending_decisions == set()
+    # R1: _pending_decisions is now dict[str, asyncio.Future[GrantMomentDecision]]
+    assert adapter._pending_decisions == {}
 
     # (a) First registration.
     adapter._register_pending("req-alpha")
@@ -297,4 +316,4 @@ def test_discord_register_pending_single_write_site() -> None:
     assert "req-beta" in adapter._pending_decisions
 
     # (d) Exactly the two expected ids; no extras injected by any other path.
-    assert adapter._pending_decisions == {"req-alpha", "req-beta"}
+    assert set(adapter._pending_decisions.keys()) == {"req-alpha", "req-beta"}

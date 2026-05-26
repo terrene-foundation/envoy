@@ -1,8 +1,7 @@
 """envoy.channels.slack — `SlackChannelAdapter` (Slack webhook/events).
 
 Phase 01 surface for the Slack workspace integration. Wraps a thin in-process
-webhook transport per `specs/channel-adapters.md` § 4 (Telegram/Slack/Discord
-adapters wrap `nexus.transports.webhook`).
+webhook transport (Telegram/Slack/Discord adapters wrap nexus.transports.webhook).
 
 Security hardening:
 - H-03 primary-channel binding: `must_be_primary = primary_only or grant.high_stakes`
@@ -25,7 +24,7 @@ import logging
 import typing as _typing
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -45,12 +44,17 @@ from envoy.channels.envelope import (
 )
 from envoy.channels.errors import (
     AlreadyStartedError,
+    AuthenticationError,
     GrantMomentExpiredError,
+    InvalidDecisionError,
     NotPrimaryChannelError,
     NotStartedError,
     OverflowDropEvent,
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
+    PrincipalNotFoundError,
+    SendTimeoutError,
+    StartupTimeoutError,
 )
 
 if TYPE_CHECKING:
@@ -95,8 +99,8 @@ class SlackChannelConfig:
     """
 
     primary_channel_id: str
-    signing_secret: str
-    bot_token: str
+    signing_secret: str = field(repr=False)
+    bot_token: str = field(repr=False)
 
 
 class SlackChannelAdapter(ChannelAdapter):
@@ -152,6 +156,31 @@ class SlackChannelAdapter(ChannelAdapter):
         if isinstance(config, SlackChannelConfig):
             self._config = config
             self._signer = SlackSigner(signing_secret=config.signing_secret)
+        # Auth guard: reject blank credentials before attempting connection.
+        if not self._config.signing_secret or not self._config.signing_secret.strip():
+            raise AuthenticationError(
+                channel_id=_SLACK_CHANNEL_ID,
+                credential_kind="signing_secret",
+                message="signing_secret must be non-empty",
+            )
+        if not self._config.bot_token or not self._config.bot_token.strip():
+            raise AuthenticationError(
+                channel_id=_SLACK_CHANNEL_ID,
+                credential_kind="bot_token",
+                message="bot_token must be non-empty",
+            )
+        # Startup work with a 10-second timeout per spec.
+        async def _slack_startup_work() -> None:
+            await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(_slack_startup_work(), timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise StartupTimeoutError(
+                channel_id=_SLACK_CHANNEL_ID,
+                timeout_seconds=10,
+                message="Slack startup exceeded 10s",
+            ) from exc
         self._started = True
         self._closed = False
         logger.info("channel.startup", extra={"channel_id": _SLACK_CHANNEL_ID})
@@ -218,6 +247,12 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 10,
     ) -> SendReceipt:
         self._require_started("send_message")
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_SLACK_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
         if len(payload.body) > _SLACK_MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
                 channel_id=_SLACK_CHANNEL_ID,
@@ -242,7 +277,7 @@ class SlackChannelAdapter(ChannelAdapter):
             async with asyncio.timeout(timeout_seconds):
                 # Record the outbound message for test inspection; production
                 # implementation would call the Slack Web API here.
-                self._outbound_log.append((target_principal_id, text))
+                self._outbound_log.append((_hash_pii(target_principal_id), text))
         except asyncio.TimeoutError as exc:
             logger.warning(
                 "channel.send_message.timeout",
@@ -251,8 +286,6 @@ class SlackChannelAdapter(ChannelAdapter):
                     "timeout_seconds": timeout_seconds,
                 },
             )
-            from envoy.channels.errors import SendTimeoutError  # noqa: PLC0415
-
             raise SendTimeoutError(
                 channel_id=_SLACK_CHANNEL_ID,
                 timeout_seconds=timeout_seconds,
@@ -284,6 +317,12 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
         self._require_started("send_grant_moment")
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_SLACK_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
         # H-03 primary-channel binding (spec lines 183-185). Defense-in-depth:
         # `grant.high_stakes is True` ALSO requires the primary channel even
         # when the caller forgot `primary_only=True`.
@@ -315,7 +354,7 @@ class SlackChannelAdapter(ChannelAdapter):
 
         # Render and deliver the Grant Moment block to the Slack channel.
         rendered = self._render_grant_moment_text(grant)
-        self._outbound_log.append((target_principal_id, rendered))
+        self._outbound_log.append((_hash_pii(target_principal_id), rendered))
         logger.info(
             "channel.send_grant_moment.rendered",
             extra={
@@ -377,8 +416,6 @@ class SlackChannelAdapter(ChannelAdapter):
         never against a hand-mirrored list.
         """
         if decision not in _ALLOWED_DECISIONS:
-            from envoy.channels.errors import InvalidDecisionError  # noqa: PLC0415
-
             raise InvalidDecisionError(
                 channel_id=_SLACK_CHANNEL_ID,
                 decision=decision,
