@@ -42,7 +42,7 @@ class SlackSigner:
     """
 
     def __init__(self, signing_secret: str) -> None:
-        if not signing_secret:
+        if not signing_secret or not signing_secret.strip():
             raise ValueError(
                 "SlackSigner: signing_secret must be non-empty. "
                 "Retrieve it from the Slack app configuration page."
