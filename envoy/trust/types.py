@@ -73,3 +73,56 @@ class DelegationRequest:
     additional_constraints: tuple[str, ...] = ()
     expires_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class VisibleSecret:
+    """The user's visible secret (icon + color + phrase).
+
+    Set at Boundary Conversation state S7 per
+    `specs/boundary-conversation.md` § Questions (lines 17–27) and
+    `01-analysis/08-boundary-conversation-implementation.md` § 5.2 (S7 →
+    `set_visible_secret`). The visible secret is the structural
+    anti-spoofing defense — it is rendered into duress modals and
+    Grant-Moment surfaces so the user can confirm a prompt genuinely
+    originated from Envoy (a spoofer cannot reproduce the user's chosen
+    icon/color/phrase combination).
+
+    Phase-01: persisted as plaintext-at-rest in a 0o600 sibling SQLite
+    file, consistent with the chain/posture sub-stores; the T-01-13
+    vault-container migration moves all sub-stores into the AES-256-GCM
+    TrustVault uniformly (NOT the Connection Vault — Connection Vault
+    holds API credentials per shard 8 § 3.3).
+    """
+
+    icon: str
+    color: str
+    phrase: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryConversationStateRow:
+    """A persisted Boundary Conversation per-state row for `envoy init --resume`.
+
+    Per `specs/boundary-conversation.md` § Persistence + resume (lines
+    33–35) + `01-analysis/08-boundary-conversation-implementation.md`
+    § 5.2: every answer transition persists `(ritual_id, principal_id,
+    current_state, plan_dict, assembler_dict, updated_at)` to a dedicated
+    table in the boundary-conversation sub-store (Phase-01: plaintext-at-rest
+    in a 0o600 sibling SQLite file; the T-01-13 vault-container migration moves
+    all sub-stores into the AES-256-GCM TrustVault uniformly).
+    `load_boundary_conversation_state(ritual_id)`
+    rehydrates this row; the runtime reconstructs the in-flight `Plan` from
+    `plan_dict` and the envelope assembler from `assembler_dict`.
+
+    `plan_dict` and `assembler_dict` are the JSON-round-trippable forms of
+    `kaizen.l3.plan.types.Plan.to_dict()` and the envelope assembler's
+    accumulated `EnvelopeConfigInput`, respectively.
+    """
+
+    ritual_id: str
+    principal_id: PrincipalId
+    current_state: str
+    plan_dict: dict[str, Any]
+    assembler_dict: dict[str, Any]
+    updated_at: str  # ISO-8601 UTC timestamp

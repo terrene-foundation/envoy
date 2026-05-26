@@ -40,6 +40,11 @@ from envoy.authorship.posture_gate import (
     PostureNoopError,
     PostureRatchetEnvelopeMissingError,
 )
+from envoy.authorship.novelty import (
+    NoveltyChecker,
+    NoveltyFeedbackBlockError,
+    NoveltyResult,
+)
 from envoy.authorship.score import (
     AuthorshipCounters,
     AuthorshipScoreDivergenceError,
@@ -52,6 +57,9 @@ __all__ = [
     "BET12CadenceEmitter",
     "BET12CadencePayload",
     "BET12Sink",
+    "NoveltyChecker",
+    "NoveltyFeedbackBlockError",
+    "NoveltyResult",
     "PostureAuthorshipInsufficientError",
     "PostureChangeResult",
     "PostureCoolingOffActiveError",
