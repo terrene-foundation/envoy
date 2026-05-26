@@ -44,9 +44,11 @@ __all__ = [
 ]
 
 
-# Closed vocabulary per spec § "Why asking". Phase 01 wires four of six
-# values; ``cross_principal`` and ``data_access_classifier`` ship in
-# Wave-4 (Daily Digest data-access surfaces).
+# Closed vocabulary per spec § "Why asking". The detector wires the four
+# values listed here; ``cross_principal`` and ``data_access_classifier``
+# are emitted from the dispatch surfaces that hold the additional
+# context they need (cross-principal request manifest; data-access
+# classifier output) — NOT from this module.
 _WHY_ASKING_ENVELOPE_VIOLATION = "envelope_violation"
 _WHY_ASKING_FIRST_TIME = "first_time"
 _WHY_ASKING_VELOCITY_RAISE = "velocity_raise"
@@ -80,9 +82,9 @@ class EnvelopeContext:
     The three ``frozenset`` fields are the envelope's explicit whitelists.
     ``composition_rules`` is the named rule-id corpus (rule firing logic
     is caller-supplied via ``composition_rule_check`` in the detector
-    constructor — Phase 01 narrow per
+    constructor) per
     `workspaces/phase-01-mvp/01-analysis/10-grant-moment-implementation.md`
-    § 3 step 4).
+    § 3 step 4.
     """
 
     envelope_id: str
@@ -121,7 +123,7 @@ _CompositionRuleCheck = Callable[[ToolDispatch], str | None]
 
 
 def _default_composition_rule_check(_dispatch: ToolDispatch) -> str | None:
-    """Phase 01 default: no composition rules fire.
+    """Default: no composition rules fire.
 
     Callers who want composition-rule classification supply their own
     callable to ``OutOfEnvelopeDetector(composition_rule_check=...)``.

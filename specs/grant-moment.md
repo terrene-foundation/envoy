@@ -135,16 +135,72 @@ Signed `DelegationRecord` per specs/trust-lineage.md + Phase A intent per specs/
 
 ## Test location
 
-- `tests/integration/test_grant_moment_state_machine.py` — M0→M4 transitions + 5min timeout (Tier 2).
-- `tests/integration/test_grant_moment_render_all_channels.py` — visible secret + dialog content rendered every active channel.
-- `tests/regression/test_t008_grant_moment_replay_nonce.py` — T-008 nonce defense; duplicate replay refused.
-- `tests/regression/test_t018_dialog_spoofing_visible_secret.py` — T-018 defense; visible-secret mismatch refused.
-- `tests/regression/test_t019_novelty_friction_5s_read_delay.py` — T-019 defense; 5s + double-tap on novel pattern.
-- `tests/regression/test_t093_velocity_raise_24h_cooling_off.py` — T-093 R2-H4 cooling-off enforcement.
-- `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routes only to primary channel.
-- `tests/integration/test_cross_principal_dual_signature.py` — Phase 03 dual-signed flow + 24h cool-off for high-stakes.
-- `tests/integration/test_grant_moment_back_pressure.py` — N-parallel queue ceiling behavior.
-- `tests/e2e/test_grant_moment_real_to_honeypot_latency_parity.py` — duress latency distinguisher prevention.
+The Grant Moment surface ships in two layers; the test files split along the
+same boundary:
+
+### Structural layer (landed) — Wave-3 primitives
+
+- `tests/tier1/test_grant_moment_state_machine_transitions.py` — M0→M4 transition
+  table, JCS+NFC canonicalization round-trip, signed Request/Result wire
+  shapes, 3 ResolutionShape → 4 spec decisions mapping, and the 10-error
+  taxonomy contract (`TestErrorTaxonomy` class; 10 of its tests carry
+  `@pytest.mark.regression` + `Contract pin: <threat>` docstrings naming
+  T-008 / T-018 / T-019 / T-093 / H-03 + the back-pressure / cross-principal
+  / cross-channel-confirm surfaces).
+- `tests/tier1/test_grant_moment_out_of_envelope_detector.py` — every
+  classification branch of the `OutOfEnvelopeDetector`.
+- `tests/tier1/test_grant_moment_channel_handoff.py` — primary-channel-binding
+  dispatch (`high_stakes=True` AND `primary_only=True` paths), refusal
+  vocabulary, render-failure isolation.
+- `tests/tier1/test_grant_moment_novelty_classifier.py` — 3-class friction
+  classifier coverage + totality (exhaustive 32-combo enumeration + 100-input
+  randomized totality check).
+- `tests/tier2/test_cascade_revocation_orchestrator_wiring.py` — cascade
+  completeness verification + `CascadeIncompleteError` raise path against a
+  `_RuntimeProtocol`-shaped stub.
+- `tests/tier2/test_plan_suspension_bridge_wiring.py` — typed-event
+  subscribe/unsubscribe/emit + idempotency dedupe + subscriber-failure
+  isolation.
+
+Run `pytest -m regression` to select the threat-mitigation contract pins
+across the Wave-3 + Boundary Conversation test surfaces.
+
+### Runtime layer (deferred to Wave-4 facade) — `EnvoyGrantMomentRuntime`
+
+The following test files exercise behaviors that depend on the M0→M4
+runtime facade (timeout loop, dedup store, channel-render driver, queue
+manager, friction enforcer, two-phase Ledger signer) — the facade composes
+this spec's structural primitives. Both the facade and these tests ship
+with the Wave-4 milestone per `briefs/00-phase-01-mvp-scope.md` § Surfaces
+
+- `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 4.
+
+* `tests/integration/test_grant_moment_state_machine.py` — Tier-2 runtime
+  M0→M4 with 5-minute timeout against the facade.
+* `tests/integration/test_grant_moment_render_all_channels.py` — visible
+  secret + dialog content rendered every active channel via the facade.
+* `tests/regression/test_t008_grant_moment_replay_nonce.py` — T-008 nonce
+  defense raise path (the wire-shape Contract pin lives in the structural
+  layer above; this file exercises the runtime dedup store's refusal).
+* `tests/regression/test_t018_dialog_spoofing_visible_secret.py` — T-018
+  defense raise path (the wire-shape Contract pin lives above; this file
+  exercises the channel-adapter render's mismatch refusal).
+* `tests/regression/test_t019_novelty_friction_5s_read_delay.py` — T-019
+  defense raise path (Contract pin above; this file exercises the runtime
+  friction enforcer's bypass refusal).
+* `tests/regression/test_t093_velocity_raise_24h_cooling_off.py` — T-093
+  R2-H4 raise path (Contract pin above; this file exercises the
+  budget-tracker integration layer's cooling-off ratchet).
+* `tests/integration/test_h03_primary_channel_binding.py` — H-03 raise path
+  at M3 sign-or-decline when a high-stakes `GrantMomentResult` arrives from
+  a non-primary `decided_on_channel_id` (the M1 dispatch refusal is covered
+  in the structural layer via `test_grant_moment_channel_handoff.py`).
+* `tests/integration/test_cross_principal_dual_signature.py` — Phase 03
+  dual-signed flow + 24h cool-off for high-stakes.
+* `tests/integration/test_grant_moment_back_pressure.py` — N-parallel queue
+  ceiling behavior.
+* `tests/e2e/test_grant_moment_real_to_honeypot_latency_parity.py` — duress
+  latency distinguisher prevention.
 
 ## Open questions
 
