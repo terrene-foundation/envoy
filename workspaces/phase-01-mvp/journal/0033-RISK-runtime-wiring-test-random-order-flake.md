@@ -1,9 +1,10 @@
 # 0033 — RISK: test_boundary_conversation_runtime_wiring.py random-order flake
 
+**Status:** CLOSED 2026-05-26 — fixed same-shard at pre-push CI parity gate (see § Disposition update below).
 **Date:** 2026-05-26
-**Surfaced by:** /redteam Round 2 reviewer during full-suite re-derivation
+**Surfaced by:** /redteam Round 2 reviewer during full-suite re-derivation, then reproduced by pre-push `pytest -p no:randomly` CI parity check at orchestrator's authorization-to-push gate.
 **Severity:** advisory (pre-existing, NOT introduced by this PR)
-**Owner:** next session continuing Wave-2 cleanup
+**Owner (initial):** next session continuing Wave-2 cleanup
 **Origin context:** PR #38 (`feat/phase-01-T-02-40-boundary-conversation`), merged 2026-05-26
 
 ## Observation
@@ -62,6 +63,32 @@ possible scope and the next session picks this up as a discrete unit.
 Per `rules/zero-tolerance.md` Rule 1c (pre-existing unprovable after context boundary): the
 reviewer's evidence is durable (commit SHA + reproducible isolation runs), so the carry-forward
 disposition is honest.
+
+## Disposition update — closed same-shard 2026-05-26
+
+The pre-push CI parity sweep (`pytest -p no:randomly`) reproduced the failure deterministically,
+elevating the disposition from "carry-forward RISK" to "same-shard fix required" per
+`rules/zero-tolerance.md` Rule 1 ("If you found it, you own it. Fix in THIS run") AND
+`rules/autonomous-execution.md` MUST Rule 4 (Fix-Immediately When Review Surfaces A Same-Class Gap
+Within Shard Budget — the gap is same-bug-class as T-02-45's parse-retryable widening, fits one
+shard, surfaced at the gate).
+
+Note: the R2 reviewer's "pytest-randomly" diagnosis was a hypothesis; the deterministic-order
+reproduction shows the actual cause is inherent small-model output variability (`qwen2.5:0.5b`
+occasionally produces non-conforming JSON at S8_shamir or omits a structured field on the gate-
+back self-edge). The wider retry budget is the structural defense.
+
+Fix applied at commit `<pre-push-fix-sha>`:
+
+1. Imported `NoveltyFeedbackBlockError` and `VisibleSecretMissingError` (moving the lazy local
+   `InvalidStateTransitionError` import to module-scope to consolidate the gate-error inventory).
+2. Widened the retryable error tuple to a new module-scope `_RETRYABLE_GATE_ERRORS` constant
+   matching `tests/tier3/test_boundary_conversation_full_path.py § _RETRYABLE_GATE_ERRORS`
+   (cross-Tier consistency invariant).
+3. Bumped `_MAX_RETRIES` from 4 to 8 (same rationale documented in tier3/full_path.py:140-146).
+
+Verification: `tests/tier2/test_boundary_conversation_runtime_wiring.py` + Tier 3 acceptance pass
+6/6 across 3 consecutive runs (~13s each); full suite deterministic 994/9 unchanged.
 
 ## Cross-references
 
