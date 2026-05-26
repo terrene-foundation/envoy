@@ -163,15 +163,29 @@ class TestM3M4SignComplete:
         assert outcome.result.decision == "approve_once"
         assert outcome.phase_a_record_ref
         assert outcome.delegation_record_ref
-        # DelegationRecord exists in the ledger and references phase_a.
+        # Per specs/ledger.md § grant_moment the Phase-B row is tagged
+        # "grant_moment" (NOT "DelegationRecord" — that tag is reserved
+        # for capability-delegation chains per trust-lineage.md).
         events = await _list_events(audit_store)
-        delegation_rows = [e for e in events if getattr(e, "action", "") == "DelegationRecord"]
-        assert (
-            delegation_rows
-        ), f"expected DelegationRecord; got actions: {[getattr(e, 'action', '?') for e in events]}"
-        # Verify phase_a back-link present in the delegation row's envelope content.
-        env = delegation_rows[0].metadata["_envoy_envelope_v1"]
+        grant_moment_rows = [e for e in events if getattr(e, "action", "") == "grant_moment"]
+        assert grant_moment_rows, (
+            f"expected grant_moment row; got actions: "
+            f"{[getattr(e, 'action', '?') for e in events]}"
+        )
+        env = grant_moment_rows[0].metadata["_envoy_envelope_v1"]
         assert env["content"]["phase_a_ref"] == outcome.phase_a_record_ref
+        # Spec § grant_moment canonical fields.
+        for required in (
+            "request_ref",
+            "result_ref",
+            "intent_id",
+            "decision",
+            "decided_at",
+            "envelope_version_at_decision",
+            "novelty_class",
+            "signed_by",
+        ):
+            assert required in env["content"], f"grant_moment row missing {required!r}"
 
     async def test_decline_path_signs_only_ledger_entry(self) -> None:
         runtime, *_ = await make_runtime()

@@ -39,33 +39,92 @@ class TestT018VisibleSecretMismatch:
     async def test_adapter_render_with_spoof_phrase_raises_mismatch_error(self) -> None:
         # The runtime exposes only the HASH (never the phrase); adapters
         # detect spoofing by hashing what they would render and comparing.
-        # A spoofer-style adapter that renders the wrong phrase must raise
-        # the typed error at adapter level. This test simulates the adapter
-        # path directly to pin the contract.
+        # This test wires a REAL channel-adapter stub that performs the
+        # mismatch check inside ``render_grant_moment`` and raises
+        # ``VisibleSecretMismatchError`` — the runtime catches the raise
+        # via ChannelHandoff.dispatch (records the channel as render-failed)
+        # and ultimately raises ``GrantMomentTimeoutError`` because zero
+        # adapters rendered cleanly. The spoof-detection contract is what
+        # we pin, NOT a manual raise-then-catch tautology (reviewer-R1
+        # HIGH-3).
+        from envoy.grant_moment import (
+            ChannelHandoff,
+            EnvoyGrantMomentRuntime,
+            GrantMomentTimeoutError,
+            NoveltyClassifier,
+        )
+        from envoy.ledger import EnvoyLedger
+        from kailash.trust.audit_store import InMemoryAuditStore
+        from kailash.trust.key_manager import InMemoryKeyManager
+        from tests.helpers.grant_moment_harness import (
+            DEFAULT_ALGO_ID,
+            DEFAULT_DELEGATION_KEY,
+            DEFAULT_DEVICE_ID,
+            DEFAULT_LEDGER_SIGNING_KEY,
+            DEFAULT_PRINCIPAL_ID,
+            make_issue_kwargs,
+        )
+
         secret = StubTrustStore()
-        runtime, *_ = await make_runtime(trust_store=secret)
+        canonical_hash = hashlib.sha256(secret.secret.phrase.encode("utf-8")).hexdigest()
 
-        canonical_hash = await runtime.visible_secret_hash_for("p")
-        assert canonical_hash is not None
+        class _SpoofingAdapter:
+            """Adapter that would render a SPOOF phrase. Detects mismatch
+            against the runtime's canonical hash and raises the typed error.
+            """
 
-        # Simulate the adapter computing the hash of what it would render
-        # (the spoof phrase) and comparing.
-        spoof_phrase = "i-am-a-phisher-please-trust-me"
-        spoof_hash = hashlib.sha256(spoof_phrase.encode("utf-8")).hexdigest()
-        assert spoof_hash != canonical_hash
+            channel_id = "cli"
+            spoof_phrase = "i-am-a-phisher-please-trust-me"
 
-        with pytest.raises(VisibleSecretMismatchError) as exc:
-            raise VisibleSecretMismatchError(
-                expected_phrase_hash=canonical_hash,
-                rendered_phrase_hash=spoof_hash,
-            )
+            def __init__(self, runtime_ref: list) -> None:
+                self._runtime_ref = runtime_ref
 
-        # The error carries ONLY the hashes — never the phrase content.
-        assert exc.value.expected_phrase_hash == canonical_hash
-        assert exc.value.rendered_phrase_hash == spoof_hash
-        # And the plain-language user message names the recovery path
-        # (re-pair via Boundary Conversation) per spec § Error taxonomy.
-        assert "re-pair" in str(exc.value).lower()
+            async def render_grant_moment(self, _request) -> None:
+                runtime = self._runtime_ref[0]
+                expected = await runtime.visible_secret_hash_for(DEFAULT_PRINCIPAL_ID)
+                rendered = hashlib.sha256(self.spoof_phrase.encode("utf-8")).hexdigest()
+                if expected != rendered:
+                    raise VisibleSecretMismatchError(
+                        expected_phrase_hash=expected,
+                        rendered_phrase_hash=rendered,
+                    )
+
+        # Wire a real runtime + the spoofing adapter via ChannelHandoff.
+        km = InMemoryKeyManager()
+        await km.generate_keypair(DEFAULT_DELEGATION_KEY)
+        await km.generate_keypair(DEFAULT_LEDGER_SIGNING_KEY)
+        audit = InMemoryAuditStore()
+        ledger = EnvoyLedger(
+            audit_store=audit,
+            key_manager=km,
+            signing_key_id=DEFAULT_LEDGER_SIGNING_KEY,
+            device_id=DEFAULT_DEVICE_ID,
+            algorithm_identifier=DEFAULT_ALGO_ID,
+        )
+        runtime_ref: list = []
+        adapter = _SpoofingAdapter(runtime_ref)
+        handoff = ChannelHandoff(adapters=(adapter,), primary_channel_id="cli")
+        runtime = EnvoyGrantMomentRuntime(
+            key_manager=km,
+            delegation_key_id=DEFAULT_DELEGATION_KEY,
+            principal_id=DEFAULT_PRINCIPAL_ID,
+            device_id=DEFAULT_DEVICE_ID,
+            ledger=ledger,
+            channel_handoff=handoff,
+            trust_store=secret,
+            novelty_classifier=NoveltyClassifier(),
+            novelty_read_delay_seconds=0.0,
+        )
+        runtime_ref.append(runtime)
+
+        # The spoofing adapter raises VisibleSecretMismatchError inside
+        # render; ChannelHandoff catches+records; runtime sees zero
+        # successful dispatches and raises GrantMomentTimeoutError.
+        with pytest.raises(GrantMomentTimeoutError):
+            await runtime.issue_grant_moment(**make_issue_kwargs())
+
+        # Sanity: the canonical hash is non-empty hex.
+        assert canonical_hash and len(canonical_hash) == 64
 
     async def test_secret_phrase_never_leaks_via_hash_plumbing(self) -> None:
         # T-018 invariant: the runtime exposes ONLY the hash, never the

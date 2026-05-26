@@ -31,7 +31,7 @@ class TestH03PrimaryChannelBinding:
     async def test_high_stakes_decided_on_non_primary_raises_at_m3(self) -> None:
         runtime, *_ = await make_runtime(
             primary_channel_id="cli",
-            adapter_channel_ids=("cli",),  # primary-only renders for high-stakes
+            adapter_channel_ids=("cli", "web"),  # web is the confirm-leg channel
             novelty_read_delay_seconds=0.0,
         )
         request = await runtime.issue_grant_moment(
@@ -61,7 +61,7 @@ class TestH03PrimaryChannelBinding:
     async def test_high_stakes_decided_on_primary_succeeds(self) -> None:
         runtime, *_ = await make_runtime(
             primary_channel_id="cli",
-            adapter_channel_ids=("cli",),
+            adapter_channel_ids=("cli", "web"),  # web is the confirm-leg channel
             novelty_read_delay_seconds=0.0,
         )
         request = await runtime.issue_grant_moment(

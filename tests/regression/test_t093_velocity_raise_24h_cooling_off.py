@@ -79,10 +79,12 @@ class TestT093VelocityRaiseCoolingOff:
                 )
             )
 
-        # Plain-language message names the wait window + alternative.
-        assert "Posture Review" in str(exc.value)
-        # Required-seconds matches the configured cooling-off.
+        # Required-seconds matches the configured cooling-off — structural
+        # assertion per probe-driven-verification rule (no substring matching
+        # on user-facing prose).
         assert exc.value.required_seconds == 3600
+        # Elapsed time is structurally less than required.
+        assert exc.value.elapsed_seconds < 3600
 
     async def test_velocity_raise_after_cooling_off_succeeds(self) -> None:
         # Configure cooling-off as 0 seconds so the second raise lands.

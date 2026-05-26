@@ -87,7 +87,7 @@ from envoy.grant_moment.runtime import (
     FRICTION_TOKEN_READ_DELAY_COMPLETE,
     EnvoyGrantMomentRuntime,
     GrantMomentOutcome,
-)
+)  # noqa: F401  — runtime + friction tokens land via __all__
 from envoy.grant_moment.state_machine import (
     GRANT_MOMENT_TRANSITIONS,
     GrantMomentEvent,

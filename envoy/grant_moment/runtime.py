@@ -84,11 +84,12 @@ naming the bypass.
 
 ## Per-channel timeout vs M2 timeout
 
-``GrantMomentTimeoutError`` is raised by per-channel render hangs (the
-``ChannelHandoff.dispatch`` surface catches adapter exceptions; this
-runtime additionally surfaces channel-level timeouts when configured
-via ``per_channel_render_timeout_seconds``). ``GrantMomentExpiredError``
-is the M2 user-non-response timeout. Both are wire-shape-distinct.
+``GrantMomentTimeoutError`` is raised at M1 when every adapter's
+``render_grant_moment`` raised — the dispatch surface caught each
+exception and the ``HandoffPlan.channels_dispatched`` is empty. The
+error names the primary channel as the failing channel since it is
+the high-stakes contract anchor. ``GrantMomentExpiredError`` is the
+M2 user-non-response timeout. Both are wire-shape-distinct.
 
 This module is pure Python; depends on the eight structural primitives in
 ``envoy.grant_moment`` and on the ledger facade shape via ``Any``.
@@ -97,11 +98,13 @@ This module is pure Python; depends on the eight structural primitives in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from envoy.grant_moment.cascade_orchestrator import (
@@ -116,6 +119,7 @@ from envoy.grant_moment.errors import (
     GrantMomentExpiredError,
     GrantMomentReplayError,
     GrantMomentTimeoutError,
+    InvalidGrantMomentTransitionError,
     NotPrimaryChannelError,
     NoveltyFrictionRequiredError,
     VelocityRaiseCoolingOffError,
@@ -159,12 +163,15 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # Ledger entry types per ``specs/ledger.md`` § Entry types. The runtime
-# emits the two-phase pair ``PhaseARecord`` (M0 intent) + ``DelegationRecord``
-# (M3 outcome); the Decline path emits a ``DelegationRecord`` with
-# ``decision = "deny"`` since spec § ``GrantMomentResult`` mandates a signed
-# Ledger entry for Deny (not a delegation_key-signed Result).
+# emits the two-phase pair ``PhaseARecord`` (M0 intent) + ``grant_moment``
+# (M3 outcome — per ledger.md § grant_moment); the Decline path emits a
+# ``grant_moment`` row with ``decision = "deny"`` since spec § ``GrantMomentResult``
+# mandates a signed Ledger entry for Deny (not a delegation_key-signed Result).
+# The ``DelegationRecord`` type tag is reserved for capability-delegation chains
+# per specs/trust-lineage.md § DelegationRecord, NOT per-action grant rows.
 _ENTRY_PHASE_A = "PhaseARecord"
-_ENTRY_DELEGATION_RECORD = "DelegationRecord"
+_ENTRY_GRANT_MOMENT = "grant_moment"
+_ENTRY_GRANT_MOMENT_DISPATCH_FAILED = "grant_moment_dispatch_failed"
 
 # Friction token vocabulary per spec § "Novelty-aware friction (T-019)" —
 # the caller-driven runtime exposes these as named tokens so tests + UX can
@@ -173,6 +180,18 @@ FRICTION_TOKEN_READ_DELAY_COMPLETE = "read_delay_complete"
 FRICTION_TOKEN_DOUBLE_TAP = "double_tap"
 FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM = "cross_channel_confirm"
 
+# Closed vocabulary of friction tokens the runtime accepts via
+# ``acknowledge_friction``. Per security-reviewer Round-1 MED-1:
+# typos like "read_delay_complte" must be rejected loudly so the
+# enforcer can rely on the token set as a closed signal.
+_VALID_FRICTION_TOKENS: frozenset[str] = frozenset(
+    {
+        FRICTION_TOKEN_READ_DELAY_COMPLETE,
+        FRICTION_TOKEN_DOUBLE_TAP,
+        FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM,
+    }
+)
+
 # Default ceilings + windows per spec. Open question #1 (5min calibration)
 # and open question #3 (queue ceiling) are recorded in spec § Open questions;
 # Phase 01 ships the spec defaults.
@@ -180,6 +199,19 @@ _DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes per spec § Timeout
 _DEFAULT_NOVELTY_READ_DELAY_SECONDS = 5.0  # spec § Novelty-aware friction
 _DEFAULT_QUEUE_CEILING = 5  # spec § Timeout "back-pressure after N parallel"
 _DEFAULT_VELOCITY_COOLING_OFF_SECONDS = 24 * 60 * 60  # spec § Velocity-raise ratchet T-093
+
+# Phase A intent TTL — bounds how long a Phase A row stays valid for
+# matching with its Phase B (grant_moment) outcome. Per
+# ``specs/ledger.md`` § Two-phase signing: orphan Phase A rows beyond
+# the TTL surface in the Grant Moment orphan-resolution flow.
+_DEFAULT_PHASE_A_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days per ledger spec § orphan resolution
+
+# Bounded dedup-store ceiling per ``rules/trust-plane-security.md`` Rule 4
+# (Bounded collections; default maxlen=10000) — the runtime is a
+# long-lived process; the unbounded nonce/intent_id dedup stores would
+# accumulate indefinitely. T-008 replay defense is preserved because
+# each successful issue rolls the eviction window forward in FIFO order.
+_DEFAULT_DEDUP_CEILING = 100_000  # 100k pairs per principal; honest about Phase 01 memory budget
 
 
 class _LedgerProtocol(Protocol):
@@ -201,6 +233,16 @@ class _LedgerProtocol(Protocol):
     ) -> str: ...
 
 
+class _VisibleSecretShape(Protocol):
+    """Structural shape the runtime reads off a VisibleSecret.
+
+    Only ``phrase`` is consumed — the runtime hashes it for T-018 plumbing
+    and never reads icon/color (those are channel-adapter concerns).
+    """
+
+    phrase: str
+
+
 class _VisibleSecretProviderProtocol(Protocol):
     """Subset of ``envoy.trust.store.TrustStore`` we depend on.
 
@@ -211,7 +253,7 @@ class _VisibleSecretProviderProtocol(Protocol):
     needs the trust store).
     """
 
-    async def get_visible_secret(self, principal_id: str) -> Any | None: ...
+    async def get_visible_secret(self, principal_id: str) -> _VisibleSecretShape | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +298,7 @@ class _PendingGrant:
     handoff_plan: HandoffPlan | None = None
     friction_acks: set[str] = field(default_factory=set)
     cross_channel_confirmed: bool = False
+    confirm_channel_id: str | None = None
     decision_future: asyncio.Future[ResolutionShape] | None = None
     decided_on_channel_id: str | None = None
 
@@ -294,6 +337,8 @@ class EnvoyGrantMomentRuntime:
         novelty_read_delay_seconds: float = _DEFAULT_NOVELTY_READ_DELAY_SECONDS,
         queue_ceiling: int = _DEFAULT_QUEUE_CEILING,
         velocity_raise_cooling_off_seconds: int = _DEFAULT_VELOCITY_COOLING_OFF_SECONDS,
+        phase_a_ttl_seconds: int = _DEFAULT_PHASE_A_TTL_SECONDS,
+        dedup_store_ceiling: int = _DEFAULT_DEDUP_CEILING,
     ) -> None:
         if not delegation_key_id:
             raise ValueError("delegation_key_id is required")
@@ -313,6 +358,10 @@ class EnvoyGrantMomentRuntime:
             raise ValueError("novelty_read_delay_seconds must be non-negative")
         if queue_ceiling <= 0:
             raise ValueError("queue_ceiling must be positive")
+        if dedup_store_ceiling <= 0:
+            raise ValueError("dedup_store_ceiling must be positive")
+        if phase_a_ttl_seconds <= 0:
+            raise ValueError("phase_a_ttl_seconds must be positive")
 
         self._key_manager = key_manager
         self._delegation_key_id = delegation_key_id
@@ -329,23 +378,35 @@ class EnvoyGrantMomentRuntime:
         self._novelty_read_delay_seconds = novelty_read_delay_seconds
         self._queue_ceiling = queue_ceiling
         self._velocity_raise_cooling_off_seconds = velocity_raise_cooling_off_seconds
+        self._phase_a_ttl_seconds = phase_a_ttl_seconds
+        self._dedup_store_ceiling = dedup_store_ceiling
 
         # The H-03 enforcer needs the primary channel id; ChannelHandoff
-        # validated it at construction, so reading the attribute is safe.
-        self._primary_channel_id: str = channel_handoff._primary_channel_id
+        # exposes a public ``primary_channel_id`` property (reviewer-R1
+        # MED-2: do not reach into the private attribute).
+        self._primary_channel_id: str = channel_handoff.primary_channel_id
 
         # T-008 replay defense: nonce + intent_id dedup stores. Phase 01
         # narrow scope — per-runtime-instance lifetime, not persisted across
         # restarts. Phase 02 lifts this into a TrustVault sub-store.
-        self._seen_nonces: dict[str, str] = {}  # nonce → first request_id
-        self._seen_intent_ids: dict[str, str] = {}  # intent_id → first request_id
+        # Bounded per ``rules/trust-plane-security.md`` Rule 4 — FIFO
+        # eviction via OrderedDict.popitem(last=False) when the ceiling
+        # is exceeded keeps memory bounded; the most-recent ``ceiling``
+        # nonces are always replay-defended.
+        self._seen_nonces: OrderedDict[str, str] = OrderedDict()  # nonce → first request_id
+        self._seen_intent_ids: OrderedDict[str, str] = OrderedDict()  # intent_id → first request_id
 
         # In-flight grants (M0 → M4 lifetime). Empty after M4 complete.
         self._inflight: dict[str, _PendingGrant] = {}
 
-        # Velocity-raise registry: last-approved timestamp per principal.
-        # T-093 R2-H4 cooling-off ratchet.
-        self._velocity_raise_last_approved_monotonic: dict[str, float] = {}
+        # Velocity-raise registry: last-approved wall-clock timestamp per
+        # principal. T-093 R2-H4 cooling-off ratchet. Wall-clock (time.time())
+        # rather than monotonic — the 24h window is a user-facing claim
+        # bound to calendar time; monotonic resets to 0 on process
+        # restart, which would silently advance the ratchet (security-R1
+        # HIGH-3). Phase 02 persists this into the TrustVault so the
+        # invariant survives restart.
+        self._velocity_raise_last_approved_wallclock: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # M0 + M1 — construct + dispatch
@@ -381,6 +442,19 @@ class EnvoyGrantMomentRuntime:
         The runtime tracks the request in ``_inflight``; the caller drives
         M2 via ``await_decision`` and M3 via ``submit_resolution``.
         """
+        # Phase-01 cross-principal disposition (security-R1 MED-4): the
+        # full dual-sign + 24h cool-off flow is Phase 03 scope. Phase 01
+        # ships the wire-shape contract only and MUST refuse cross-principal
+        # issues at the runtime boundary so a single principal cannot
+        # produce a "cross-principal grant" by populating
+        # ``co_signer_principal_genesis_id`` without an actual co-signature
+        # (which Phase 01 has no path to verify). Phase 03 lifts this.
+        if is_cross_principal:
+            raise DualSignatureRequiredError(
+                request_id="<not-yet-issued>",
+                awaiting_co_signer="<phase-03-cross-principal-not-implemented>",
+            )
+
         # T-008 nonce / intent_id defense — both fire ``GrantMomentReplayError``.
         if nonce in self._seen_nonces:
             raise GrantMomentReplayError(
@@ -405,11 +479,12 @@ class EnvoyGrantMomentRuntime:
         # T-093 velocity-raise cooling-off ratchet — fired BEFORE we mint a
         # nonce reservation so a refused velocity raise does not leak the
         # nonce into the dedup store (the user re-issues with a fresh nonce
-        # after the cooling-off window).
+        # after the cooling-off window). Wall-clock (time.time()) so the
+        # 24h window aligns with the user-facing claim — security-R1 HIGH-3.
         if is_velocity_raise:
-            last = self._velocity_raise_last_approved_monotonic.get(self._principal_id)
+            last = self._velocity_raise_last_approved_wallclock.get(self._principal_id)
             if last is not None:
-                elapsed = int(time.monotonic() - last)
+                elapsed = int(time.time() - last)
                 if elapsed < self._velocity_raise_cooling_off_seconds:
                     raise VelocityRaiseCoolingOffError(
                         elapsed_seconds=elapsed,
@@ -418,9 +493,11 @@ class EnvoyGrantMomentRuntime:
 
         # Reserve the nonce + intent_id BEFORE signing so a concurrent
         # second-arrival sees the dedup hit even if signing is slow.
+        # FIFO eviction at the ceiling keeps memory bounded (security-R1
+        # HIGH-1; rules/trust-plane-security.md Rule 4).
         provisional_request_id = f"gm-{uuid.uuid4()}"
-        self._seen_nonces[nonce] = provisional_request_id
-        self._seen_intent_ids[intent_id] = provisional_request_id
+        self._remember_nonce(nonce, provisional_request_id)
+        self._remember_intent_id(intent_id, provisional_request_id)
 
         # Classify novelty. The classifier is pure-functional per
         # ``envoy.grant_moment.novelty`` — same input → same output.
@@ -458,21 +535,36 @@ class EnvoyGrantMomentRuntime:
         )
 
         # Phase A intent — first half of two-phase signing per
-        # ``specs/ledger.md`` § two-phase signing. Emitted BEFORE M1 dispatch
-        # so a render failure still leaves the intent recorded.
+        # ``specs/ledger.md`` § two-phase signing + § PhaseARecord. Emitted
+        # BEFORE M1 dispatch so a render failure still leaves the intent
+        # recorded. Payload shape matches the canonical PhaseARecord
+        # schema (envelope_check_passed + phase_a_at + ttl_expires_at +
+        # signed_by) per analyst-R1 MED-2.
+        phase_a_issued_at = _now_iso()
+        phase_a_ttl = (
+            datetime.now(timezone.utc) + timedelta(seconds=self._phase_a_ttl_seconds)
+        ).isoformat(timespec="microseconds")
         phase_a_ref = await self._ledger.append(
             entry_type=_ENTRY_PHASE_A,
             content={
+                "schema_version": "1.0",
+                "intent_id": signed_request.intent_id,
+                "tool_name": signed_request.tool_name,
+                "tool_args_canonical_hash": signed_request.tool_args_canonical_hash,
+                "envelope_version": signed_request.envelope_version,
+                "envelope_check_passed": True,
+                "phase_a_at": phase_a_issued_at,
+                "ttl_expires_at": phase_a_ttl,
+                "signed_by": "delegation_key",
+                # Phase-01 additive context (not in spec schema but useful
+                # for the audit chain; the canonical 9 fields above stay
+                # in the front of the dict for grep-able schema matching).
                 "request_id": signed_request.request_id,
                 "session_id": signed_request.session_id,
                 "principal_genesis_id": signed_request.principal_genesis_id,
-                "intent_id": signed_request.intent_id,
                 "nonce": signed_request.nonce,
                 "envelope_id": signed_request.envelope_id,
-                "envelope_version": signed_request.envelope_version,
                 "envelope_hash": signed_request.envelope_hash,
-                "tool_name": signed_request.tool_name,
-                "tool_args_canonical_hash": signed_request.tool_args_canonical_hash,
                 "why_asking": signed_request.why_asking,
                 "novelty_class": signed_request.novelty_class,
                 "primary_only": signed_request.primary_only,
@@ -515,9 +607,32 @@ class EnvoyGrantMomentRuntime:
         # channel-render hang as a typed error so the caller can switch
         # channels. Per spec error taxonomy ``GrantMomentTimeoutError``
         # carries channel_id; we name the primary as the failing channel
-        # since it is the high-stakes contract anchor.
+        # since it is the high-stakes contract anchor. The (nonce,
+        # intent_id) reservations are released so the user can retry with
+        # the same identifiers — the grant never actually rendered, so it
+        # cannot be a "replay" of an executed action (reviewer-R1 MED-4).
+        # An audit row records the dispatch failure so the orphan-Phase-A
+        # surface stays clean (security-R1 MED-3).
         if not handoff_plan.channels_dispatched:
             del self._inflight[signed_request.request_id]
+            self._seen_nonces.pop(signed_request.nonce, None)
+            self._seen_intent_ids.pop(signed_request.intent_id, None)
+            await self._ledger.append(
+                entry_type=_ENTRY_GRANT_MOMENT_DISPATCH_FAILED,
+                content={
+                    "schema_version": "1.0",
+                    "request_id": signed_request.request_id,
+                    "intent_id": signed_request.intent_id,
+                    "phase_a_ref": phase_a_ref,
+                    "refused_channels": [
+                        {"channel_id": c, "reason": r} for c, r in handoff_plan.refused_channels
+                    ],
+                    "failed_at": _now_iso(),
+                    "signed_by": "device_key",
+                },
+                intent_id=signed_request.intent_id,
+                content_trust_level="system",
+            )
             raise GrantMomentTimeoutError(
                 request_id=signed_request.request_id, channel_id=self._primary_channel_id
             )
@@ -552,12 +667,16 @@ class EnvoyGrantMomentRuntime:
         """
         pending = self._require_inflight(request_id)
         if pending.state != GrantMomentState.M2_AWAIT:
-            raise NoveltyFrictionRequiredError(
-                request_id=request_id,
-                required_friction="await_decision called outside M2_await",
+            # State-machine misuse — typed as InvalidGrantMomentTransitionError
+            # so callers can catch the right class. Earlier draft used
+            # NoveltyFrictionRequiredError (reviewer-R1 HIGH-1); friction
+            # was the wrong error class for a state-machine misuse.
+            raise InvalidGrantMomentTransitionError(
+                current_state=pending.state.value,
+                attempted_event="await_decision",
             )
         if pending.decision_future is None:
-            pending.decision_future = asyncio.get_event_loop().create_future()
+            pending.decision_future = asyncio.get_running_loop().create_future()
 
         effective_timeout = (
             timeout_seconds if timeout_seconds is not None else pending.request.timeout_seconds
@@ -588,7 +707,7 @@ class EnvoyGrantMomentRuntime:
         """
         pending = self._require_inflight(request_id)
         if pending.decision_future is None:
-            pending.decision_future = asyncio.get_event_loop().create_future()
+            pending.decision_future = asyncio.get_running_loop().create_future()
         if not pending.decision_future.done():
             pending.decision_future.set_result(resolution)
 
@@ -597,29 +716,48 @@ class EnvoyGrantMomentRuntime:
     # ------------------------------------------------------------------
 
     def acknowledge_friction(self, request_id: str, token: str) -> None:
-        """Record one friction completion step. Tokens are caller-supplied;
-        the runtime exposes the canonical vocabulary as module constants
-        (``FRICTION_TOKEN_READ_DELAY_COMPLETE`` / ``_DOUBLE_TAP`` /
-        ``_CROSS_CHANNEL_CONFIRM``).
+        """Record one friction completion step. ``token`` MUST be one of the
+        runtime's closed vocabulary (``FRICTION_TOKEN_READ_DELAY_COMPLETE``
+        / ``_DOUBLE_TAP`` / ``_CROSS_CHANNEL_CONFIRM``). Unknown tokens are
+        rejected loudly per security-R1 + reviewer-R1 MED-5 — silent
+        accumulation of typo'd tokens would not satisfy the enforcer and
+        would surface as a confusing ``NoveltyFrictionRequiredError`` on
+        ``submit_resolution``.
 
         ``submit_resolution`` checks the accumulated set against the
         per-novelty-class requirement.
         """
         if not token:
             raise ValueError("friction token must be non-empty")
+        if token not in _VALID_FRICTION_TOKENS:
+            raise ValueError(
+                f"unknown friction token {token!r}; "
+                f"expected one of {sorted(_VALID_FRICTION_TOKENS)}"
+            )
         pending = self._require_inflight(request_id)
         pending.friction_acks.add(token)
 
     def confirm_cross_channel(self, request_id: str, *, confirm_channel_id: str) -> None:
         """Mark the cross-channel confirm leg complete for a high-stakes
-        grant. Caller (the confirm-channel adapter) is responsible for
-        verifying the user's identity on the second channel before calling.
+        grant. ``confirm_channel_id`` MUST be one of the configured adapter
+        channels AND MUST differ from the eventual ``decided_on_channel_id``
+        (the latter check fires at submit-resolution time since the M3
+        channel is not yet known). Caller (the confirm-channel adapter)
+        is responsible for verifying the user's identity on the second
+        channel before calling.
 
         Records ``FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM`` so the friction
         enforcer sees the leg without a separate accounting path.
         """
+        valid_channels = self._channel_handoff.adapter_channel_ids
+        if confirm_channel_id not in valid_channels:
+            raise ValueError(
+                f"confirm_channel_id {confirm_channel_id!r} is not one of the "
+                f"configured channels {sorted(valid_channels)!r}"
+            )
         pending = self._require_inflight(request_id)
         pending.cross_channel_confirmed = True
+        pending.confirm_channel_id = confirm_channel_id
         pending.friction_acks.add(FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM)
         logger.info(
             "grant_moment.cross_channel_confirmed",
@@ -658,19 +796,27 @@ class EnvoyGrantMomentRuntime:
 
         # Move state to M3 if we are still in M2_await (caller may have
         # used the adapter-push path which completes the future without
-        # transitioning).
+        # transitioning). State-machine misuse outside {M2_await, M3_sign}
+        # returns a typed-error outcome rather than relying on next_state
+        # to raise (security-R1 HIGH-2: previous code let
+        # InvalidGrantMomentTransitionError escape unhandled).
         if pending.state == GrantMomentState.M2_AWAIT:
             pending.state = next_state(pending.state, GrantMomentEvent.DECISION_RECEIVED)
-        if pending.state != GrantMomentState.M3_SIGN:
+        elif pending.state != GrantMomentState.M3_SIGN:
             outcome = GrantMomentOutcome(
                 state="ERROR",
                 request_id=request_id,
-                error=ValueError(
-                    f"submit_resolution called in state {pending.state.value!r}; "
-                    "valid only at M3_sign"
+                error=InvalidGrantMomentTransitionError(
+                    current_state=pending.state.value,
+                    attempted_event="submit_resolution",
                 ),
             )
             self._inflight.pop(request_id, None)
+            self._log_refusal(
+                pending,
+                rejection_class="invalid_state_transition",
+                decided_on_channel_id=decided_on_channel_id,
+            )
             return outcome
 
         # H-03 — high-stakes resolution decided on a non-primary channel.
@@ -680,18 +826,11 @@ class EnvoyGrantMomentRuntime:
                 primary_channel_id=self._primary_channel_id,
             )
             self._inflight.pop(request_id, None)
-            return GrantMomentOutcome(state="ERROR", request_id=request_id, error=err)
-
-        # Phase 03 cross-principal contract — surface the awaiting-co-signer
-        # error if the resolution is cross-principal but no co-signer is
-        # populated. Phase 01 does NOT execute the dual-sign flow; the
-        # contract pin guarantees the wire shape is wired.
-        if pending.is_cross_principal and resolution.co_signer_principal_genesis_id is None:
-            err = DualSignatureRequiredError(
-                request_id=request_id,
-                awaiting_co_signer="<cross_principal_co_signer>",
+            self._log_refusal(
+                pending,
+                rejection_class="h03_non_primary_channel",
+                decided_on_channel_id=decided_on_channel_id,
             )
-            self._inflight.pop(request_id, None)
             return GrantMomentOutcome(state="ERROR", request_id=request_id, error=err)
 
         # T-019 novelty friction enforcer (only for ApproveResolution /
@@ -707,10 +846,17 @@ class EnvoyGrantMomentRuntime:
             err_or_none = self._check_novelty_friction(pending)
             if err_or_none is not None:
                 self._inflight.pop(request_id, None)
+                self._log_refusal(
+                    pending,
+                    rejection_class="t019_friction_required",
+                    decided_on_channel_id=decided_on_channel_id,
+                )
                 return GrantMomentOutcome(state="ERROR", request_id=request_id, error=err_or_none)
 
         # High-stakes cross-channel confirm leg — required for HIGH_STAKES
-        # resolution paths per spec § Novelty-aware friction.
+        # resolution paths per spec § Novelty-aware friction. The
+        # confirm channel id MUST differ from the decided-on channel
+        # (single-channel-confirm defeats the defense — security-R1 MED-2).
         if (
             pending.high_stakes
             and not isinstance(resolution, DeclineResolution)
@@ -721,6 +867,28 @@ class EnvoyGrantMomentRuntime:
                 confirm_channel_id=self._primary_channel_id,
             )
             self._inflight.pop(request_id, None)
+            self._log_refusal(
+                pending,
+                rejection_class="cross_channel_confirm_missing",
+                decided_on_channel_id=decided_on_channel_id,
+            )
+            return GrantMomentOutcome(state="ERROR", request_id=request_id, error=err)
+        if (
+            pending.high_stakes
+            and not isinstance(resolution, DeclineResolution)
+            and pending.confirm_channel_id is not None
+            and pending.confirm_channel_id == decided_on_channel_id
+        ):
+            err = CrossChannelConfirmFailedError(
+                request_id=request_id,
+                confirm_channel_id=pending.confirm_channel_id,
+            )
+            self._inflight.pop(request_id, None)
+            self._log_refusal(
+                pending,
+                rejection_class="cross_channel_same_as_decided",
+                decided_on_channel_id=decided_on_channel_id,
+            )
             return GrantMomentOutcome(state="ERROR", request_id=request_id, error=err)
 
         # Build the signed Result. Decline produces an unsigned-by-delegation
@@ -740,19 +908,30 @@ class EnvoyGrantMomentRuntime:
             ),
         )
 
-        # Emit the Phase B ledger row (DelegationRecord); ``phase_a_ref``
-        # links it back to the Phase A intent recorded at issue time.
+        # Emit the Phase B ledger row tagged ``grant_moment`` per
+        # ``specs/ledger.md`` § grant_moment (NOT ``DelegationRecord``,
+        # which is the capability-delegation chain row per
+        # ``specs/trust-lineage.md`` § DelegationRecord — analyst-R1 HIGH-3).
+        # ``phase_a_ref`` links it back to the Phase A intent.
         delegation_record_ref = await self._ledger.append(
-            entry_type=_ENTRY_DELEGATION_RECORD,
+            entry_type=_ENTRY_GRANT_MOMENT,
             content={
-                "result_id": result.result_id,
-                "request_id": result.request_id,
+                "schema_version": "1.0",
+                "request_ref": pending.request.request_id,
+                "result_ref": result.result_id,
+                "intent_id": pending.request.intent_id,
                 "decision": result.decision,
                 "decided_at": result.decided_at,
+                "envelope_version_at_decision": pending.request.envelope_version,
+                "novelty_class": pending.novelty_class.value,
+                "signed_by": (
+                    "device_key" if isinstance(resolution, DeclineResolution) else "delegation_key"
+                ),
+                # Phase-01 audit context (canonical 9 fields above stay in
+                # the front of the dict for grep-able schema matching).
+                "phase_a_ref": pending.phase_a_record_ref,
                 "decided_on_channel_id": result.decided_on_channel_id,
                 "decided_by_principal_genesis_id": result.decided_by_principal_genesis_id,
-                "phase_a_ref": pending.phase_a_record_ref,
-                "intent_id": pending.request.intent_id,
                 "modify_payload": result.modify_payload,
                 "author_payload": result.author_payload,
                 "co_signer_principal_genesis_id": result.co_signer_principal_genesis_id,
@@ -764,10 +943,12 @@ class EnvoyGrantMomentRuntime:
         )
 
         # Velocity-raise registry update — only on successful Approve paths.
+        # Wall-clock (time.time()) so the 24h window matches the user-facing
+        # claim (security-R1 HIGH-3).
         if pending.is_velocity_raise and isinstance(
             resolution, (ApproveResolution, ApproveWithModificationResolution)
         ):
-            self._velocity_raise_last_approved_monotonic[self._principal_id] = time.monotonic()
+            self._velocity_raise_last_approved_wallclock[self._principal_id] = time.time()
 
         # M3 → M4 transition + cleanup. The dedup stores keep the nonce /
         # intent_id (replay safety survives M4 cleanup); only the in-flight
@@ -872,8 +1053,6 @@ class EnvoyGrantMomentRuntime:
         secret = await self._trust_store.get_visible_secret(principal_id)
         if secret is None:
             return None
-        import hashlib  # local import — defense-in-depth against accidental top-level removal
-
         return hashlib.sha256(secret.phrase.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------
@@ -888,10 +1067,6 @@ class EnvoyGrantMomentRuntime:
         """The Grant Moment state machine position for ``request_id``."""
         return self._require_inflight(request_id).state
 
-    def novelty_class_for(self, request_id: str) -> NoveltyClass:
-        """The classified novelty for ``request_id``; raises if unknown."""
-        return self._require_inflight(request_id).novelty_class
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -904,6 +1079,57 @@ class EnvoyGrantMomentRuntime:
                 f"request_id {request_id!r} is not in-flight; either it never "
                 "issued, it already completed, or it timed out."
             ) from None
+
+    def _remember_nonce(self, nonce: str, request_id: str) -> None:
+        """Insert into the FIFO-bounded nonce dedup store.
+
+        Evicts the oldest entry when the ceiling is exceeded so memory
+        stays bounded (security-R1 HIGH-1; rules/trust-plane-security.md
+        Rule 4). The most-recent ``dedup_store_ceiling`` nonces remain
+        replay-defended.
+        """
+        self._seen_nonces[nonce] = request_id
+        self._seen_nonces.move_to_end(nonce)
+        while len(self._seen_nonces) > self._dedup_store_ceiling:
+            self._seen_nonces.popitem(last=False)
+
+    def _remember_intent_id(self, intent_id: str, request_id: str) -> None:
+        """Insert into the FIFO-bounded intent_id dedup store.
+
+        Same semantics as ``_remember_nonce`` but on the intent_id axis.
+        """
+        self._seen_intent_ids[intent_id] = request_id
+        self._seen_intent_ids.move_to_end(intent_id)
+        while len(self._seen_intent_ids) > self._dedup_store_ceiling:
+            self._seen_intent_ids.popitem(last=False)
+
+    def _log_refusal(
+        self,
+        pending: _PendingGrant,
+        *,
+        rejection_class: str,
+        decided_on_channel_id: str,
+    ) -> None:
+        """Emit a WARN line for every security-relevant rejection at M3.
+
+        Per ``rules/observability.md`` Mandatory Log Points 1 + 4: auth /
+        rejection events MUST emit a structured log line. Reviewer-R1
+        HIGH-4 surfaced that the five ERROR-outcome paths were silent
+        from the audit-aggregator view. Field names are operational
+        identifiers (rejection_class is a closed enum, novelty_class is
+        the spec discriminator) — no secrets or PII.
+        """
+        logger.warning(
+            "grant_moment.refused",
+            extra={
+                "request_id": pending.request.request_id,
+                "rejection_class": rejection_class,
+                "decided_on_channel_id": decided_on_channel_id,
+                "novelty_class": pending.novelty_class.value,
+                "high_stakes": pending.high_stakes,
+                "is_velocity_raise": pending.is_velocity_raise,
+            },
+        )
 
     def _check_novelty_friction(
         self, pending: _PendingGrant
@@ -922,6 +1148,7 @@ class EnvoyGrantMomentRuntime:
                     f"wait at least {self._novelty_read_delay_seconds:g}s after "
                     f"the dialog appears before signing (waited {elapsed:.1f}s)"
                 ),
+                friction_kind=NoveltyFrictionRequiredError.KIND_READ_DELAY_WALLCLOCK,
             )
         if FRICTION_TOKEN_READ_DELAY_COMPLETE not in pending.friction_acks:
             return NoveltyFrictionRequiredError(
@@ -930,6 +1157,7 @@ class EnvoyGrantMomentRuntime:
                     "acknowledge the read-delay step before signing "
                     f"(call acknowledge_friction({FRICTION_TOKEN_READ_DELAY_COMPLETE!r}))"
                 ),
+                friction_kind=NoveltyFrictionRequiredError.KIND_READ_DELAY_TOKEN_MISSING,
             )
         if pending.novelty_class == NoveltyClass.NOVEL:
             # Novel pattern → 5s read-delay + double-tap (high-stakes adds
@@ -941,22 +1169,28 @@ class EnvoyGrantMomentRuntime:
                         "complete the double-tap confirmation "
                         f"(call acknowledge_friction({FRICTION_TOKEN_DOUBLE_TAP!r}))"
                     ),
+                    friction_kind=NoveltyFrictionRequiredError.KIND_DOUBLE_TAP_MISSING,
                 )
         return None
 
     def _resolve_delegation_pubkey_hex(self) -> str:
-        """Return the delegation key's public-key hex if the key manager
-        exposes the lookup; otherwise return the empty string.
+        """Return the delegation key's public-key hex from the key manager.
 
         The wire-form Request carries the pubkey so verifiers can confirm
         the signature without a separate key-discovery hop. Phase 01 keys
-        live in kailash's InMemoryKeyManager which exposes
-        ``get_public_key``; Trust Vault wrappers in Phase 02 may not, hence
-        the graceful fallback.
+        live in kailash's InMemoryKeyManager which exposes ``get_public_key``.
+        Raises ``ValueError`` when the key manager surface is missing or
+        the key has no public material — Phase 02 Trust Vault wrappers
+        MUST expose the canonical interface (security-R1 MED-5: silent
+        empty fallback ships unverifiable signed requests).
         """
         getter = getattr(self._key_manager, "get_public_key", None)
         if getter is None:
-            return ""
+            raise ValueError(
+                "key_manager does not expose get_public_key — Phase 01 cannot ship "
+                "a verifiable GrantMomentRequest without a public-key resolver. "
+                "Wrap the key manager with a compatible Trust Vault surface."
+            )
         result = getter(self._delegation_key_id)
         if result is None:
             return ""

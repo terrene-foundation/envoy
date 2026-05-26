@@ -52,7 +52,7 @@ class TestT019NoveltyFriction:
         )
         assert outcome.state == "ERROR"
         assert isinstance(outcome.error, NoveltyFrictionRequiredError)
-        assert "wait" in str(outcome.error).lower()
+        assert outcome.error.friction_kind == NoveltyFrictionRequiredError.KIND_READ_DELAY_WALLCLOCK
 
     async def test_novel_pattern_blocks_when_read_delay_token_missing(self) -> None:
         # After the wall-clock read-delay elapses, the token must still be
@@ -77,7 +77,10 @@ class TestT019NoveltyFriction:
         )
         assert outcome.state == "ERROR"
         assert isinstance(outcome.error, NoveltyFrictionRequiredError)
-        assert "read-delay" in str(outcome.error).lower()
+        assert (
+            outcome.error.friction_kind
+            == NoveltyFrictionRequiredError.KIND_READ_DELAY_TOKEN_MISSING
+        )
 
     async def test_novel_pattern_blocks_when_double_tap_token_missing(self) -> None:
         # Read-delay ack present, but double-tap missing → still blocked.
@@ -99,7 +102,7 @@ class TestT019NoveltyFriction:
         )
         assert outcome.state == "ERROR"
         assert isinstance(outcome.error, NoveltyFrictionRequiredError)
-        assert "double-tap" in str(outcome.error).lower()
+        assert outcome.error.friction_kind == NoveltyFrictionRequiredError.KIND_DOUBLE_TAP_MISSING
 
     async def test_full_friction_sequence_allows_signing(self) -> None:
         runtime, *_ = await make_runtime(novelty_read_delay_seconds=0.0)
