@@ -95,6 +95,19 @@ Every dialog shows:
 
 Raising velocity limits CANNOT be approved inline. Requires Weekly Posture Review OR cross-channel Grant Moment with 24h cooling-off.
 
+**Phase 01 known limitation (per `rules/specs-authority.md` Rule 6):**
+The Phase 01 cooling-off uses `time.time()` (wall-clock) so the 24h
+math matches the user-facing claim AND so the ratchet survives process
+restart in the same calendar window. Forward clock skew (NTP catch-up
+jump, admin clock change, container clock adjustment) can shorten the
+window; backward skew is benign. Phase 02 persists the last-approved
+timestamp into the TrustVault alongside a monotonic baseline so
+forward-skew becomes detectable.
+**User impact:** Phase 01 deployments on systems with managed clocks
+(typical) experience the documented 24h gate; deployments on systems
+where the operator can move the clock forward MUST treat the gate as
+advisory until Phase 02 lands.
+
 ## Cross-principal (Phase 03)
 
 Dual-signed if affects both principals. First principal's dialog → second principal's dialog on their channel. Action executes only after both signed. 24h cooling-off for high-stakes.

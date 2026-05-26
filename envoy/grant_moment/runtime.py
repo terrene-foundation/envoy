@@ -404,8 +404,14 @@ class EnvoyGrantMomentRuntime:
         # rather than monotonic — the 24h window is a user-facing claim
         # bound to calendar time; monotonic resets to 0 on process
         # restart, which would silently advance the ratchet (security-R1
-        # HIGH-3). Phase 02 persists this into the TrustVault so the
-        # invariant survives restart.
+        # HIGH-3).
+        #
+        # Phase-01 known limitation (security-R2 MED-2): forward clock
+        # skew (NTP catch-up jump, admin clock change, container clock
+        # adjustment) can shorten the cooling-off window. Backward skew
+        # is benign (still raises). Phase 02 persists this into the
+        # TrustVault alongside a monotonic baseline so forward-skew is
+        # detectable.
         self._velocity_raise_last_approved_wallclock: dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -614,9 +620,13 @@ class EnvoyGrantMomentRuntime:
         # An audit row records the dispatch failure so the orphan-Phase-A
         # surface stays clean (security-R1 MED-3).
         if not handoff_plan.channels_dispatched:
+            # Emit the dispatch-failed audit row BEFORE releasing dedup
+            # keys so a ledger persistence failure does not orphan the
+            # Phase A row alongside released nonces (security-R2 MED-1).
+            # If the audit append raises, the dedup keys stay reserved
+            # and the user's retry surfaces GrantMomentReplayError —
+            # safer than nonce-burn-without-audit-trail.
             del self._inflight[signed_request.request_id]
-            self._seen_nonces.pop(signed_request.nonce, None)
-            self._seen_intent_ids.pop(signed_request.intent_id, None)
             await self._ledger.append(
                 entry_type=_ENTRY_GRANT_MOMENT_DISPATCH_FAILED,
                 content={
@@ -633,6 +643,10 @@ class EnvoyGrantMomentRuntime:
                 intent_id=signed_request.intent_id,
                 content_trust_level="system",
             )
+            # Audit-row landed; safe to release the dedup reservations so
+            # the user can retry the intent with the same identifiers.
+            self._seen_nonces.pop(signed_request.nonce, None)
+            self._seen_intent_ids.pop(signed_request.intent_id, None)
             raise GrantMomentTimeoutError(
                 request_id=signed_request.request_id, channel_id=self._primary_channel_id
             )
@@ -746,16 +760,29 @@ class EnvoyGrantMomentRuntime:
         is responsible for verifying the user's identity on the second
         channel before calling.
 
+        Only valid for ``high_stakes=True`` grants — confirming a
+        non-high-stakes grant is a programming error because the friction
+        enforcer ignores the flag on low-stakes paths.
+
         Records ``FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM`` so the friction
         enforcer sees the leg without a separate accounting path.
         """
+        # Verify request exists FIRST so a probe with an invalid channel
+        # against a non-existent request_id surfaces the right error
+        # (security-R2 LOW-1: prior ordering masked KeyError with ValueError).
+        pending = self._require_inflight(request_id)
+        if not pending.high_stakes:
+            raise ValueError(
+                f"confirm_cross_channel is only valid for high_stakes grants; "
+                f"request_id={request_id!r} is novelty_class={pending.novelty_class.value!r} "
+                "and does not require a cross-channel confirm leg."
+            )
         valid_channels = self._channel_handoff.adapter_channel_ids
         if confirm_channel_id not in valid_channels:
             raise ValueError(
                 f"confirm_channel_id {confirm_channel_id!r} is not one of the "
                 f"configured channels {sorted(valid_channels)!r}"
             )
-        pending = self._require_inflight(request_id)
         pending.cross_channel_confirmed = True
         pending.confirm_channel_id = confirm_channel_id
         pending.friction_acks.add(FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM)
@@ -1193,7 +1220,16 @@ class EnvoyGrantMomentRuntime:
             )
         result = getter(self._delegation_key_id)
         if result is None:
-            return ""
+            # security-R2 HIGH: the R1 patch closed the ``getter is None``
+            # branch but left the ``result is None`` branch returning empty,
+            # silently shipping unverifiable signed Requests when the key
+            # manager registered the key but has no public material.
+            raise ValueError(
+                f"key_manager.get_public_key({self._delegation_key_id!r}) returned None — "
+                "the registered key has no associated public material. Phase 01 cannot "
+                "ship a verifiable GrantMomentRequest; register the public key alongside "
+                "the signing key."
+            )
         if isinstance(result, bytes):
             return result.hex()
         return str(result)

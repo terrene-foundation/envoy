@@ -99,6 +99,7 @@ async def make_runtime(
     default_timeout_seconds: int = 300,
     novelty_read_delay_seconds: float = 0.0,
     velocity_raise_cooling_off_seconds: int = 24 * 60 * 60,
+    dedup_store_ceiling: int = 100_000,
     cascade_responses: dict[str, set[str]] | None = None,
     trust_store: StubTrustStore | None = None,
     plan_suspension_bridge: PlanSuspensionBridge | None = None,
@@ -149,6 +150,7 @@ async def make_runtime(
         novelty_read_delay_seconds=novelty_read_delay_seconds,
         queue_ceiling=queue_ceiling,
         velocity_raise_cooling_off_seconds=velocity_raise_cooling_off_seconds,
+        dedup_store_ceiling=dedup_store_ceiling,
     )
     return runtime, key_manager, ledger, audit_store, list(adapters)
 
