@@ -64,6 +64,7 @@ from envoy.channels.errors import NotPrimaryChannelError  # noqa: E402
 # Module-level PII helper (mirrors _hash_pii in discord.py exactly).
 # ---------------------------------------------------------------------------
 
+
 def _hash_pii(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:8]
 
@@ -71,6 +72,7 @@ def _hash_pii(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Config / adapter factories
 # ---------------------------------------------------------------------------
+
 
 def _make_config(*, primary: bool) -> DiscordChannelConfig:
     """Build a DiscordChannelConfig.
@@ -97,7 +99,7 @@ def _make_grant(*, high_stakes: bool) -> GrantMomentPayload:
         request_id="req-test-001",
         intent_id="intent-test-001",
         decision_options=("approve_once", "deny"),
-        visible_secret=VisibleSecret(icon="🔑", phrase="test-phrase"),
+        visible_secret=VisibleSecret(icon="🔑", color="#A0E7E5", phrase="test-phrase"),
         body="Test grant moment body",
         high_stakes=high_stakes,
     )
@@ -239,8 +241,7 @@ async def test_discord_principal_id_pii_hash_in_logs(
 
         # The raw principal ID MUST NOT appear anywhere in log records.
         all_log_text = " ".join(
-            str(record.getMessage()) + " " + str(record.__dict__)
-            for record in caplog.records
+            str(record.getMessage()) + " " + str(record.__dict__) for record in caplog.records
         )
         assert raw_principal not in all_log_text, (
             f"Raw principal_id '{raw_principal}' leaked into log output; "

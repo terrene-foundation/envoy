@@ -233,6 +233,7 @@ class TestTelegramGrantMoment:
         send_fn, _ = _make_send_fn()
         adapter = _make_adapter(send_fn=send_fn)
         await adapter.startup()
+        task: asyncio.Task[typing.Any] | None = None
         try:
             grant = _make_grant(request_id="gm-2")
             task = asyncio.create_task(
@@ -248,11 +249,12 @@ class TestTelegramGrantMoment:
             # "1" as string won't prefix-match "approve_once" etc., but that
             # path goes through InvalidDecisionError. Use "deny" which is in vocab.
         except Exception:
-            task.cancel()
-            try:
-                await task
-            except Exception:
-                pass
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except Exception:
+                    pass
         finally:
             await adapter.shutdown()
 
@@ -280,9 +282,7 @@ class TestTelegramGrantMoment:
         try:
             grant = _make_grant(request_id="gm-timeout")
             with pytest.raises(GrantMomentExpiredError) as excinfo:
-                await adapter.send_grant_moment(
-                    "chat-1", grant, timeout_seconds=1
-                )
+                await adapter.send_grant_moment("chat-1", grant, timeout_seconds=1)
             assert excinfo.value.request_id == "gm-timeout"
             assert excinfo.value.timeout_seconds == 1
         finally:
@@ -296,9 +296,7 @@ class TestTelegramGrantMoment:
         try:
             grant = _make_grant(request_id="gm-primary")
             with pytest.raises(NotPrimaryChannelError) as excinfo:
-                await adapter.send_grant_moment(
-                    "chat-1", grant, primary_only=True
-                )
+                await adapter.send_grant_moment("chat-1", grant, primary_only=True)
             assert excinfo.value.channel_id == "telegram"
             assert excinfo.value.primary_channel_id == "whatsapp"
         finally:
@@ -502,9 +500,9 @@ class TestTelegramInvariantPins:
 
         # Must be exactly 8 hex characters.
         assert len(hashed) == 8, f"Expected 8-char hash, got {len(hashed)!r}: {hashed!r}"
-        assert all(c in "0123456789abcdef" for c in hashed), (
-            f"Hash must be lowercase hex; got {hashed!r}"
-        )
+        assert all(
+            c in "0123456789abcdef" for c in hashed
+        ), f"Hash must be lowercase hex; got {hashed!r}"
 
         # Must match the exact algorithm: sha256 truncated to 8 chars.
         expected = hashlib.sha256(principal_id.encode()).hexdigest()[:8]
@@ -542,17 +540,15 @@ class TestTelegramInvariantPins:
         # _register_pending is the write-site.
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
         adapter._register_pending("test-req-id", q)
-        assert "test-req-id" in adapter._pending_grants, (
-            "_register_pending did not write to _pending_grants"
-        )
+        assert (
+            "test-req-id" in adapter._pending_grants
+        ), "_register_pending did not write to _pending_grants"
         assert adapter._pending_grants["test-req-id"] is q
 
         # post_decision only reads — it does NOT insert new keys.
         # Attempt post_decision for an unknown request_id.
         result = adapter.post_decision("nonexistent-id", "approve_once")
-        assert result is False, (
-            "post_decision with unknown request_id must return False"
-        )
+        assert result is False, "post_decision with unknown request_id must return False"
         # No new entry should have been created.
         assert "nonexistent-id" not in adapter._pending_grants, (
             "post_decision must not create new entries in _pending_grants "

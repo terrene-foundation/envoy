@@ -349,7 +349,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 timeout_seconds=timeout_seconds,
             ) from exc
 
-        decision = self._coerce_decision(response_msg.body, grant.decision_options)
+        decision = self._coerce_decision(response_msg.payload.body, grant.decision_options)
         self._pending_decisions.discard(grant.request_id)
 
         logger.info(
@@ -425,7 +425,7 @@ class DiscordChannelAdapter(ChannelAdapter):
     @property
     def capabilities(self) -> ChannelCapabilities:
         return ChannelCapabilities(
-            supports_buttons=True,   # Discord components (buttons, select menus)
+            supports_buttons=True,  # Discord components (buttons, select menus)
             supports_attachments=True,
             supports_markdown=True,  # Discord markdown subset
             supports_voice=False,
@@ -451,9 +451,7 @@ class DiscordChannelAdapter(ChannelAdapter):
     def _require_started(self, method_name: str = "send_*") -> None:
         """Guard every send path against pre-startup calls."""
         if not self._started or self._closed:
-            raise NotStartedError(
-                channel_id=_DISCORD_CHANNEL_ID, method_name=method_name
-            )
+            raise NotStartedError(channel_id=_DISCORD_CHANNEL_ID, method_name=method_name)
 
     def _register_pending(self, request_id: str) -> None:
         """Invariant 3: single write-site for pending-decisions state.
@@ -518,9 +516,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         """
         request_id = getattr(request, "request_id", None)
         if not request_id:
-            raise ValueError(
-                "GrantMomentRequest is missing request_id; cannot render."
-            )
+            raise ValueError("GrantMomentRequest is missing request_id; cannot render.")
         tool_name = getattr(request, "tool_name", "")
         why = getattr(request, "why_asking", "")
         consequence = getattr(request, "consequence_preview", None)
@@ -546,9 +542,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _coerce_decision(
-        response: str, options: tuple[str, ...]
-    ) -> GrantMomentDecision:
+    def _coerce_decision(response: str, options: tuple[str, ...]) -> GrantMomentDecision:
         """Coerce a user response string to a ``GrantMomentDecision``.
 
         Invariant 2: closed-vocabulary enforcement. Invalid decisions that
