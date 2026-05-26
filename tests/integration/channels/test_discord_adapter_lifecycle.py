@@ -126,6 +126,7 @@ async def test_discord_high_stakes_auto_gate_blocks_non_primary() -> None:
         with pytest.raises(NotPrimaryChannelError) as exc_info:
             # primary_only=False — the AUTO-gate on high_stakes must fire
             await adapter.send_grant_moment(
+                "principal-test-001",
                 grant,
                 primary_only=False,
                 timeout_seconds=1,
@@ -177,6 +178,7 @@ async def test_discord_vocab_canonical_discriminator_payload_vs_request() -> Non
         grant_low = _make_grant(high_stakes=False)
         with pytest.raises(GrantMomentExpiredError):
             await adapter.send_grant_moment(
+                "principal-test-001",
                 grant_low,
                 primary_only=False,
                 timeout_seconds=0,  # immediate timeout
@@ -290,7 +292,6 @@ def test_discord_register_pending_single_write_site() -> None:
 
     # (b) Idempotent — re-registering same id does not duplicate or raise.
     adapter._register_pending("req-alpha")
-    assert adapter._pending_decisions.count == adapter._pending_decisions.__len__  # type: ignore[comparison-overlap]
     assert len(adapter._pending_decisions) == 1
 
     # (c) Second distinct id is accepted.
