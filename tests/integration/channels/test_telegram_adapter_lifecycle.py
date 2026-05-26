@@ -452,13 +452,21 @@ class TestTelegramInboundQueue:
 
     @pytest.mark.asyncio
     async def test_enqueue_delivers_message_to_receive_message(self) -> None:
+        import datetime
+
         q: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=100)
         adapter = _make_adapter(inbound_queue=q)
         await adapter.startup()
         try:
             inbound = InboundMessage(
+                channel_id="telegram",
+                session_id="sess-1",
+                principal_genesis_id="p-1",
+                direction="inbound",
+                content_trust_level="user",
                 payload=MessagePayload(kind="text", body="ping"),
                 visible_secret_rendered=None,
+                timestamp=datetime.datetime.now(datetime.timezone.utc),
             )
             adapter.enqueue(inbound)
             gen = adapter.receive_message()
