@@ -138,10 +138,10 @@ class GrantMomentReceipt:
     by the WebhookSigner).
 
     `request_id` extends the spec's 4-field shape (lines 78-79) by one field
-    — the original-request correlation token. The extension is documented in
-    `specs/channel-adapters.md` § Ritual delivery § Receipt shape (deviation
-    note per `rules/specs-authority.md` Rule 6: receipt carries `request_id`
-    so the runtime can correlate without holding a side-table).
+    — the original-request correlation token. The extension is documented
+    inline in `specs/channel-adapters.md` § Ritual delivery (Phase 01 surface
+    contract) per `rules/specs-authority.md` Rule 6 deviation acknowledgement
+    so the runtime can correlate without holding a side-table.
     """
 
     request_id: str

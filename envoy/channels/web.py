@@ -237,15 +237,12 @@ class WebChannelAdapter(ChannelAdapter):
         any prose string into the M2→M3 flow.
         """
         if decision not in _ALLOWED_DECISIONS:
-            # Per /redteam R3 MED-R3-05 closure: truncate attacker-influenced
-            # input to a printable ASCII subset before letting it interpolate
-            # into the error message (reflected-input log defense; even
-            # though `_resolve_pending_decision` does not log directly today,
-            # the WS handler that calls it will).
-            safe_repr = "".join(c for c in decision[:32] if c.isprintable())
+            # CWE-117 defense lives inside `InvalidDecisionError.__init__`
+            # per /redteam R4 M-R4-3 closure (constructor-side truncation
+            # applies to every construction site, not only this one).
             raise InvalidDecisionError(
                 channel_id=_WEB_CHANNEL_ID,
-                decision=safe_repr,
+                decision=decision,
                 allowed=tuple(sorted(_ALLOWED_DECISIONS)),
             )
         fut = self._pending_decisions.get(request_id)
@@ -398,10 +395,12 @@ class WebChannelAdapter(ChannelAdapter):
         """
         self._require_started("render_grant_moment")
         request_id = getattr(request, "request_id", None)
-        if request_id is None:
+        if not request_id:
             # No correlation key — cannot register a pending decision; the
             # runtime guarantees `request_id` is present per spec, so this
-            # is structural defense, not user-input handling.
+            # is structural defense, not user-input handling. Per /redteam
+            # R4 HIGH-R4-2 closure: `if not request_id:` rejects BOTH `None`
+            # AND `""` (the CLI sibling at cli.py uses the same form).
             raise ValueError("GrantMomentRequest is missing request_id; cannot dispatch.")
         # H-03 binding via the canonical `GrantMomentRequest` discriminators
         # per /redteam R3 HIGH-R3-1 closure: the pre-R3 check read a

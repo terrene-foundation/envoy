@@ -376,12 +376,17 @@ class InvalidDecisionError(ChannelAdapterError):
         allowed: tuple[str, ...],
         message: str | None = None,
     ) -> None:
+        # Per /redteam R4 M-R4-3 closure: sanitize the attacker-influenceable
+        # `decision` string at the constructor BEFORE storing/interpolating
+        # so every future construction site inherits the CWE-117 defense.
+        # Truncate to 32 chars + strip non-printable bytes.
+        safe_decision = "".join(c for c in (decision or "")[:32] if c.isprintable())
         self.channel_id = channel_id
-        self.decision = decision
+        self.decision = safe_decision
         self.allowed = allowed
         if message is None:
             message = (
-                f"{channel_id} received decision {decision!r} which is not in "
+                f"{channel_id} received decision {safe_decision!r} which is not in "
                 f"the allowed vocabulary {allowed}."
             )
         super().__init__(message)

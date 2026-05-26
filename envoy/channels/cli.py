@@ -457,13 +457,20 @@ class CLIChannelAdapter(ChannelAdapter):
             # Render each `ConsequencePreview` field explicitly per
             # /redteam R3 MED-R3-03 closure (avoid bare dataclass repr
             # interpolation that would leak schema-level fields wholesale).
+            # Per /redteam R4 MED-R4-1 closure: render the 4th canonical
+            # field `recipient` too — `specs/grant-moment.md` § Rendering
+            # enumerates "budget, reversibility, recipient, data" as the
+            # 4-field preview shown to the user.
             budget = getattr(consequence, "budget_microdollars", None)
             reversibility = getattr(consequence, "reversibility", "")
+            recipient = getattr(consequence, "recipient", "")
             classification = getattr(consequence, "data_classification", "")
             if budget is not None:
                 lines.append(f"Estimated spend: ${budget / 1_000_000:.4f}")
             if reversibility:
                 lines.append(f"Reversibility: {reversibility}")
+            if recipient:
+                lines.append(f"Recipient: {recipient}")
             if classification:
                 lines.append(f"Data sensitivity: {classification}")
         lines.append("")

@@ -91,7 +91,7 @@ async def send_grant_moment(
     — `request_id` extends the original 4-field shape per `rules/specs-authority.md` Rule 6
     so runtime callers correlate without holding a side-table. `decision` is constrained to
     the `GrantMomentDecision` closed vocabulary
-    (`approve_once | approve_and_author | approve_author | deny | modify`) per `specs/grant-moment.md`
+    (`approve_once | approve_and_author | deny | modify`) per `specs/grant-moment.md`
     § Resolution shape; out-of-vocabulary decisions raise at the adapter boundary.
 
     **Defense-in-depth (H-03 primary-channel binding)**: when `grant.high_stakes is True`,
@@ -260,15 +260,18 @@ The implementation also ships 4 adapter-internal typed errors that are NOT part 
 
 ## Test location
 
-- `tests/integration/channels/test_<channel>_adapter_lifecycle.py` — startup/shutdown idempotency, drain timeout (Tier 2, real channel sandbox where available).
-- `tests/integration/channels/test_<channel>_send_message.py` — send_message timeout, rate-limit, payload-too-large per channel.
-- `tests/integration/channels/test_<channel>_ritual_delivery.py` — send_grant_moment, send_digest, send_posture_review, send_monthly_report (Tier 2).
-- `tests/regression/test_t018_visible_secret_per_channel.py` — T-018 visible-secret rendered every channel.
-- `tests/regression/test_t070_clipboard_autoclear.py` — T-070 30s clipboard auto-clear.
-- `tests/regression/test_t080_tls13_pin.py` — T-080 TLS 1.3 + Foundation cert pin.
-- `tests/regression/test_t023_signal_path_b.py` — T-023 Signal Path B legal gate enforcement.
-- `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routing (NotPrimaryChannelError).
-- Cross-channel: `tests/e2e/test_session_continuity_8_channels.py` — single session resolves Grant Moment from any channel.
+**Shipped today** (Phase 01 channels foundation, PR #42):
+
+- `tests/integration/channels/test_<channel>_adapter_lifecycle.py` — startup/shutdown idempotency, drain timeout (Tier 2, real channel sandbox where available). File-pattern template: `<channel>` ∈ {cli, web, telegram, slack, discord, whatsapp, signal, imessage}. Phase 01 foundation ships `cli` + `web`; Wave-A/B siblings populate the remaining channels.
+- `tests/integration/channels/test_adapter_abc_contract.py` — ABC method-signature parity with spec § Adapter contract; Phase-02 ritual surfaces inherit `PhaseDeferredError`.
+- `tests/integration/channels/test_redteam_r{1,2,3}_closures.py` — /redteam round closure pins for the foundation shard.
+- `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routing (`NotPrimaryChannelError`).
+
+**Forward-declared for Wave-A/B sibling shards** (per `rules/spec-accuracy.md` Rule 4 work trackers extracted to `workspaces/phase-01-mvp/todos/active/wave-4-channels-regression-tests.md`):
+
+- `test_<channel>_send_message.py` — send_message timeout, rate-limit, payload-too-large per channel (Wave-A: TG/Slack/Discord; Wave-B: caveated).
+- `test_<channel>_ritual_delivery.py` — `send_grant_moment` / `send_digest` per channel.
+- T-018 visible-secret rendered every channel; T-070 clipboard auto-clear; T-080 TLS 1.3 + cert pin; T-023 Signal Path B; cross-channel session continuity (EC-7).
 
 ## Open questions
 
