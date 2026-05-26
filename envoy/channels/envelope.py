@@ -1,6 +1,6 @@
 """envoy.channels.envelope — frozen dataclasses for the adapter contract.
 
-Implements `specs/channel-adapters.md` § Message envelope (lines 148-159) and
+Implements `specs/channel-adapters.md` § Message envelope and
 § `ChannelCapabilities` (lines 132-143) verbatim. Every concrete adapter
 returns and accepts only these shapes; per-channel wire formats translate at
 the adapter boundary.
@@ -69,7 +69,7 @@ class ChannelCapabilities:
 
 @dataclass(frozen=True, slots=True)
 class RateLimitStatus:
-    """Result of `ChannelAdapter.rate_limit_status()` per spec lines 124-129.
+    """Result of `ChannelAdapter.rate_limit_status()` per spec § Capabilities + observability.
 
     Soft warning at 80% utilisation flips `soft_quota_warning=True`. The hard
     quota path raises `RateLimitExceededError` from `send_*` methods.
@@ -129,7 +129,7 @@ class GrantMomentPayload:
 
 @dataclass(frozen=True, slots=True)
 class GrantMomentReceipt:
-    """Wire-shape return of `send_grant_moment` (spec lines 78-79).
+    """Wire-shape return of `send_grant_moment` (spec § Ritual delivery).
 
     `decision` is the option from `GrantMomentPayload.decision_options` the
     user picked (constrained to the `GrantMomentDecision` closed vocabulary);
@@ -137,7 +137,7 @@ class GrantMomentReceipt:
     SHA-256 of session cookie; messaging: per-vendor callback nonce verified
     by the WebhookSigner).
 
-    `request_id` extends the spec's 4-field shape (lines 78-79) by one field
+    `request_id` extends the spec's 4-field shape (§ Ritual delivery) by one field
     — the original-request correlation token. The extension is documented
     inline in `specs/channel-adapters.md` § Ritual delivery (Phase 01 surface
     contract) per `rules/specs-authority.md` Rule 6 deviation acknowledgement
@@ -169,7 +169,7 @@ class SendReceipt:
 
 @dataclass(frozen=True, slots=True)
 class InboundMessage:
-    """8-field envelope per spec § Message envelope (lines 148-159).
+    """8-field envelope per spec § Message envelope.
 
     `principal_genesis_id` is verified at the adapter boundary (the adapter
     refuses messages whose claimed sender does not match the bound bot's
