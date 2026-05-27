@@ -444,6 +444,14 @@ class DiscordChannelAdapter(ChannelAdapter):
         # enforce on the payload-level discriminator.
         must_be_primary = primary_only or grant.high_stakes
         if must_be_primary and self._config.primary_channel_id != _DISCORD_CHANNEL_ID:
+            logger.warning(
+                "channel.send_grant_moment.not_primary_channel",
+                extra={
+                    "channel_id": _DISCORD_CHANNEL_ID,
+                    "primary_channel_id": self._config.primary_channel_id,
+                    "request_id": grant.request_id,
+                },
+            )
             raise NotPrimaryChannelError(
                 channel_id=_DISCORD_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
@@ -451,6 +459,13 @@ class DiscordChannelAdapter(ChannelAdapter):
 
         # Guard: empty target_principal_id is always a caller error.
         if not target_principal_id or not target_principal_id.strip():
+            logger.warning(
+                "channel.send_grant_moment.principal_not_found",
+                extra={
+                    "channel_id": _DISCORD_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                },
+            )
             raise PrincipalNotFoundError(
                 channel_id=_DISCORD_CHANNEL_ID,
                 target_principal_id=target_principal_id,

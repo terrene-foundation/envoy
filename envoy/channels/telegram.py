@@ -468,6 +468,13 @@ class TelegramChannelAdapter(ChannelAdapter):
                 retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
             )
         if not target_principal_id or not target_principal_id.strip():
+            logger.warning(
+                "channel.send_grant_moment.principal_not_found",
+                extra={
+                    "channel_id": _TELEGRAM_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                },
+            )
             raise PrincipalNotFoundError(
                 channel_id=_TELEGRAM_CHANNEL_ID,
                 target_principal_id=target_principal_id,
@@ -477,6 +484,14 @@ class TelegramChannelAdapter(ChannelAdapter):
         # INV-4: defense-in-depth — enforce even when primary_only=False.
         must_be_primary = primary_only or grant.high_stakes
         if must_be_primary and self._primary_channel_id != _TELEGRAM_CHANNEL_ID:
+            logger.warning(
+                "channel.send_grant_moment.not_primary_channel",
+                extra={
+                    "channel_id": _TELEGRAM_CHANNEL_ID,
+                    "primary_channel_id": self._primary_channel_id,
+                    "request_id": grant.request_id,
+                },
+            )
             raise NotPrimaryChannelError(
                 channel_id=_TELEGRAM_CHANNEL_ID,
                 primary_channel_id=self._primary_channel_id,
