@@ -150,10 +150,24 @@ def capabilities(self) -> ChannelCapabilities:
 async def rate_limit_status(self) -> RateLimitStatus:
     """
     Returns `RateLimitStatus {requests_remaining, window_resets_at, soft_quota_warning}`.
-    `soft_quota_warning` always False in the current implementation (live utilization tracking not yet wired).
+    `soft_quota_warning` always False in the current implementation.
     Hard quota raises `RateLimitExceededError` from `send_*` methods.
     """
 ```
+
+### Gate ordering invariant (INV-4)
+
+`send_message` and `send_grant_moment` MUST check gates in this order:
+
+1. **Lifecycle guard** — `_require_started(...)` raises `NotStartedError` if adapter not running.
+2. **Principal validation** — raises `PrincipalNotFoundError` if `target_principal_id` is empty/blank. Precedes rate-limit to prevent quota information leakage to callers supplying invalid principal IDs.
+3. **Rate-limit gate** — consults `rate_limit_status()` before every send; raises `RateLimitExceededError` if `requests_remaining == 0` or `soft_quota_warning` is True.
+
+Swapping 2 and 3 is BLOCKED: a caller supplying an invalid principal ID would receive quota information before identity is validated.
+
+### Pending-decision isolation
+
+`send_grant_moment` writes one `asyncio.Future` (or `asyncio.Queue` for queue-based adapters) per `request_id` into `_pending_decisions` at call entry via `_register_pending`. The entry is removed in a `finally` block regardless of outcome (timeout, cancellation, or decision). Each call gets a fresh Future/Queue — concurrent calls for different `request_id` values are fully isolated and do not share state.
 
 ## `ChannelCapabilities`
 
@@ -221,7 +235,7 @@ High-stakes Grant Moments (above Financial/Communication threshold) render + app
 
 TLS 1.3 minimum. Certificate pinning for Foundation endpoints. Standard OS trust store for third-party channels.
 
-Discord `webhook_url` is SSRF-guarded at `startup()` via `_validate_webhook_url_ssrf` (`envoy/channels/discord.py`): rejects loopback (`127.0.0.0/8`, `::1/128`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local, IMDS (`169.254.169.254`), IPv6-mapped IPv4 (`::ffff:0.0.0.0/96`), and decimal-/hex-/octal-encoded literal IPs (e.g. `2130706433`, `0x7f000001`, `0177.0.0.1`). Failure raises `ChannelTransportError`.
+Discord `webhook_url` is SSRF-guarded at `startup()` via `_validate_webhook_url_ssrf` (`envoy/channels/discord.py`): rejects loopback (`127.0.0.0/8`, `::1/128`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` IPv6 ULA), link-local, RFC 1122 "this-network" (`0.0.0.0/8`), IMDS (`169.254.169.254`), IPv6-mapped IPv4 (`::ffff:0.0.0.0/96`), and numeric-encoded literal IPs in decimal (`2130706433`), hex-integer (`0x7f000001`), dotted-hex (`0x7f.0.0.1`), and octal-dotted (`0177.0.0.1`) forms. Hostname-level blocklist additionally rejects `localhost`, `metadata.google.internal`, `metadata.internal`, `169.254.169.254`, `fd00::ec2:254`, `::1`, `0.0.0.0`, `[::]`. Failure raises `ChannelTransportError`.
 
 ## Error taxonomy
 

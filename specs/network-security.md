@@ -54,7 +54,7 @@ State-actor MITM with stolen CA keys — out of §1.2 scope.
 - specs/foundation-health-heartbeat.md — OHTTP relay uses pinned certs.
 - specs/remote-time-anchor.md — same.
 - specs/distribution.md — installer-level binary signature verification.
-- specs/channel-adapters.md — third-party channel TLS.
+- specs/channel-adapters.md — third-party channel TLS; Discord webhook SSRF guard (`_validate_webhook_url_ssrf`) blocks private/loopback/metadata IPs and hostile-encoded URLs at adapter startup (see § Network security in channel-adapters.md).
 - specs/foundation-ops.md — Foundation endpoint registry + cert pin manifest.
 - specs/threat-model.md — T-080.
 
