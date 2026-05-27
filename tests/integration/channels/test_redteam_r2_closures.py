@@ -452,8 +452,6 @@ async def test_discord_rate_limit_gate_raises_when_quota_zero(
     Guard: the rate-limit check MUST fire before any outbound HTTP attempt,
     ensuring a saturated quota never results in an uncontrolled burst.
     """
-    import io
-
     from envoy.channels import RateLimitExceededError
     from envoy.channels.discord import DiscordChannelAdapter, DiscordChannelConfig
     from envoy.channels.envelope import MessagePayload, RateLimitStatus

@@ -524,7 +524,7 @@ class SlackChannelAdapter(ChannelAdapter):
         if not self._started or self._closed:
             raise NotStartedError(channel_id=_SLACK_CHANNEL_ID, method_name=method_name)
 
-    def _register_pending(self, request_id: str) -> "asyncio.Future[GrantMomentDecision]":
+    def _register_pending(self, request_id: str) -> asyncio.Future[GrantMomentDecision]:
         """Invariant 3: single write-site for pending-decisions state.
 
         Returns the existing ``asyncio.Future[GrantMomentDecision]`` if one is

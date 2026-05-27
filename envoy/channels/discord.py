@@ -44,7 +44,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from envoy.channels._discord_signer import DiscordSigner
