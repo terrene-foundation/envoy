@@ -25,8 +25,8 @@ production call site within ≤5 commits of this module's introduction.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import timezone as _tz
-from typing import Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger

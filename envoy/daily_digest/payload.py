@@ -16,7 +16,7 @@ forward-compatibility envelope.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 # Cross-channel byte-identity (open question 5):
 # receipt_hash = sha256(canonical_dumps(payload_minus_receipt_hash)).
@@ -40,7 +40,7 @@ class DuressBanner:
     """
 
     present: bool
-    shadow_event_ref: Optional[str]  # ledger-entry-id; None if present is False
+    shadow_event_ref: str | None  # ledger-entry-id; None if present is False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,12 +78,12 @@ class DigestPayload:
     digest_id: str  # uuid-v7
     principal_genesis_id: str  # sha256:... routed through format_record_id_for_event
     scheduled_for: str  # iso8601
-    delivered_at: Optional[str]  # iso8601 | None
+    delivered_at: str | None  # iso8601 | None
     channel_id: str
     form: DigestForm
     duress_banner: DuressBanner
     summary: DigestSummary
-    user_reply: Optional[str]
+    user_reply: str | None
     receipt_hash: str  # sha256:... over canonical_dumps(payload-minus-receipt_hash)
 
 

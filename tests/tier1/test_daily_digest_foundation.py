@@ -27,7 +27,7 @@ when no LLM judge is needed.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 from datetime import datetime, timezone
 
 import pytest
@@ -47,7 +47,6 @@ from envoy.daily_digest import (
     RedactedFieldRenderError,
 )
 
-
 # ---------------------------------------------------------------------------
 # § 1 — DigestPayload schema/1.0 invariants
 # ---------------------------------------------------------------------------
@@ -61,7 +60,7 @@ class TestDigestPayloadSchemaInvariants:
         assert is_dataclass(DigestPayload)
         # Frozen dataclasses raise FrozenInstanceError on attribute set.
         payload = _build_payload()
-        with pytest.raises(Exception):  # dataclasses.FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
             payload.digest_id = "mutated"  # type: ignore[misc]
 
     def test_payload_has_exactly_11_fields(self) -> None:

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from envoy.daily_digest.errors import (
     DigestDeliveryFailedError,
@@ -174,7 +174,7 @@ class DailyDigestService:
         pause_state: _PauseProtocol,
         low_engagement: _LowEngagementProtocol,
         duress_reader: _DuressReaderProtocol,
-        schedule_registry: "_ScheduleRegistryProtocol",
+        schedule_registry: _ScheduleRegistryProtocol,
     ) -> None:
         self._scheduler = scheduler
         self._aggregator = aggregator
@@ -450,7 +450,7 @@ class _ScheduleRegistryProtocol(Protocol):
 
     async def list_all(self) -> list[tuple[str, _ScheduleRow]]: ...
 
-    async def get(self, principal_id: str) -> Optional[_ScheduleRow]: ...
+    async def get(self, principal_id: str) -> _ScheduleRow | None: ...
 
     async def set(
         self,

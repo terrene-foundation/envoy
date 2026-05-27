@@ -120,6 +120,22 @@ class EntryEnvelope:
         d["lamport_clock"] = self.lamport_clock.to_dict()
         return d
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EntryEnvelope:
+        """Inverse of `to_dict()` — rehydrate an envelope from its wire shape.
+
+        Used by `EnvoyLedger.query()` (T-04-81) to reconstruct envelopes from
+        the `metadata["_envoy_envelope_v1"]` dicts the audit store returns.
+        Round-trips byte-identically with `to_dict()`: the nested
+        `lamport_clock` dict is rehydrated via `LamportClock.from_dict`; every
+        other field passes through unchanged. `__post_init__` re-validates the
+        envelope shape, so a corrupted persisted dict raises at reconstruction
+        rather than silently producing a malformed envelope.
+        """
+        payload = dict(data)
+        payload["lamport_clock"] = LamportClock.from_dict(payload["lamport_clock"])
+        return cls(**payload)
+
 
 class HashChainBuilder:
     """Pure-function builder that mints an EntryEnvelope from inputs.

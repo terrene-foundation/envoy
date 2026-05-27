@@ -50,7 +50,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from kailash.trust.audit_store import AuditEvent, AuditStoreProtocol
 
@@ -95,7 +95,7 @@ class _KeyManagerProtocol(Protocol):
 
     def has_key(self, key_id: str) -> bool: ...
 
-    def get_public_key(self, key_id: str) -> Optional[str]: ...
+    def get_public_key(self, key_id: str) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +104,8 @@ class VerificationReport:
 
     success: bool
     entries_verified: int
-    failed_entry_index: Optional[int]
-    failure_reason: Optional[str]
+    failed_entry_index: int | None
+    failure_reason: str | None
 
 
 class EnvoyLedger:
@@ -137,7 +137,7 @@ class EnvoyLedger:
         signing_key_id: str,
         device_id: str,
         algorithm_identifier: dict[str, str],
-        tenant_id: Optional[str] = None,
+        tenant_id: str | None = None,
         classification_policy: Any = None,
     ) -> None:
         if not signing_key_id:
@@ -183,7 +183,7 @@ class EnvoyLedger:
         self._lamport_time: int = 0
         self._local_seq: int = 0
         self._last_entry_id: str = _GENESIS_PARENT_HASH
-        self._head: Optional[HeadCommitment] = None
+        self._head: HeadCommitment | None = None
         self._halted: bool = False
 
     # ------------------------------------------------------------------
@@ -203,7 +203,7 @@ class EnvoyLedger:
         *,
         entry_type: str,
         content: dict[str, Any],
-        intent_id: Optional[str] = None,
+        intent_id: str | None = None,
         content_trust_level: str = "system",
     ) -> str:
         """Sign + append a new entry. Returns the new entry_id.
@@ -356,11 +356,112 @@ class EnvoyLedger:
 
         return entry_id
 
-    async def head_commitment(self) -> Optional[HeadCommitment]:
+    async def head_commitment(self) -> HeadCommitment | None:
         """Return the latest signed HeadCommitment, or None if no entries appended."""
         return self._head
 
-    async def export(self) -> "ExportBundle":
+    async def query(
+        self,
+        *,
+        filter: dict[str, Any],
+        since: datetime,
+        until: datetime,
+    ) -> list[EntryEnvelope]:
+        """Return EntryEnvelopes matching `filter` in the `[since, until)` window.
+
+        Per `specs/ledger.md` § Entry types + shard 6 (`01-analysis/
+        06-envoy-ledger-implementation.md` § 5.2) — this is the shard-11 Daily
+        Digest content source. Shard 11 § 5.1 enumerates the entry types the
+        digest reads (post-execution outcomes, refusals, pending grants,
+        planned actions, ritual completions); this method is the single query
+        primitive every digest section uses.
+
+        Filter keys (all optional; AND semantics):
+
+        - ``principal_id``: matches when the inner envelope ``content`` carries
+          a ``principal_id`` equal to the filter value. Post-filtered in-Python
+          because the kailash ``AuditFilter`` surface does not index
+          envelope-content fields.
+        - ``event_type``: single string matching ``envelope.type`` exactly.
+        - ``event_types``: iterable of strings; OR semantics across the set.
+          Mutually exclusive with ``event_type`` — passing both raises
+          ``ValueError``.
+        - ``tenant_id``: matches the ``AuditEvent.tenant_id`` column (this
+          facade populates it from ``self._tenant_id`` at append time).
+
+        Returns a list of ``EntryEnvelope`` sorted ascending by ``sequence``
+        (the same order ``verify_chain()`` walks). Empty list when nothing
+        matches.
+
+        Phase 01 narrow scope: in-process query over the local
+        ``AuditStoreProtocol`` backend; cross-device CRDT merge is Phase 03+.
+        The Phase-01 caller (``LedgerAggregator``) materializes the full window
+        in memory — the ``BACKFILL_HORIZON_DAYS=7`` cap from shard 11 § 3.4
+        bounds query growth.
+        """
+        from kailash.trust.audit_store import AuditFilter
+
+        if not isinstance(filter, dict):
+            raise ValueError(f"filter must be a dict (got {type(filter).__name__!r})")
+        if not isinstance(since, datetime) or not isinstance(until, datetime):
+            raise ValueError("since and until MUST be datetime instances")
+
+        event_type = filter.get("event_type")
+        event_types = filter.get("event_types")
+        if event_type is not None and event_types is not None:
+            raise ValueError(
+                "filter keys 'event_type' and 'event_types' are mutually exclusive",
+            )
+        if event_type is not None:
+            type_set: set[str] | None = {event_type}
+        elif event_types is not None:
+            type_set = set(event_types)
+        else:
+            type_set = None
+
+        principal_id = filter.get("principal_id")
+        tenant_id = filter.get("tenant_id")
+
+        logger.info(
+            "ledger.query.start",
+            extra={
+                "principal_id_prefix": (principal_id[:8] if principal_id else None),
+                "type_filter": sorted(type_set) if type_set else None,
+                "since": since.isoformat(),
+                "until": until.isoformat(),
+            },
+        )
+
+        audit_filter = AuditFilter(since=since, until=until, limit=1_000_000)
+        events = await self._audit_store.query(audit_filter)
+
+        envelopes: list[EntryEnvelope] = []
+        for event in events:
+            envelope_dict = (event.metadata or {}).get(_ENVELOPE_METADATA_KEY)
+            if envelope_dict is None:
+                # Non-envoy events from sibling kailash subsystems — skip.
+                continue
+            if type_set is not None and envelope_dict.get("type") not in type_set:
+                continue
+            if tenant_id is not None and event.tenant_id != tenant_id:
+                continue
+            if principal_id is not None:
+                content = envelope_dict.get("content") or {}
+                if content.get("principal_id") != principal_id:
+                    continue
+            envelopes.append(EntryEnvelope.from_dict(envelope_dict))
+
+        envelopes.sort(key=lambda env: env.sequence)
+        logger.info(
+            "ledger.query.ok",
+            extra={
+                "matched_count": len(envelopes),
+                "scanned_count": len(events),
+            },
+        )
+        return envelopes
+
+    async def export(self) -> ExportBundle:
         """Produce a signed export bundle for the Independent Verifier.
 
         Per `specs/independent-verifier.md` § Bundle wire format + EC-4
