@@ -110,18 +110,26 @@ _SSRF_BLOCKED_HOSTS: frozenset[str] = frozenset(
         "metadata.google.internal",
         "metadata.internal",
         "169.254.169.254",  # AWS / GCP IMDSv1
+        # localhost resolves to 127.0.0.1 via DNS, but the IP-network check fires
+        # at IP-literal-parse time, NOT after DNS resolution — block the hostname
+        # at this layer so DNS rebind / "localhost" doesn't reach the resolver.
+        "localhost",
+        # IPv6 unspecified address — urlparse("https://[::]/") yields hostname="::".
+        # NOT in ::1/128 (loopback), fc00::/7 (ULA), or ::ffff:0.0.0.0/96 (mapped),
+        # so the network check misses it. Block at the hostname layer.
+        "::",
     }
 )
 _SSRF_BLOCKED_NETWORKS = (
-    ipaddress.ip_network("0.0.0.0/8"),         # "this" network (RFC 1122); never a valid dest
-    ipaddress.ip_network("127.0.0.0/8"),       # loopback
-    ipaddress.ip_network("10.0.0.0/8"),        # RFC-1918 private A
-    ipaddress.ip_network("172.16.0.0/12"),     # RFC-1918 private B
-    ipaddress.ip_network("192.168.0.0/16"),    # RFC-1918 private C
-    ipaddress.ip_network("169.254.0.0/16"),    # link-local / IMDS
-    ipaddress.ip_network("::1/128"),           # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA (unique-local; NOT private in RFC-1918 sense)
-    ipaddress.ip_network("::ffff:0.0.0.0/96"), # IPv6-mapped IPv4 (covers ::ffff:127.0.0.1 etc.)
+    ipaddress.ip_network("0.0.0.0/8"),  # "this" network (RFC 1122); never a valid dest
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC-1918 private A
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC-1918 private B
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC-1918 private C
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / IMDS
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA (unique-local; NOT private in RFC-1918 sense)
+    ipaddress.ip_network("::ffff:0.0.0.0/96"),  # IPv6-mapped IPv4 (covers ::ffff:127.0.0.1 etc.)
 )
 
 
@@ -166,9 +174,7 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
             _hostname_for_ip = str(ipaddress.ip_address(int(hostname, 16)))
         except (ValueError, OverflowError):
             _hostname_for_ip = hostname  # fall through to the except below
-    elif "." in hostname and all(
-        c in "0123456789abcdefABCDEFxXoO." for c in hostname
-    ):
+    elif "." in hostname and all(c in "0123456789abcdefABCDEFxXoO." for c in hostname):
         # Potentially octal-dotted or hex-dotted notation.
         # Examples: "0177.0.0.1" == 127.0.0.1 (octal),
         #           "0x7f.0.0.1" == 127.0.0.1 (hex-dotted).
@@ -257,7 +263,9 @@ class DiscordChannelConfig:
     primary_channel_id: str
     application_public_key: str = field(repr=False)  # excluded from repr to avoid leaking in logs
     bot_token: str = field(repr=False)  # excluded from repr to avoid leaking in logs
-    webhook_url: str | None = field(default=None, repr=False)  # contains auth token — excluded from repr
+    webhook_url: str | None = field(
+        default=None, repr=False
+    )  # contains auth token — excluded from repr
 
 
 class DiscordChannelAdapter(ChannelAdapter):
@@ -321,7 +329,10 @@ class DiscordChannelAdapter(ChannelAdapter):
                 credential_kind="bot_token",
                 message="bot_token must not be blank",
             )
-        if not self._config.application_public_key or not self._config.application_public_key.strip():
+        if (
+            not self._config.application_public_key
+            or not self._config.application_public_key.strip()
+        ):
             raise AuthenticationError(
                 channel_id=_DISCORD_CHANNEL_ID,
                 credential_kind="application_public_key",
@@ -818,4 +829,3 @@ class DiscordChannelAdapter(ChannelAdapter):
                 lines.append(f"**Data sensitivity:** {classification}")
         lines.append("")
         return "\n".join(lines)
-

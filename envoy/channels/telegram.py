@@ -287,9 +287,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         config level (mirrors ``DiscordChannelConfig`` and
         ``SlackChannelConfig`` frozen-dataclass pattern).
         """
-        token_hint = (
-            f"{self._secret_token[:4]}***" if self._secret_token else "<unset>"
-        )
+        token_hint = f"{self._secret_token[:4]}***" if self._secret_token else "<unset>"
         return (
             f"TelegramChannelAdapter("
             f"started={self._started!r}, "
@@ -577,25 +575,30 @@ class TelegramChannelAdapter(ChannelAdapter):
                 )
 
         # Wait for the decision to arrive via post_decision().
+        # try/finally guarantees `_pending_grants` cleanup matches the spec
+        # `_register_pending` contract ("entry removed in a `finally` block
+        # regardless of outcome") AND closes the CancelledError leak: a task
+        # cancelled during `response_queue.get()` would otherwise orphan the
+        # request_id in the dict (consuming a ceiling slot indefinitely).
         try:
-            async with asyncio.timeout(timeout_seconds):
-                raw_decision: str = await response_queue.get()
-        except asyncio.TimeoutError as exc:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    raw_decision: str = await response_queue.get()
+            except asyncio.TimeoutError as exc:
+                logger.warning(
+                    "channel.send_grant_moment.expired",
+                    extra={
+                        "channel_id": _TELEGRAM_CHANNEL_ID,
+                        "request_id": grant.request_id,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+                raise GrantMomentExpiredError(
+                    request_id=grant.request_id,
+                    timeout_seconds=timeout_seconds,
+                ) from exc
+        finally:
             self._pending_grants.pop(grant.request_id, None)
-            logger.warning(
-                "channel.send_grant_moment.expired",
-                extra={
-                    "channel_id": _TELEGRAM_CHANNEL_ID,
-                    "request_id": grant.request_id,
-                    "timeout_seconds": timeout_seconds,
-                },
-            )
-            raise GrantMomentExpiredError(
-                request_id=grant.request_id,
-                timeout_seconds=timeout_seconds,
-            ) from exc
-
-        self._pending_grants.pop(grant.request_id, None)
 
         # Shutdown unblocked the queue with the sentinel — treat as expiry so
         # the caller gets a typed error rather than a coerced bogus decision.
