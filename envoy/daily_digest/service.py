@@ -143,6 +143,8 @@ class _LowEngagementProtocol(Protocol):
 
     async def record_open(self, principal_id: str, *, opened_at: datetime) -> None: ...
 
+    async def set_form_preference(self, principal_id: str, *, form: str) -> None: ...
+
 
 class _DuressReaderProtocol(Protocol):
     """Surface implemented by `DuressBannerReader` (T-04-83)."""
@@ -300,6 +302,19 @@ class DailyDigestService:
             reason=reason,
         )
         await self._scheduler.unregister(principal_id)
+
+    async def set_form_preference(self, principal_id: str, *, form: str) -> None:
+        """Persist the user's explicit digest-form choice (spec § Low-engagement).
+
+        The low-engagement advisory OFFERS `compact` OR `event_only`; this is
+        the WRITE half — the user records their choice and the next digest
+        honors it verbatim (overriding the engagement-auto form). Passing
+        `rich` clears the downgrade.
+
+        Routed to the underlying `LowEngagementTracker` so the
+        `select_form`-honored preference is updated atomically.
+        """
+        await self._low_engagement.set_form_preference(principal_id, form=form)
 
     async def resume(self, principal_id: str) -> None:
         """End pause early and re-register the digest schedule.
@@ -546,9 +561,7 @@ def _has_event(summary: Any) -> bool:
     spend = getattr(summary, "spend", {}) or {}
     ceiling = spend.get("monthly_ceiling_microdollars", 0)
     current = spend.get("current_microdollars", 0)
-    if ceiling > 0 and current / ceiling > _EVENT_ONLY_BUDGET_RATIO:
-        return True
-    return False
+    return ceiling > 0 and current / ceiling > _EVENT_ONLY_BUDGET_RATIO
 
 
 __all__ = [

@@ -123,13 +123,25 @@ class TestDuressBannerReader:
 class TestDigestCliSurface:
     """AST-style surface lock — command names + option presence are contract."""
 
-    def test_group_exposes_four_subcommands(self) -> None:
+    def test_group_exposes_five_subcommands(self) -> None:
         assert set(digest_group.commands.keys()) == {
             "today",
             "pause",
             "resume",
             "schedule",
+            "form",
         }
+
+    def test_form_rejects_unknown_value(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(digest_group, ["form", "--set", "weird", "--principal", "x@y"])
+        # click Choice rejects values outside the allowlist.
+        assert result.exit_code != 0
+
+    def test_form_requires_set(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(digest_group, ["form", "--principal", "x@y"])
+        assert result.exit_code != 0
 
     def test_schedule_rejects_out_of_range_hour(self) -> None:
         runner = CliRunner()

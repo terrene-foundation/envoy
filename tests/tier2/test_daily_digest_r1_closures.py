@@ -260,6 +260,24 @@ class TestEventOnlyForm:
             await trust_store.close()
 
     @pytest.mark.asyncio
+    async def test_service_set_form_preference_routes_through(self, vault_path) -> None:
+        """The CLI's write-half — `envoy digest form` routes through here.
+
+        Closes R2 MED-1: the orphan write-path. The service's
+        `set_form_preference` is the production call site the CLI invokes; this
+        verifies the write persists and `select_form` honors it on the next read.
+        """
+        service, ledger, adapter, trust_store = await _build(vault_path)
+        try:
+            # Manual write through the service facade.
+            await service.set_form_preference(_PID, form="event_only")
+            # Read-back via the engagement tracker's auto-honored path.
+            tracker = LowEngagementTracker(trust_store=trust_store)
+            assert await tracker.select_form(_PID, now=_NOW) == "event_only"
+        finally:
+            await trust_store.close()
+
+    @pytest.mark.asyncio
     async def test_event_only_manual_today_always_delivers(self, vault_path) -> None:
         service, ledger, adapter, trust_store = await _build(vault_path)
         try:

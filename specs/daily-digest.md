@@ -28,6 +28,11 @@ Actions (with outbox items), refusals, spend (of monthly ceiling), pending Grant
 
 <2 Digest opens/week for 3 weeks → offer 3-line compact form or event-driven-only delivery (fires on Grant Moment pending or budget > 80%).
 
+The user's selection persists (Trust-store-backed) and overrides the
+engagement-auto form on every subsequent digest until they pick `rich` again.
+Selection surface: `envoy digest form --set rich|compact|event_only` (or the
+inbound channel adapter's reply-parser when a digest channel ships one).
+
 ## Channel-adaptive rendering
 
 Email/Web: rich format + attachments. Telegram/Slack/Discord: inline buttons. SMS/WhatsApp: compact 10-line. CLI: on `envoy digest today`.

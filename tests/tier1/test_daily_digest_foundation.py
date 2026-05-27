@@ -356,7 +356,7 @@ class TestFoundationLOCInvariant:
             "errors.py": 100,
             "payload.py": 120,
             "scheduler.py": 260,
-            "service.py": 560,
+            "service.py": 620,
         }
         for fname, cap in caps.items():
             path = pkg / fname
@@ -516,6 +516,9 @@ class _StubLowEngagement:
         return "rich"
 
     async def record_open(self, principal_id: str, *, opened_at: datetime) -> None:
+        return None
+
+    async def set_form_preference(self, principal_id: str, *, form: str) -> None:
         return None
 
 

@@ -190,4 +190,49 @@ def digest_schedule(hour: int, timezone: str, principal: str | None, vault: str 
     asyncio.run(_run())
 
 
+@digest.command("form")
+@click.option(
+    "--set",
+    "form",
+    required=True,
+    type=click.Choice(["rich", "compact", "event_only"], case_sensitive=True),
+    help="Form to deliver (rich | compact | event_only).",
+)
+@click.option("--principal", default=None, help="Principal id (or ENVOY_PRINCIPAL_ID).")
+@click.option("--vault", default=None, help="Trust vault path (or ENVOY_VAULT_PATH).")
+def digest_form(form: str, principal: str | None, vault: str | None) -> None:
+    """Pick the digest form after a low-engagement offer.
+
+    Per `specs/daily-digest.md` § Low-engagement fallback, after the
+    fewer-than-2-opens-per-week advisory, the user picks one of:
+
+    - ``rich``       — full digest (clears any downgrade).
+    - ``compact``    — 3-line headline form.
+    - ``event_only`` — fires ONLY on a pending Grant Moment or budget > 80%.
+
+    The selection persists across digests and overrides the engagement-auto
+    form.
+    """
+    pid = _resolve_principal(principal)
+    vault_path = _resolve_vault(vault)
+
+    async def _run() -> None:
+        from envoy.daily_digest.bootstrap import build_digest_service
+
+        service, trust_store, _channels = await build_digest_service(
+            vault_path=vault_path, principal_id=pid
+        )
+        try:
+            await service.set_form_preference(pid, form=form)
+            click.echo(f"Digest form preference set to {form!r}.")
+        finally:
+            await trust_store.close()
+
+    logger.info(
+        "envoy.digest.form.start",
+        extra={"principal_id_prefix": pid[:8], "form": form},
+    )
+    asyncio.run(_run())
+
+
 __all__ = ["digest"]
