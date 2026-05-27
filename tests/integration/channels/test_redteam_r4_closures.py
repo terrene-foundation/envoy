@@ -396,3 +396,228 @@ def test_discord_send_grant_moment_cancelled_error_converts() -> None:
         "discord.py send_grant_moment: CancelledError handler does not raise "
         "GrantMomentExpiredError (R4 H-2 — shutdown contract violated)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Slack R4 closures — M-2 (INV-4 gate ordering) + H-2 (CancelledError)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_slack_send_message_principal_check_precedes_rate_limit() -> None:
+    """AST probe: slack.py send_message — PrincipalNotFound guard appears before
+    the rate_limit_status() call (R4 M-2 / INV-4 gate ordering).
+
+    This is a structural probe: walk the AST of send_message and verify that the
+    first PrincipalNotFoundError raise appears at a lower line number than the
+    first rate_limit_status() call.  Probe-driven, not lexical.
+    """
+    src = pathlib.Path("envoy/channels/slack.py").read_text()
+    tree = ast.parse(src)
+
+    # Locate send_message method
+    sm_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "send_message":
+            sm_node = node
+            break
+
+    assert sm_node is not None, "send_message not found in slack.py"
+
+    principal_not_found_line: int | None = None
+    rate_limit_call_line: int | None = None
+
+    for node in ast.walk(sm_node):
+        # Detect raise PrincipalNotFoundError(...)
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            exc = node.exc
+            if isinstance(exc, ast.Call):
+                func = exc.func
+                name = (
+                    func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == "PrincipalNotFoundError" and principal_not_found_line is None:
+                    principal_not_found_line = node.lineno
+
+        # Detect self.rate_limit_status() call
+        if isinstance(node, ast.Await):
+            val = node.value
+            if isinstance(val, ast.Call):
+                func = val.func
+                if isinstance(func, ast.Attribute) and func.attr == "rate_limit_status":
+                    if rate_limit_call_line is None:
+                        rate_limit_call_line = node.lineno
+
+    assert principal_not_found_line is not None, (
+        "slack.py send_message: no PrincipalNotFoundError raise found "
+        "(R4 M-2 — INV-4 gate ordering requires PrincipalNotFound check)"
+    )
+    assert rate_limit_call_line is not None, (
+        "slack.py send_message: no rate_limit_status() call found "
+        "(R4 M-2 — rate-limit gate must follow PrincipalNotFound check)"
+    )
+    assert principal_not_found_line < rate_limit_call_line, (
+        f"slack.py send_message: PrincipalNotFoundError raise (line "
+        f"{principal_not_found_line}) is NOT before rate_limit_status() call "
+        f"(line {rate_limit_call_line}) — INV-4 gate ordering violated "
+        f"(R4 M-2 closure)"
+    )
+
+
+@pytest.mark.regression
+def test_slack_send_grant_moment_cancelled_error_converts() -> None:
+    """AST probe: slack.py send_grant_moment — asyncio.CancelledError handler
+    raises GrantMomentExpiredError (R4 H-2 — shutdown contract).
+
+    Mirrors the discord.py probe pattern.  Structural, not lexical.
+    """
+    src = pathlib.Path("envoy/channels/slack.py").read_text()
+    tree = ast.parse(src)
+
+    # Locate send_grant_moment method
+    sgm_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "send_grant_moment":
+            sgm_node = node
+            break
+
+    assert sgm_node is not None, "send_grant_moment not found in slack.py"
+
+    found_cancelled_handler = False
+    found_grant_expired_raise = False
+
+    for node in ast.walk(sgm_node):
+        if isinstance(node, ast.ExceptHandler):
+            handler_type = node.type
+            catches_cancelled = False
+            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError":
+                catches_cancelled = True
+            elif isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
+                catches_cancelled = True
+
+            if catches_cancelled:
+                found_cancelled_handler = True
+                for stmt in ast.walk(node):
+                    if isinstance(stmt, ast.Raise) and stmt.exc is not None:
+                        exc = stmt.exc
+                        if isinstance(exc, ast.Call):
+                            func = exc.func
+                            name = (
+                                func.id if isinstance(func, ast.Name)
+                                else func.attr if isinstance(func, ast.Attribute)
+                                else None
+                            )
+                            if name == "GrantMomentExpiredError":
+                                found_grant_expired_raise = True
+
+    assert found_cancelled_handler, (
+        "slack.py send_grant_moment: no except CancelledError handler found "
+        "(R4 H-2 — CancelledError must convert to GrantMomentExpiredError)"
+    )
+    assert found_grant_expired_raise, (
+        "slack.py send_grant_moment: CancelledError handler does not raise "
+        "GrantMomentExpiredError (R4 H-2 — shutdown contract violated)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Telegram R4 closures — M-2 (INV-4 gate ordering) + L-6 (sentinel `is` comment)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_telegram_send_message_principal_check_precedes_rate_limit() -> None:
+    """AST probe: telegram.py send_message — PrincipalNotFound guard appears before
+    the rate_limit_status() call (R4 M-2 / INV-4 gate ordering).
+
+    Structural probe — same pattern as slack.py equivalent above.
+    """
+    src = pathlib.Path("envoy/channels/telegram.py").read_text()
+    tree = ast.parse(src)
+
+    # Locate send_message method
+    sm_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "send_message":
+            sm_node = node
+            break
+
+    assert sm_node is not None, "send_message not found in telegram.py"
+
+    principal_not_found_line: int | None = None
+    rate_limit_call_line: int | None = None
+
+    for node in ast.walk(sm_node):
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            exc = node.exc
+            if isinstance(exc, ast.Call):
+                func = exc.func
+                name = (
+                    func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == "PrincipalNotFoundError" and principal_not_found_line is None:
+                    principal_not_found_line = node.lineno
+
+        if isinstance(node, ast.Await):
+            val = node.value
+            if isinstance(val, ast.Call):
+                func = val.func
+                if isinstance(func, ast.Attribute) and func.attr == "rate_limit_status":
+                    if rate_limit_call_line is None:
+                        rate_limit_call_line = node.lineno
+
+    assert principal_not_found_line is not None, (
+        "telegram.py send_message: no PrincipalNotFoundError raise found "
+        "(R4 M-2 — INV-4 gate ordering requires PrincipalNotFound check)"
+    )
+    assert rate_limit_call_line is not None, (
+        "telegram.py send_message: no rate_limit_status() call found "
+        "(R4 M-2 — rate-limit gate must follow PrincipalNotFound check)"
+    )
+    assert principal_not_found_line < rate_limit_call_line, (
+        f"telegram.py send_message: PrincipalNotFoundError raise (line "
+        f"{principal_not_found_line}) is NOT before rate_limit_status() call "
+        f"(line {rate_limit_call_line}) — INV-4 gate ordering violated "
+        f"(R4 M-2 closure)"
+    )
+
+
+@pytest.mark.regression
+def test_telegram_shutdown_sentinel_is_comparison_comment() -> None:
+    """Structural probe: telegram.py _SHUTDOWN_SENTINEL — the ``is`` comparison
+    at the shutdown-sentinel check site has an explanatory comment citing that
+    the sentinel is a module-level singleton used only in-process (R4 L-6).
+
+    Uses inspect.getsource to verify the comment text appears near the ``is``
+    comparison.  Structural probe: checks source-text proximity, not semantics.
+    """
+    import inspect
+    import importlib
+    mod = importlib.import_module("envoy.channels.telegram")
+    src = inspect.getsource(mod)
+
+    # Find the block around the sentinel ``is`` comparison.
+    # The comment must mention in-process nature and singleton / identity.
+    assert "is _SHUTDOWN_SENTINEL" in src, (
+        "telegram.py: `is _SHUTDOWN_SENTINEL` comparison not found "
+        "(R4 L-6 sentinel probe)"
+    )
+
+    # Structural: the source around the sentinel check must contain the
+    # in-process + identity explanation comment.
+    # We look for key phrases that the L-6 comment must contain.
+    sentinel_idx = src.index("is _SHUTDOWN_SENTINEL")
+    # Check within a 600-char window preceding the line for the comment block.
+    window = src[max(0, sentinel_idx - 600): sentinel_idx + 50]
+    has_inprocess = "in-process" in window or "in process" in window
+    has_identity = "identity" in window or "singleton" in window or "module-level" in window
+    assert has_inprocess and has_identity, (
+        "telegram.py: the `is _SHUTDOWN_SENTINEL` comparison lacks an "
+        "explanatory comment citing in-process-only / singleton identity "
+        "(R4 L-6 — reviewer LOW: missing rationale for `is` comparison). "
+        f"Window: {window!r}"
+    )

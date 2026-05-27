@@ -249,18 +249,21 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 10,
     ) -> SendReceipt:
         self._require_started("send_message")
+        # INV-4: PrincipalNotFound gate MUST precede rate-limit gate.
+        # Checking rate-limit first would reveal quota information to callers
+        # supplying invalid principal IDs before identity is validated.
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_SLACK_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
         # H-05: rate-limit gate — consult rate_limit_status before every send.
         rl = await self.rate_limit_status()
         if rl.requests_remaining == 0 or rl.soft_quota_warning:
             raise RateLimitExceededError(
                 channel_id=_SLACK_CHANNEL_ID,
                 retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
-            )
-        if not target_principal_id or not target_principal_id.strip():
-            raise PrincipalNotFoundError(
-                channel_id=_SLACK_CHANNEL_ID,
-                target_principal_id=target_principal_id,
-                message="target_principal_id must be non-empty",
             )
         if len(payload.body) > _SLACK_MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
@@ -405,9 +408,19 @@ class SlackChannelAdapter(ChannelAdapter):
                 request_id=grant.request_id,
                 timeout_seconds=timeout_seconds,
             ) from exc
-        except asyncio.CancelledError:
-            self._pending_decisions.pop(grant.request_id, None)
-            raise
+        except asyncio.CancelledError as exc:
+            logger.warning(
+                "channel.send_grant_moment.cancelled",
+                extra={
+                    "channel_id": _SLACK_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+            raise GrantMomentExpiredError(
+                request_id=grant.request_id,
+                timeout_seconds=timeout_seconds,
+            ) from exc
         finally:
             self._pending_decisions.pop(grant.request_id, None)
 

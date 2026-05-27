@@ -385,18 +385,21 @@ class TelegramChannelAdapter(ChannelAdapter):
             If the underlying send callable does not complete in time.
         """
         self._require_started("send_message")
+        # INV-4: PrincipalNotFound gate MUST precede rate-limit gate.
+        # Checking rate-limit first would reveal quota information to callers
+        # supplying invalid principal IDs before identity is validated.
+        if not target_principal_id or not target_principal_id.strip():
+            raise PrincipalNotFoundError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must be non-empty",
+            )
         # H-05: rate-limit gate — consult rate_limit_status before every send.
         rl = await self.rate_limit_status()
         if rl.requests_remaining == 0 or rl.soft_quota_warning:
             raise RateLimitExceededError(
                 channel_id=_TELEGRAM_CHANNEL_ID,
                 retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
-            )
-        if not target_principal_id or not target_principal_id.strip():
-            raise PrincipalNotFoundError(
-                channel_id=_TELEGRAM_CHANNEL_ID,
-                target_principal_id=target_principal_id,
-                message="target_principal_id must be non-empty",
             )
 
         if len(payload.body) > _MAX_MESSAGE_LENGTH:
@@ -596,6 +599,10 @@ class TelegramChannelAdapter(ChannelAdapter):
 
         # Shutdown unblocked the queue with the sentinel — treat as expiry so
         # the caller gets a typed error rather than a coerced bogus decision.
+        # ``is`` identity comparison is correct here: _SHUTDOWN_SENTINEL is a
+        # module-level singleton and this queue is in-process only.  It is
+        # never serialised, pickled, or shared across process boundaries, so
+        # object identity is preserved and the ``is`` check is reliable.
         if raw_decision is _SHUTDOWN_SENTINEL:
             logger.warning(
                 "channel.send_grant_moment.shutdown_cancelled",
