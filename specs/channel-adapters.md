@@ -34,6 +34,10 @@ async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
     Drain pending sends, close transports.
     Timeout: drain_timeout_seconds (default 5s); after timeout, force-close.
     Idempotent: calling on already-shutdown adapter is a no-op.
+    Pending in-flight grant moment coroutines are cancelled: Future-based adapters
+    (Web, Slack, Discord) call `.cancel()` on each pending Future; queue-based
+    adapters (Telegram) push a shutdown sentinel into each pending queue. Awaiting
+    `send_grant_moment` calls raise `GrantMomentExpiredError`.
     """
 ```
 
@@ -146,7 +150,7 @@ def capabilities(self) -> ChannelCapabilities:
 async def rate_limit_status(self) -> RateLimitStatus:
     """
     Returns `RateLimitStatus {requests_remaining, window_resets_at, soft_quota_warning}`.
-    Soft warning at 80% utilization → `soft_quota_warning=True`.
+    `soft_quota_warning` always False in the current implementation (live utilization tracking not yet wired).
     Hard quota raises `RateLimitExceededError` from `send_*` methods.
     """
 ```
@@ -183,16 +187,16 @@ class InboundMessage:
 
 ## Phase 01 surfaces (8)
 
-| Channel                | Credentials              | Compliance                                | Phase 01 ship |
-| ---------------------- | ------------------------ | ----------------------------------------- | ------------- |
-| CLI                    | none                     | N/A                                       | Yes           |
-| Web                    | localhost bind           | N/A                                       | Yes           |
-| Telegram               | bot token + webhook secret_token (outbound uses injected send_fn; `send_fn=None` is test-only) | Clean (official bot API)                  | Yes           |
-| Slack                  | bot token + OAuth        | Clean (App Directory)                     | Yes           |
-| Discord                | bot token                | Clean (Dev Terms)                         | Yes           |
-| WhatsApp               | WhatsApp Business API    | Paid tier; Foundation gateway OR user-own | Yes (caveat)  |
-| Signal                 | signal-cli OR Group Link | Phase 01 legal gate (Path B default)      | Yes (Path B)  |
-| iMessage (BlueBubbles) | user-owned Mac           | Apple ToS grey; user responsibility       | Yes (caveat)  |
+| Channel                | Credentials                                                               | Compliance                                | Phase 01 ship                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| CLI                    | none                                                                      | N/A                                       | Yes                                                                                                          |
+| Web                    | localhost bind                                                            | N/A                                       | Yes                                                                                                          |
+| Telegram               | webhook `secret_token` + injected `send_fn` (`send_fn=None` is test-only) | Clean (official bot API)                  | Yes                                                                                                          |
+| Slack                  | bot token + OAuth + signing_secret                                        | Clean (App Directory)                     | Yes                                                                                                          |
+| Discord                | bot token + Ed25519 application_public_key + webhook_url (SSRF-guarded)   | Clean (Dev Terms)                         | Yes (adapter + signature + ritual; outbound raises `ChannelTransportError` until Phase 02 wires native HTTP) |
+| WhatsApp               | WhatsApp Business API                                                     | Paid tier; Foundation gateway OR user-own | Yes (caveat)                                                                                                 |
+| Signal                 | signal-cli OR Group Link                                                  | Phase 01 legal gate (Path B default)      | Yes (Path B)                                                                                                 |
+| iMessage (BlueBubbles) | user-owned Mac                                                            | Apple ToS grey; user responsibility       | Yes (caveat)                                                                                                 |
 
 ## Phase 04 surfaces (17+)
 
@@ -216,6 +220,8 @@ High-stakes Grant Moments (above Financial/Communication threshold) render + app
 ## Network security (T-080)
 
 TLS 1.3 minimum. Certificate pinning for Foundation endpoints. Standard OS trust store for third-party channels.
+
+Discord `webhook_url` is SSRF-guarded at `startup()` via `_validate_webhook_url_ssrf` (`envoy/channels/discord.py`): rejects loopback (`127.0.0.0/8`, `::1/128`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local, IMDS (`169.254.169.254`), IPv6-mapped IPv4 (`::ffff:0.0.0.0/96`), and decimal-/hex-/octal-encoded literal IPs (e.g. `2130706433`, `0x7f000001`, `0177.0.0.1`). Failure raises `ChannelTransportError`.
 
 ## Error taxonomy
 
