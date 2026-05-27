@@ -529,7 +529,9 @@ class TestTelegramInvariantPins:
         3. Confirming ``post_decision`` does NOT write to ``_pending_grants``;
            it only reads from it.
         """
-        adapter = TelegramChannelAdapter(primary_channel_id="telegram")
+        adapter = TelegramChannelAdapter(
+            primary_channel_id="telegram", secret_token="test-secret"
+        )
 
         # At construction, no pending grants.
         assert len(adapter._pending_grants) == 0, (

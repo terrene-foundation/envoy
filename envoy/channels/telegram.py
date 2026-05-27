@@ -165,6 +165,15 @@ class TelegramChannelAdapter(ChannelAdapter):
         send_timeout: int = _DEFAULT_SEND_TIMEOUT,
         secret_token: str = "",
     ) -> None:
+        # M-7: validate secret_token at construction time so callers fail
+        # early (before startup()) when blank credentials are supplied.
+        # startup() also validates so config-dict overrides are also checked.
+        if not secret_token or not secret_token.strip():
+            raise AuthenticationError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                credential_kind="secret_token",
+                message="secret_token must be non-empty",
+            )
         self._primary_channel_id = primary_channel_id
         self._send_fn = send_fn
         self._inbound_queue: asyncio.Queue[InboundMessage] | None = inbound_queue
@@ -289,6 +298,10 @@ class TelegramChannelAdapter(ChannelAdapter):
         deserialization.  Overflows are silently dropped (with a WARN log and
         an ``OverflowDropEvent``) rather than raising.
         """
+        # M-10: guard against pre-startup calls.  The inbound queue is None
+        # until startup() initialises it; callers that enqueue before starting
+        # the adapter have a lifecycle bug — NotStartedError makes this loud.
+        self._require_started("enqueue")
         if self._inbound_queue is None:
             return
         try:
