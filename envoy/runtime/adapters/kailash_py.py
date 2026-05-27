@@ -45,7 +45,7 @@ The actual kailash signatures discovered via inspect were:
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from envoy.envelope.canonical_bytes import canonical_bytes
 from envoy.runtime.errors import Phase02SubstrateNotWiredError
@@ -59,7 +59,9 @@ logger = logging.getLogger(__name__)
 # carve-out — actively tracked.
 _TODO_WAVE_2 = "workspaces/phase-01-mvp/todos/active/02-wave-2-grant-moment.md"
 _TODO_WAVE_3 = "workspaces/phase-01-mvp/todos/active/03-wave-3-classifier-ensemble.md"
-_TODO_WAVE_4 = "workspaces/phase-01-mvp/todos/active/04-wave-4-budget-velocity.md"
+# Wave-4 BudgetTracker is now WIRED (shard 12 — envoy.budget.BudgetRuntimeAdapter);
+# the former _TODO_WAVE_4 anchor was removed when the four budget_* methods began
+# delegating to the orchestrator instead of raising Phase02SubstrateNotWiredError.
 _TODO_PHASE_02 = "workspaces/phase-02-trust-plane/ (not yet authored)"
 
 
@@ -80,17 +82,19 @@ class KailashPyRuntime:
     def __init__(
         self,
         *,
-        device_signing_private_key_hex: Optional[str] = None,
-        device_signing_public_key_hex: Optional[str] = None,
+        device_signing_private_key_hex: str | None = None,
+        device_signing_public_key_hex: str | None = None,
         envoy_ledger: Any = None,
         trust_store: Any = None,
+        budget_adapter: Any = None,
         runtime_version: str = "envoy-runtime-kailash-py/0.1.0",
-        algorithm_identifier: Optional[dict[str, str]] = None,
+        algorithm_identifier: dict[str, str] | None = None,
     ) -> None:
         self._device_priv_hex = device_signing_private_key_hex
         self._device_pub_hex = device_signing_public_key_hex
         self._envoy_ledger = envoy_ledger
         self._trust_store = trust_store
+        self._budget_adapter = budget_adapter
         self._runtime_version = runtime_version
         self._algorithm_identifier = (
             dict(algorithm_identifier)
@@ -382,25 +386,52 @@ class KailashPyRuntime:
     # ------------------------------------------------------------------
 
     def budget_reserve(self, session: Any, cost: int) -> Any:
-        raise Phase02SubstrateNotWiredError(
-            "budget_reserve: requires Wave-4 BudgetTracker; " f"tracked at {_TODO_WAVE_4}"
-        )
+        """Forward to `BudgetRuntimeAdapter.budget_reserve`; return ReservationID.
+
+        Wired in Wave-4 (shard 12): the `envoy.budget` multi-window
+        orchestrator backs the runtime budget surface. When `budget_adapter`
+        was not supplied at construction, raise the typed error pointing to
+        the wiring kwarg (the orchestrator needs the session's envelope
+        ceilings, supplied when the session is constructed).
+        """
+        if self._budget_adapter is None:
+            raise Phase02SubstrateNotWiredError(
+                "budget_reserve: requires an envoy.budget.BudgetRuntimeAdapter; "
+                "pass `budget_adapter=` to KailashPyRuntime(...) constructed from "
+                "the session's EffectiveEnvelope.financial ceilings"
+            )
+        return self._budget_adapter.budget_reserve(session, cost)
 
     def budget_record(self, reservation: Any, actual: int) -> None:
-        raise Phase02SubstrateNotWiredError(
-            "budget_record: requires Wave-4 BudgetTracker; " f"tracked at {_TODO_WAVE_4}"
-        )
+        """Forward to `BudgetRuntimeAdapter.budget_record` (finalize the reserve)."""
+        if self._budget_adapter is None:
+            raise Phase02SubstrateNotWiredError(
+                "budget_record: requires an envoy.budget.BudgetRuntimeAdapter; "
+                "pass `budget_adapter=` to KailashPyRuntime(...)"
+            )
+        self._budget_adapter.budget_record(reservation, actual)
 
     def budget_snapshot(self, session: Any) -> Any:
-        raise Phase02SubstrateNotWiredError(
-            "budget_snapshot: requires Wave-4 BudgetTracker; " f"tracked at {_TODO_WAVE_4}"
-        )
+        """Forward to `BudgetRuntimeAdapter.budget_snapshot` (five-window snapshot)."""
+        if self._budget_adapter is None:
+            raise Phase02SubstrateNotWiredError(
+                "budget_snapshot: requires an envoy.budget.BudgetRuntimeAdapter; "
+                "pass `budget_adapter=` to KailashPyRuntime(...)"
+            )
+        return self._budget_adapter.budget_snapshot(session)
 
     def budget_velocity_check(self, session: Any) -> Any:
-        raise Phase02SubstrateNotWiredError(
-            "budget_velocity_check: requires Wave-4 BudgetTracker velocity gate; "
-            f"tracked at {_TODO_WAVE_4}"
-        )
+        """Forward to `BudgetRuntimeAdapter.budget_velocity_check`.
+
+        Raises `BudgetVelocityExceededError` if the per-hour velocity ceiling
+        is breached (`specs/runtime-abstraction.md` § budget_velocity_check).
+        """
+        if self._budget_adapter is None:
+            raise Phase02SubstrateNotWiredError(
+                "budget_velocity_check: requires an envoy.budget.BudgetRuntimeAdapter; "
+                "pass `budget_adapter=` to KailashPyRuntime(...)"
+            )
+        return self._budget_adapter.budget_velocity_check(session)
 
     # ------------------------------------------------------------------
     # Runtime device-key signing — wired (software-fallback)
