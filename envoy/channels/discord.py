@@ -113,13 +113,14 @@ _SSRF_BLOCKED_HOSTS: frozenset[str] = frozenset(
     }
 )
 _SSRF_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("0.0.0.0/8"),         # "this" network (RFC 1122); never a valid dest
     ipaddress.ip_network("127.0.0.0/8"),       # loopback
     ipaddress.ip_network("10.0.0.0/8"),        # RFC-1918 private A
     ipaddress.ip_network("172.16.0.0/12"),     # RFC-1918 private B
     ipaddress.ip_network("192.168.0.0/16"),    # RFC-1918 private C
     ipaddress.ip_network("169.254.0.0/16"),    # link-local / IMDS
     ipaddress.ip_network("::1/128"),           # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
+    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA (unique-local; NOT private in RFC-1918 sense)
     ipaddress.ip_network("::ffff:0.0.0.0/96"), # IPv6-mapped IPv4 (covers ::ffff:127.0.0.1 etc.)
 )
 
@@ -166,23 +167,42 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
     elif "." in hostname and all(
         c in "0123456789abcdefABCDEFxXoO." for c in hostname
     ):
-        # Potentially octal-dotted notation — any component starting with "0"
-        # followed by digits is octal (e.g. "0177" == 127).  Normalise each
-        # component to decimal so ipaddress.ip_address can parse it.
+        # Potentially octal-dotted or hex-dotted notation.
+        # Examples: "0177.0.0.1" == 127.0.0.1 (octal),
+        #           "0x7f.0.0.1" == 127.0.0.1 (hex-dotted).
+        # ``ipaddress.ip_address`` raises ValueError for both forms rather
+        # than interpreting them, so we must normalise first.
         parts = hostname.split(".")
         if len(parts) == 4:
             try:
                 decimal_parts = []
-                has_octal = False
+                has_normalized = False
                 for p in parts:
-                    if len(p) > 1 and p.startswith("0") and not p.lower().startswith("0x"):
-                        # Octal component
+                    if p.lower().startswith("0x"):
+                        # Hex-dotted component (e.g. "0x7f" == 127)
+                        decimal_parts.append(str(int(p, 16)))
+                        has_normalized = True
+                    elif len(p) > 1 and p.startswith("0"):
+                        # Octal component (e.g. "0177" == 127).
+                        # ``int("08", 8)`` raises ValueError — detect invalid
+                        # octal digits (8, 9) before converting to avoid
+                        # silent pass-through of malformed addresses.
+                        if any(d in "89" for d in p):
+                            raise ChannelTransportError(
+                                channel_id=channel_id,
+                                message=(
+                                    f"webhook_url contains malformed octal component "
+                                    f"{p!r} in hostname (SSRF guard): {hostname!r}"
+                                ),
+                            )
                         decimal_parts.append(str(int(p, 8)))
-                        has_octal = True
+                        has_normalized = True
                     else:
                         decimal_parts.append(str(int(p, 0)))
-                if has_octal:
+                if has_normalized:
                     _hostname_for_ip = ".".join(decimal_parts)
+            except ChannelTransportError:
+                raise
             except (ValueError, OverflowError):
                 pass  # not parseable; fall through to ipaddress below
     try:
@@ -550,9 +570,19 @@ class DiscordChannelAdapter(ChannelAdapter):
                 request_id=grant.request_id,
                 timeout_seconds=timeout_seconds,
             ) from exc
-        except asyncio.CancelledError:
-            self._pending_decisions.pop(grant.request_id, None)
-            raise
+        except asyncio.CancelledError as exc:
+            logger.warning(
+                "channel.send_grant_moment.cancelled",
+                extra={
+                    "channel_id": _DISCORD_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+            raise GrantMomentExpiredError(
+                request_id=grant.request_id,
+                timeout_seconds=timeout_seconds,
+            ) from exc
         finally:
             self._pending_decisions.pop(grant.request_id, None)
 

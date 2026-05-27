@@ -219,3 +219,180 @@ def test_phantom_test_workspace_todo_exists() -> None:
     body = todo.read_text()
     assert "test_t018_visible_secret_per_channel" in body
     assert "test_t023_signal_path_b" in body
+
+
+# ---------------------------------------------------------------------------
+# L-1 — 0.0.0.0/8 added to _SSRF_BLOCKED_NETWORKS; fc00::/7 comment clarified
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_discord_ssrf_blocked_networks_includes_zero_network() -> None:
+    """Pin: 0.0.0.0/8 MUST be in _SSRF_BLOCKED_NETWORKS (RFC 1122 'this' network)."""
+    import ipaddress
+
+    from envoy.channels.discord import _SSRF_BLOCKED_NETWORKS
+
+    zero_net = ipaddress.ip_network("0.0.0.0/8")
+    assert zero_net in _SSRF_BLOCKED_NETWORKS, (
+        "0.0.0.0/8 missing from _SSRF_BLOCKED_NETWORKS — SSRF via 'this' network "
+        "bypass remains open (R4 L-1)"
+    )
+
+
+@pytest.mark.regression
+def test_discord_ssrf_blocked_networks_fc00_comment_says_ula() -> None:
+    """Pin: fc00::/7 comment MUST say 'ULA' (not 'private') — spec-accuracy R4 L-3."""
+    import inspect
+
+    import envoy.channels.discord as _discord_mod
+
+    src = inspect.getsource(_discord_mod)
+    # The fc00::/7 line must document 'ULA' or 'unique-local'; NOT 'RFC-1918 private'
+    for line in src.splitlines():
+        if "fc00::/7" in line:
+            assert "ULA" in line or "unique-local" in line, (
+                f"fc00::/7 comment does not mention ULA/unique-local (got: {line!r}) — "
+                "R4 L-3: fc00::/7 is IPv6 ULA, NOT RFC-1918 private"
+            )
+            break
+    else:
+        pytest.fail("fc00::/7 not found in discord.py source — _SSRF_BLOCKED_NETWORKS changed?")
+
+
+# ---------------------------------------------------------------------------
+# H-1 — hex-dotted bypass (0x7f.0.0.1) now normalised before SSRF check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_discord_ssrf_rejects_hex_dotted_loopback() -> None:
+    """Pin: 0x7f.0.0.1 (== 127.0.0.1) MUST be rejected by the SSRF guard."""
+    from envoy.channels.errors import ChannelTransportError
+    from envoy.channels.discord import _validate_webhook_url_ssrf
+
+    with pytest.raises(ChannelTransportError, match="SSRF guard"):
+        _validate_webhook_url_ssrf(
+            "https://0x7f.0.0.1/api/webhooks/123/abc",
+            channel_id="test-discord",
+        )
+
+
+@pytest.mark.regression
+def test_discord_ssrf_rejects_hex_int_loopback() -> None:
+    """Pin: 0x7f000001 (pure hex integer == 127.0.0.1) MUST also be rejected."""
+    from envoy.channels.errors import ChannelTransportError
+    from envoy.channels.discord import _validate_webhook_url_ssrf
+
+    with pytest.raises(ChannelTransportError, match="SSRF guard"):
+        _validate_webhook_url_ssrf(
+            "https://0x7f000001/api/webhooks/123/abc",
+            channel_id="test-discord",
+        )
+
+
+# ---------------------------------------------------------------------------
+# M-1 — malformed octal component (08.0.0.1) now raises loudly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_discord_ssrf_rejects_malformed_octal_component() -> None:
+    """Pin: 08.0.0.1 (invalid octal — digit 8) MUST raise ChannelTransportError."""
+    from envoy.channels.errors import ChannelTransportError
+    from envoy.channels.discord import _validate_webhook_url_ssrf
+
+    with pytest.raises(ChannelTransportError, match="malformed octal component"):
+        _validate_webhook_url_ssrf(
+            "https://08.0.0.1/api/webhooks/123/abc",
+            channel_id="test-discord",
+        )
+
+
+@pytest.mark.regression
+def test_discord_ssrf_rejects_octal_loopback() -> None:
+    """Pin: 0177.0.0.1 (== 127.0.0.1 in octal) MUST be rejected by SSRF guard."""
+    from envoy.channels.errors import ChannelTransportError
+    from envoy.channels.discord import _validate_webhook_url_ssrf
+
+    with pytest.raises(ChannelTransportError, match="SSRF guard"):
+        _validate_webhook_url_ssrf(
+            "https://0177.0.0.1/api/webhooks/123/abc",
+            channel_id="test-discord",
+        )
+
+
+@pytest.mark.regression
+def test_discord_ssrf_allows_valid_public_webhook_url() -> None:
+    """Pin: a genuine Discord CDN webhook URL MUST pass the SSRF guard."""
+    from envoy.channels.discord import _validate_webhook_url_ssrf
+
+    # This should not raise — public Discord API host
+    _validate_webhook_url_ssrf(
+        "https://discord.com/api/webhooks/123456789/abc_token",
+        channel_id="test-discord",
+    )
+
+
+# ---------------------------------------------------------------------------
+# H-2 (discord) — asyncio.CancelledError → GrantMomentExpiredError conversion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+def test_discord_send_grant_moment_cancelled_error_converts() -> None:
+    """Pin: asyncio.CancelledError in send_grant_moment MUST convert to
+    GrantMomentExpiredError (R4 H-2 discord channel shutdown contract)."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path("envoy/channels/discord.py").read_text()
+    tree = ast.parse(src)
+
+    # Locate send_grant_moment method
+    sgm_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "send_grant_moment":
+            sgm_node = node
+            break
+
+    assert sgm_node is not None, "send_grant_moment not found in discord.py"
+
+    # Verify there's an except handler for CancelledError that raises GrantMomentExpiredError
+    found_cancelled_handler = False
+    found_grant_expired_raise = False
+
+    for node in ast.walk(sgm_node):
+        if isinstance(node, ast.ExceptHandler):
+            # Check if this handler catches CancelledError
+            handler_type = node.type
+            catches_cancelled = False
+            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError":
+                catches_cancelled = True
+            elif isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
+                catches_cancelled = True
+
+            if catches_cancelled:
+                found_cancelled_handler = True
+                # Check if handler body raises GrantMomentExpiredError
+                for stmt in ast.walk(node):
+                    if isinstance(stmt, ast.Raise) and stmt.exc is not None:
+                        exc = stmt.exc
+                        if isinstance(exc, ast.Call):
+                            func = exc.func
+                            name = (
+                                func.id if isinstance(func, ast.Name)
+                                else func.attr if isinstance(func, ast.Attribute)
+                                else None
+                            )
+                            if name == "GrantMomentExpiredError":
+                                found_grant_expired_raise = True
+
+    assert found_cancelled_handler, (
+        "discord.py send_grant_moment: no except CancelledError handler found "
+        "(R4 H-2 — CancelledError must convert to GrantMomentExpiredError)"
+    )
+    assert found_grant_expired_raise, (
+        "discord.py send_grant_moment: CancelledError handler does not raise "
+        "GrantMomentExpiredError (R4 H-2 — shutdown contract violated)"
+    )
