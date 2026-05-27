@@ -20,6 +20,7 @@ import uuid
 
 import click
 
+from envoy.cli.digest import digest as digest_group
 from envoy.cli.shamir import shamir as shamir_group
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ def cli(ctx: click.Context, log_level: str) -> None:
 
 
 cli.add_command(shamir_group)
+cli.add_command(digest_group)
 
 
 __all__ = ["cli"]

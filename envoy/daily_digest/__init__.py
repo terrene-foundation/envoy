@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from envoy.daily_digest.aggregator import LedgerAggregator
 from envoy.daily_digest.backfill import BackfillTracker
+from envoy.daily_digest.bootstrap import build_digest_service
+from envoy.daily_digest.duress import DuressBannerReader
 from envoy.daily_digest.engagement import LowEngagementTracker
 from envoy.daily_digest.errors import (
     DailyDigestError,
@@ -68,6 +70,9 @@ __all__ = [
     "LowEngagementTracker",
     "ScheduleRegistry",
     "ScheduleRow",
+    # Duress + wiring (T-04-83)
+    "DuressBannerReader",
+    "build_digest_service",
     # Payload
     "DIGEST_SCHEMA_VERSION",
     "DigestForm",
