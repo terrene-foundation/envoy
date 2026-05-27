@@ -24,6 +24,7 @@ INV-7: Phase-02 ritual surfaces raise ``PhaseDeferredError`` via ABC default.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import typing
@@ -82,6 +83,12 @@ _TELEGRAM_CHANNEL_ID = "telegram"
 # DoS ceiling: maximum concurrent in-flight grant moments.
 _MAX_PENDING_DECISIONS: int = 1000
 _RATE_LIMIT_RETRY_AFTER = 60  # seconds to suggest waiting when quota is exhausted
+
+# Shutdown sentinel pushed into pending-grant queues so a coroutine blocked on
+# `response_queue.get()` unblocks and raises GrantMomentExpiredError instead of
+# hanging forever. The null-byte prefix makes it impossible for a real Telegram
+# message body to collide; identity (`is`) comparison is the discriminator.
+_SHUTDOWN_SENTINEL: str = "\x00__envoy_telegram_shutdown__"
 
 
 def _hash_pii(value: str) -> str:
@@ -251,12 +258,16 @@ class TelegramChannelAdapter(ChannelAdapter):
                         self._inbound_queue.get_nowait()
             except (asyncio.TimeoutError, asyncio.QueueEmpty):
                 pass
-        # Cancel every in-flight grant future before clearing the map so that
-        # coroutines awaiting send_grant_moment receive CancelledError instead
-        # of waiting forever.  Mirrors the Discord and Web adapter patterns.
-        for fut in list(self._pending_grants.values()):
-            if not fut.done():
-                fut.cancel()
+        # Unblock every in-flight grant coroutine before clearing the map so a
+        # task awaiting `response_queue.get()` raises GrantMomentExpiredError
+        # instead of hanging forever. Telegram tracks pending grants as
+        # `asyncio.Queue[str]` (NOT Future), so the Discord/Web `.cancel()`
+        # pattern does not apply — push the shutdown sentinel into each queue.
+        for response_queue in list(self._pending_grants.values()):
+            # A real decision already queued (QueueFull) means the awaiter will
+            # consume that and complete normally — no sentinel needed.
+            with contextlib.suppress(asyncio.QueueFull):
+                response_queue.put_nowait(_SHUTDOWN_SENTINEL)
         self._pending_grants.clear()
         logger.info("channel.shutdown", extra={"channel_id": _TELEGRAM_CHANNEL_ID})
 
@@ -547,6 +558,22 @@ class TelegramChannelAdapter(ChannelAdapter):
             ) from exc
 
         self._pending_grants.pop(grant.request_id, None)
+
+        # Shutdown unblocked the queue with the sentinel — treat as expiry so
+        # the caller gets a typed error rather than a coerced bogus decision.
+        if raw_decision is _SHUTDOWN_SENTINEL:
+            logger.warning(
+                "channel.send_grant_moment.shutdown_cancelled",
+                extra={
+                    "channel_id": _TELEGRAM_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                },
+            )
+            raise GrantMomentExpiredError(
+                request_id=grant.request_id,
+                timeout_seconds=timeout_seconds,
+            )
+
         decision = _coerce_decision(raw_decision, grant.decision_options)
 
         logger.info(
@@ -613,7 +640,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         rendered = "\n".join(lines)
 
         # Send to a target chat — extract from request if available.
-        chat_id: str = getattr(request, "chat_id", "") or getattr(request, "principal_genesis_id", "")
+        chat_id: str = getattr(request, "chat_id", "") or getattr(
+            request, "principal_genesis_id", ""
+        )
         if self._send_fn and chat_id:
             try:
                 async with asyncio.timeout(self._send_timeout):

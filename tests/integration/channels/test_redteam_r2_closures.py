@@ -475,9 +475,7 @@ async def test_discord_rate_limit_gate_raises_when_quota_zero(
     monkeypatch.setattr(type(adapter), "rate_limit_status", _zero_rl)
 
     with pytest.raises(RateLimitExceededError):
-        await adapter.send_message(
-            "principal", MessagePayload(kind="text", body="hello")
-        )
+        await adapter.send_message("principal", MessagePayload(kind="text", body="hello"))
 
 
 @pytest.mark.regression
@@ -508,9 +506,7 @@ async def test_slack_rate_limit_gate_raises_when_quota_zero(
     monkeypatch.setattr(type(adapter), "rate_limit_status", _zero_rl)
 
     with pytest.raises(RateLimitExceededError):
-        await adapter.send_message(
-            "principal", MessagePayload(kind="text", body="hello")
-        )
+        await adapter.send_message("principal", MessagePayload(kind="text", body="hello"))
 
 
 @pytest.mark.regression
@@ -536,9 +532,7 @@ async def test_telegram_rate_limit_gate_raises_when_quota_zero(
     monkeypatch.setattr(type(adapter), "rate_limit_status", _zero_rl)
 
     with pytest.raises(RateLimitExceededError):
-        await adapter.send_message(
-            "principal", MessagePayload(kind="text", body="hello")
-        )
+        await adapter.send_message("principal", MessagePayload(kind="text", body="hello"))
 
 
 # ---------------------------------------------------------------------------
@@ -576,35 +570,56 @@ async def test_discord_ssrf_decimal_ip_blocked_at_startup() -> None:
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_telegram_shutdown_clears_pending_grants() -> None:
-    """M-2: TelegramChannelAdapter.shutdown() MUST clear _pending_grants.
+async def test_telegram_shutdown_unblocks_pending_grant_with_expiry() -> None:
+    """M-2: shutdown() MUST unblock an in-flight grant coroutine.
 
-    Structural probe: insert a Queue entry, call shutdown(), assert the
-    dict is empty. This confirms the cleanup path drains the pending-grant
-    registry regardless of Queue state.
+    Production probe (NOT a type-mismatched structural shim): Telegram tracks
+    pending grants as ``asyncio.Queue[str]`` — the queue is the awaiter, NOT a
+    Future. A coroutine blocked on ``response_queue.get()`` inside
+    ``send_grant_moment`` MUST receive ``GrantMomentExpiredError`` when
+    ``shutdown()`` fires (via the shutdown sentinel), never hang forever. This
+    exercises the real send→block→shutdown path, so a regression to the
+    Future ``.cancel()`` pattern (which raises AttributeError on a Queue)
+    fails loudly here instead of being masked by planting a Future.
     """
+    from envoy.channels.envelope import GrantMomentPayload, VisibleSecret
+    from envoy.channels.errors import GrantMomentExpiredError
     from envoy.channels.telegram import TelegramChannelAdapter
 
-    adapter = TelegramChannelAdapter(secret_token="valid-secret-token")
-    adapter._started = True
+    sent: list[tuple[str, str]] = []
 
-    # Plant a pending grant entry using a Future (shutdown iterates values
-    # and calls .done() / .cancel(); Queue objects lack these methods — the
-    # _pending_grants values must be Future-compatible).  The structural
-    # probe only cares that the dict is empty after shutdown.
-    loop = asyncio.get_event_loop()
-    fut: asyncio.Future[str] = loop.create_future()
-    adapter._pending_grants["r-pending-shutdown"] = fut  # type: ignore[assignment]
+    async def _send_fn(chat_id: str, text: str) -> None:
+        sent.append((chat_id, text))
 
+    adapter = TelegramChannelAdapter(secret_token="valid-secret-token", send_fn=_send_fn)
+    await adapter.startup()
+
+    grant = GrantMomentPayload(
+        request_id="r-pending-shutdown",
+        intent_id="i-1",
+        decision_options=("approve_once", "deny"),
+        visible_secret=VisibleSecret(icon="bolt", color="amber", phrase="b-a-m"),
+        body="Allow the action?",
+        high_stakes=False,
+    )
+
+    # Launch a grant moment that will block on response_queue.get() — no
+    # post_decision() will ever arrive; only shutdown() unblocks it.
+    task = asyncio.create_task(adapter.send_grant_moment("principal-1", grant, timeout_seconds=30))
+    # Let the task register its pending queue and reach the await.
+    await asyncio.sleep(0)
     assert "r-pending-shutdown" in adapter._pending_grants
 
     await adapter.shutdown()
 
-    assert "r-pending-shutdown" not in adapter._pending_grants
-    assert len(adapter._pending_grants) == 0, (
-        "shutdown() MUST clear all pending grants; dict is non-empty — "
-        "shutdown cleanup regression."
-    )
+    # The blocked coroutine MUST surface a typed expiry, not hang or coerce
+    # the sentinel into a bogus decision.
+    with pytest.raises(GrantMomentExpiredError):
+        await task
+
+    assert (
+        len(adapter._pending_grants) == 0
+    ), "shutdown() MUST clear all pending grants after unblocking awaiters."
 
 
 # ---------------------------------------------------------------------------
