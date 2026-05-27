@@ -28,7 +28,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from envoy.channels.envelope import DailyDigestPayload
-from envoy.daily_digest.errors import DigestDeliveryFailedError
+from envoy.daily_digest.errors import DigestDeliveryFailedError, RedactedFieldRenderError
 
 if TYPE_CHECKING:
     from envoy.channels.adapter import ChannelAdapter
@@ -37,6 +37,43 @@ if TYPE_CHECKING:
     from envoy.ledger.facade import EnvoyLedger
 
 logger = logging.getLogger(__name__)
+
+
+def _supports_redaction_markers(adapter: object) -> bool:
+    """True iff the adapter can render redacted-field markers (markdown).
+
+    A channel that cannot render markdown (SMS / WhatsApp compact) cannot show
+    the `sha256:`-prefixed classified markers, so classified rows are dropped
+    per spec § Error taxonomy `RedactedFieldRenderError`. Adapters expose this
+    via `capabilities.supports_markdown`; absent that surface we default True
+    (assume capable) so a non-conforming adapter never silently over-redacts.
+    """
+    caps = getattr(adapter, "capabilities", None)
+    if caps is None:
+        return True
+    return bool(getattr(caps, "supports_markdown", True))
+
+
+def _partition_classified(
+    actions: tuple, refusals: tuple, *, drop: bool
+) -> tuple[tuple, tuple, int]:
+    """Split classified rows from action/refusal tuples.
+
+    A row is classified iff its id field is a `sha256:`-prefixed redaction
+    (`format_record_id_for_event` output for a classified PK). When `drop` is
+    True, classified rows are removed and counted; otherwise everything passes
+    through with `hidden=0`.
+    """
+    if not drop:
+        return actions, refusals, 0
+
+    def _is_classified(row: dict) -> bool:
+        return str(row.get("ledger_id", "")).startswith("sha256:")
+
+    kept_actions = tuple(a for a in actions if not _is_classified(a))
+    kept_refusals = tuple(r for r in refusals if not _is_classified(r))
+    hidden = (len(actions) - len(kept_actions)) + (len(refusals) - len(kept_refusals))
+    return kept_actions, kept_refusals, hidden
 
 
 class PerChannelFanout:
@@ -75,7 +112,14 @@ class PerChannelFanout:
                 f"no active channels for principal {principal_id[:8]!r}",
             )
 
-        channel_payload = self._to_channel_payload(payload)
+        # T-018 defense (delivery boundary): the payload's duress banner was
+        # resolved for the PRIMARY channel (`payload.channel_id`). The wire
+        # body is rendered PER CHANNEL so the banner is stripped for every
+        # non-primary channel — a secondary channel must never learn a duress
+        # event was recorded, even though all channels share one logical
+        # digest. This complements DuressBannerReader's read-side gate; the
+        # fan-out is the second gate because one frozen payload is broadcast.
+        primary_channel = payload.channel_id
 
         # Build one task per active channel; unknown channel_ids resolve to a
         # KeyError captured as that channel's result (fault-isolated).
@@ -83,6 +127,12 @@ class PerChannelFanout:
             adapter = self._channel_adapters.get(channel_id)
             if adapter is None:
                 raise KeyError(f"no adapter registered for channel {channel_id!r}")
+            channel_payload = self._to_channel_payload(
+                payload,
+                suppress_duress=(channel_id != primary_channel),
+                supports_redaction_markers=_supports_redaction_markers(adapter),
+                channel_id=channel_id,
+            )
             return await adapter.send_digest(
                 principal_id, channel_payload, timeout_seconds=timeout_seconds
             )
@@ -134,26 +184,63 @@ class PerChannelFanout:
         )
         return outcome
 
-    def _to_channel_payload(self, payload: DigestPayload) -> DailyDigestPayload:
+    def _to_channel_payload(
+        self,
+        payload: DigestPayload,
+        *,
+        suppress_duress: bool = False,
+        supports_redaction_markers: bool = True,
+        channel_id: str = "",
+    ) -> DailyDigestPayload:
         """Render the structured DigestPayload to the channels-side wire shape.
 
-        Produces ONE canonical markdown body; per-channel native rendering
+        Produces a canonical markdown body; per-channel native rendering
         (buttons, Block Kit, SMS compaction) is the adapter's job per shard 11
         § 5.2. `metrics` carries the spend + section counts so an adapter can
         render compact headline numbers without re-parsing the markdown.
+
+        `suppress_duress` (T-018): when True (non-primary channel), the duress
+        banner is omitted from BOTH the markdown body AND the metrics regardless
+        of `payload.duress_banner.present` — a secondary channel never learns a
+        duress event was recorded.
+
+        `supports_redaction_markers` (spec § Error taxonomy
+        `RedactedFieldRenderError`, L74): when False (a channel that cannot
+        render redacted-field markers — e.g. SMS / WhatsApp compact), rows whose
+        `ledger_id` is a classified `sha256:`-prefix are DROPPED and replaced
+        with a "N classified entries hidden" count (graceful per spec, retry
+        auto — NOT a raised failure). A `RedactedFieldRenderError`-named advisory
+        is logged. Phase-01 ships only the markdown-capable CLI channel, so this
+        path activates with the Wave-B caveated channels.
         """
         summary = payload.summary
         digest_date = payload.scheduled_for.split("T", 1)[0]
+        show_banner = payload.duress_banner.present and not suppress_duress
+
+        actions, refusals, hidden = _partition_classified(
+            summary.actions, summary.refusals, drop=not supports_redaction_markers
+        )
+        if hidden:
+            logger.info(
+                "daily_digest.fanout.redacted_fields_dropped",
+                extra={
+                    "channel_id": channel_id,
+                    "hidden_count": hidden,
+                    "error": RedactedFieldRenderError.__name__,
+                },
+            )
 
         lines: list[str] = [f"# Daily Digest — {digest_date}"]
-        if payload.duress_banner.present:
+        if show_banner:
             lines.append("> ⚠️ **Review duress event** — unread security event.")
-        lines.append(f"\n**Actions** ({len(summary.actions)})")
-        for a in summary.actions:
+        lines.append(f"\n**Actions** ({len(actions)})")
+        for a in actions:
             lines.append(f"- {a.get('summary', '')}")
-        lines.append(f"\n**Refusals** ({len(summary.refusals)})")
-        for r in summary.refusals:
+        lines.append(f"\n**Refusals** ({len(refusals)})")
+        for r in refusals:
             lines.append(f"- {r.get('reason_code', '')}")
+        if hidden:
+            lines.append(f"\n_{hidden} classified entries hidden_")
         spend = summary.spend
         lines.append(
             f"\n**Spend**: {spend.get('current_microdollars', 0)} / "
@@ -168,14 +255,15 @@ class PerChannelFanout:
         lines.append('\nReply "no" to proceed, "yes" to modify, "skip digest" to pause.')
 
         metrics = {
-            "actions": len(summary.actions),
-            "refusals": len(summary.refusals),
+            "actions": len(actions),
+            "refusals": len(refusals),
             "pending_grants": len(summary.pending_grants),
             "planned_today": len(summary.planned_today),
+            "classified_hidden": hidden,
             "current_microdollars": spend.get("current_microdollars", 0),
             "monthly_ceiling_microdollars": spend.get("monthly_ceiling_microdollars", 0),
             "form": payload.form,
-            "duress_banner_present": payload.duress_banner.present,
+            "duress_banner_present": show_banner,
         }
 
         return DailyDigestPayload(

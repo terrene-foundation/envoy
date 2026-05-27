@@ -505,10 +505,18 @@ class _StubBackfill:
     ) -> tuple[datetime, int]:
         return (scheduled_for, 0)
 
+    async def record_success(
+        self, *, principal_id: str, channel_id: str, receipt, digest_id: str
+    ) -> None:
+        return None
+
 
 class _StubLowEngagement:
     async def select_form(self, principal_id: str, *, now: datetime) -> str:
         return "rich"
+
+    async def record_open(self, principal_id: str, *, opened_at: datetime) -> None:
+        return None
 
 
 class _StubDuressReader:

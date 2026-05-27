@@ -42,16 +42,34 @@ class LowEngagementTracker:
         """Record a digest-open event."""
         await self._trust_store.digest_engagement_record_open(principal_id, opened_at=opened_at)
 
-    async def select_form(self, principal_id: str, *, now: datetime) -> str:
-        """Return "rich" normally; "compact" when engagement is low.
+    async def set_form_preference(self, principal_id: str, *, form: str) -> None:
+        """Persist the user's explicit form choice after the fallback offer.
 
-        Low engagement = fewer than `LOW_OPEN_THRESHOLD_PER_WEEK` opens per
-        week sustained across the trailing `LOW_ENGAGEMENT_WEEKS` window
-        (total threshold = 2 × 3 = 6 opens in 21 days). When the threshold is
-        not met, emit the `LowEngagementFallbackTriggered` advisory at INFO
-        (NOT raised — the advisory class structures the log; the form flip is
-        the action) and return "compact".
+        Per spec § Low-engagement fallback: the low-engagement advisory OFFERS
+        `compact` OR `event_only`; this records the user's selection (passing
+        `rich` clears the downgrade). The selection overrides the automatic
+        engagement-based choice in `select_form` — this is how `event_only`
+        (event-driven delivery) becomes reachable.
         """
+        await self._trust_store.digest_form_preference_set(principal_id, form=form)
+
+    async def select_form(self, principal_id: str, *, now: datetime) -> str:
+        """Return the digest form: explicit preference wins, else engagement-auto.
+
+        1. **Explicit user preference** (`compact` / `event_only` / `rich`) set
+           via `set_form_preference` after the low-engagement offer — honored
+           verbatim. This is how `event_only` becomes reachable.
+        2. **Engagement-auto**: fewer than `LOW_OPEN_THRESHOLD_PER_WEEK` opens
+           per week across the trailing `LOW_ENGAGEMENT_WEEKS` window
+           (2 × 3 = 6 opens in 21 days) → `compact`, emitting the
+           `LowEngagementFallbackTriggered` advisory at INFO (NOT raised — the
+           advisory structures the log; the form flip is the action).
+        3. Otherwise `rich`.
+        """
+        preference = await self._trust_store.digest_form_preference_get(principal_id)
+        if preference is not None:
+            return preference
+
         window_days = self.LOW_ENGAGEMENT_WEEKS * 7
         since = now - timedelta(days=window_days)
         opens = await self._trust_store.digest_engagement_opens_in_window(

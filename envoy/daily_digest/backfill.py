@@ -42,12 +42,15 @@ class BackfillTracker:
     ) -> tuple[datetime, int]:
         """Return `(since, back_fill_days)` for the content-aggregation window.
 
-        `since = max(last_success, scheduled_for - 7d)`. `back_fill_days` is the
-        integer count of whole days between `last_success` and `scheduled_for`
-        minus 1 (the normal same-day delivery contributes 0 back-fill days),
-        clamped to `[0, 7]`. A principal with no prior success gets the full
-        7-day horizon and `back_fill_days = 0` (first-ever digest is not a
-        back-fill).
+        `since = max(last_success, scheduled_for - 7d)`. `back_fill_days` is
+        derived from the ACTUAL (clamped) window — `(scheduled_for - since).days
+        - 1` — so the count never claims more back-filled days than the window
+        covers. The normal same-day cadence contributes 0 back-fill days; a
+        chronic-offline principal whose `last_success` predates the 7-day
+        horizon gets `since = horizon_start` and at most 6 back-fill days
+        (today + 6 prior = the 7-day window). A principal with no prior success
+        gets the full horizon and `back_fill_days = 0` (first-ever digest is
+        not a back-fill).
         """
         horizon_start = scheduled_for - timedelta(days=self.BACKFILL_HORIZON_DAYS)
         row = await self._trust_store.digest_backfill_get(principal_id, channel_id=channel_id)
@@ -57,9 +60,10 @@ class BackfillTracker:
 
         last_success, _digest_id = row
         since = max(last_success, horizon_start)
-        # Whole days missed since the last success (same-day = 0 back-fill).
-        gap_days = (scheduled_for - last_success).days
-        back_fill_days = max(0, min(gap_days - 1, self.BACKFILL_HORIZON_DAYS))
+        # Derive from the clamped window so the count matches the aggregated
+        # span exactly (today is the normal delivery; prior days are back-fill).
+        covered_days = (scheduled_for - since).days
+        back_fill_days = max(0, covered_days - 1)
         logger.info(
             "daily_digest.backfill.window",
             extra={

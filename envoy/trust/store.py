@@ -1055,6 +1055,13 @@ class TrustStoreAdapter:
     )
     """
 
+    _CREATE_DIGEST_FORM_PREFERENCE_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_form_preference (
+        principal_id    TEXT PRIMARY KEY,
+        form            TEXT NOT NULL
+    )
+    """
+
     _CREATE_DIGEST_ACTIVE_CHANNELS_SQL = """
     CREATE TABLE IF NOT EXISTS digest_active_channels (
         principal_id        TEXT PRIMARY KEY,
@@ -1090,6 +1097,7 @@ class TrustStoreAdapter:
             conn.execute(self._CREATE_DIGEST_BACKFILL_SQL)
             conn.execute(self._CREATE_DIGEST_ENGAGEMENT_SQL)
             conn.execute(self._CREATE_DIGEST_ACTIVE_CHANNELS_SQL)
+            conn.execute(self._CREATE_DIGEST_FORM_PREFERENCE_SQL)
             conn.commit()
         finally:
             conn.close()
@@ -1444,6 +1452,58 @@ class TrustStoreAdapter:
             cur = conn.execute(
                 "SELECT active_csv, primary_channel_id FROM digest_active_channels "
                 "WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    # ---- form preference (rich / compact / event_only) ------------------
+
+    async def digest_form_preference_set(self, principal_id: str, *, form: str) -> None:
+        """Persist the user's explicit digest-form choice (upsert).
+
+        Set when the user accepts the low-engagement fallback offer
+        (`specs/daily-digest.md` § Low-engagement fallback) — they pick
+        `compact` or `event_only`; `rich` clears the downgrade.
+        """
+        if form not in ("rich", "compact", "event_only"):
+            raise ValueError(
+                f"form must be one of rich|compact|event_only (got {form!r})",
+            )
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        await asyncio.to_thread(self._sync_digest_form_preference_set, principal_id, form)
+
+    def _sync_digest_form_preference_set(self, principal_id: str, form: str) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_form_preference (principal_id, form)
+                VALUES (?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET form = excluded.form
+                """,
+                (principal_id, form),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_form_preference_get(self, principal_id: str) -> str | None:
+        """Return the user's explicit form choice, or None if never set."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        row = await asyncio.to_thread(self._sync_digest_form_preference_get, principal_id)
+        return row["form"] if row is not None else None
+
+    def _sync_digest_form_preference_get(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT form FROM digest_form_preference WHERE principal_id = ?",
                 (principal_id,),
             )
             return cur.fetchone()

@@ -160,8 +160,10 @@ class TestBackfill:
             since, back_fill_days = await tracker.query_window(
                 principal_id=_PID, channel_id="cli", scheduled_for=_NOW
             )
-            # since clamps to the 7-day horizon, not 30 days back.
+            # since clamps to the 7-day horizon, not 30 days back; back_fill_days
+            # is derived from the clamped window (7-day span → 6 back-filled
+            # prior days + today), NOT the raw 30-day gap.
             assert since == _NOW - timedelta(days=7)
-            assert back_fill_days == 7  # capped at BACKFILL_HORIZON_DAYS
+            assert back_fill_days == 6  # covered_days(7) - 1; consistent with window
         finally:
             await store.close()

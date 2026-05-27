@@ -98,6 +98,15 @@ class _BackfillProtocol(Protocol):
         scheduled_for: datetime,
     ) -> tuple[datetime, int]: ...
 
+    async def record_success(
+        self,
+        *,
+        principal_id: str,
+        channel_id: str,
+        receipt: Any,
+        digest_id: str,
+    ) -> None: ...
+
 
 class _PauseProtocol(Protocol):
     """Surface implemented by `PauseDisableState` (T-04-82)."""
@@ -131,6 +140,8 @@ class _LowEngagementProtocol(Protocol):
         *,
         now: datetime,
     ) -> str: ...
+
+    async def record_open(self, principal_id: str, *, opened_at: datetime) -> None: ...
 
 
 class _DuressReaderProtocol(Protocol):
@@ -313,9 +324,14 @@ class DailyDigestService:
 
         CLI hook for `envoy digest today`. Bypasses cron AND pause-state
         (the user explicitly asked). Returns the rendered payload for CLI
-        display.
+        display. Running `today` IS the user opening the digest, so it records
+        an engagement open (the scheduled push in `_fire` does NOT — the system
+        sent it; the user has not necessarily opened it).
         """
-        return await self._run_pipeline(principal_id, scheduled_for=_utc_now())
+        now = _utc_now()
+        payload = await self._run_pipeline(principal_id, scheduled_for=now, event_gated=False)
+        await self._low_engagement.record_open(principal_id, opened_at=now)
+        return payload
 
     # ---- Internal pipeline ---------------------------------------------
 
@@ -345,7 +361,7 @@ class DailyDigestService:
             return
 
         try:
-            await self._run_pipeline(principal_id, scheduled_for=now)
+            await self._run_pipeline(principal_id, scheduled_for=now, event_gated=True)
         except DigestDeliveryFailedError:
             # Per spec § Error taxonomy L72: retry auto next morning.
             # The error is logged at WARN in PerChannelFanout; here the
@@ -368,12 +384,24 @@ class DailyDigestService:
         principal_id: str,
         *,
         scheduled_for: datetime,
+        event_gated: bool = True,
     ) -> DigestPayload:
         """The aggregate → render → fan-out happy path.
 
         Single function so `trigger_now()` and `_fire()` share identical
         sequencing — drift between the CLI path and the cron path is the
         failure mode this collapse prevents.
+
+        `event_gated` (True on scheduled `_fire`, False on manual
+        `trigger_now`): when the selected form is `event_only` (spec
+        § Low-engagement fallback — "event-driven-only delivery (fires on Grant
+        Moment pending or budget > 80%)"), a scheduled fire delivers ONLY when
+        there is a pending Grant Moment OR spend has crossed 80% of the monthly
+        ceiling. A manual `today` always delivers (the user explicitly asked).
+
+        On every successful per-channel delivery, `BackfillTracker.record_success`
+        advances the last-success watermark so the next fire's back-fill window
+        starts after this delivery (the EC-3 carry-over contract).
         """
         # 1. Engagement form selection (rich / compact / event_only).
         form = await self._low_engagement.select_form(
@@ -423,12 +451,34 @@ class DailyDigestService:
             back_fill_days=back_fill_days,
         )
 
+        # 5a. event_only gate: a scheduled fire for an event_only principal
+        # delivers ONLY when there's something event-worthy (pending Grant
+        # Moment OR spend > 80% of ceiling) per spec § Low-engagement fallback.
+        # A manual `today` (event_gated=False) always delivers.
+        if event_gated and form == "event_only" and not _has_event(summary):
+            logger.info(
+                "daily_digest.service.event_only_skipped_no_event",
+                extra={"principal_id_prefix": principal_id[:8]},
+            )
+            return payload
+
         # 6. Fan out across active channels.
-        await self._fanout.emit(
+        outcome = await self._fanout.emit(
             principal_id=principal_id,
             payload=payload,
             active_channel_ids=list(active_channels),
         )
+
+        # 6a. Advance the per-channel back-fill watermark for each successful
+        # delivery so the next fire's window starts after it (EC-3 carry-over).
+        for channel_id, result in outcome.items():
+            if not isinstance(result, BaseException):
+                await self._backfill.record_success(
+                    principal_id=principal_id,
+                    channel_id=channel_id,
+                    receipt=result,
+                    digest_id=payload.digest_id,
+                )
 
         return payload
 
@@ -478,6 +528,27 @@ def _utc_now() -> datetime:
     clock via `datetime.now(timezone.utc)`.
     """
     return datetime.now(timezone.utc)
+
+
+# Spend-ratio threshold above which an event_only digest fires anyway, per
+# spec § Low-engagement fallback ("fires on Grant Moment pending or budget > 80%").
+_EVENT_ONLY_BUDGET_RATIO = 0.8
+
+
+def _has_event(summary: Any) -> bool:
+    """True iff the digest carries something event-worthy for event_only delivery.
+
+    Per spec § Low-engagement fallback, an event_only digest fires when there's
+    a pending Grant Moment OR spend has crossed 80% of the monthly ceiling.
+    """
+    if getattr(summary, "pending_grants", ()):
+        return True
+    spend = getattr(summary, "spend", {}) or {}
+    ceiling = spend.get("monthly_ceiling_microdollars", 0)
+    current = spend.get("current_microdollars", 0)
+    if ceiling > 0 and current / ceiling > _EVENT_ONLY_BUDGET_RATIO:
+        return True
+    return False
 
 
 __all__ = [

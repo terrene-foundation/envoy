@@ -8,11 +8,17 @@ Per `workspaces/phase-01-mvp/01-analysis/11-daily-digest-implementation.md`
 `receipt_hash` via the Ledger's shared canonical-JSON contract.
 
 `receipt_hash` (open question 5 — cross-channel byte-identity): defined as
-``sha256(canonical_dumps(payload_minus_receipt_hash))``. Reusing
-``envoy.ledger.canonical.canonical_dumps`` (the Ledger's byte-pinned JCS+NFC
-serializer) guarantees every channel that renders the same digest content
-produces the same receipt_hash — the byte-identity guarantee the spec's open
-question 5 asks for.
+``sha256(canonical_dumps(payload_minus_receipt_hash))``. The byte-identity is
+achieved by the **single-render → fan-out** design, NOT by recomputing per
+channel: `DailyDigestService._run_pipeline` calls `render()` ONCE (one
+`digest_id`, one primary `channel_id`), producing one frozen `DigestPayload`
+whose `receipt_hash` is then carried verbatim to every active channel by
+`PerChannelFanout`. So every channel delivers the SAME `receipt_hash` over the
+SAME canonical content. (The per-channel WIRE rendering may differ — e.g. the
+T-018 duress-banner strip for non-primary channels — but the receipt anchors
+the canonical structured content, which is identical across channels.) The
+canonical input therefore intentionally includes `digest_id` + `channel_id`
+(the primary): the receipt is unique per digest, shared across its fan-out.
 
 `principal_genesis_id` is routed through ``format_record_id_for_event`` per
 spec L66 — raw genesis IDs never reach the payload.
