@@ -27,6 +27,9 @@ wiring tests (T-04-84), both landing in this same PR.
 
 from __future__ import annotations
 
+from envoy.daily_digest.aggregator import LedgerAggregator
+from envoy.daily_digest.backfill import BackfillTracker
+from envoy.daily_digest.engagement import LowEngagementTracker
 from envoy.daily_digest.errors import (
     DailyDigestError,
     DigestDeliveryFailedError,
@@ -35,6 +38,8 @@ from envoy.daily_digest.errors import (
     LowEngagementFallbackTriggered,
     RedactedFieldRenderError,
 )
+from envoy.daily_digest.fanout import PerChannelFanout
+from envoy.daily_digest.pause import PauseDisableState
 from envoy.daily_digest.payload import (
     DIGEST_SCHEMA_VERSION,
     DigestForm,
@@ -42,6 +47,8 @@ from envoy.daily_digest.payload import (
     DigestSummary,
     DuressBanner,
 )
+from envoy.daily_digest.renderer import DigestRenderer
+from envoy.daily_digest.schedule_registry import ScheduleRegistry, ScheduleRow
 from envoy.daily_digest.scheduler import DigestCallback, DigestScheduler
 from envoy.daily_digest.service import DailyDigestService
 
@@ -51,6 +58,16 @@ __all__ = [
     # Scheduler
     "DigestCallback",
     "DigestScheduler",
+    # Content layer (T-04-81)
+    "LedgerAggregator",
+    "DigestRenderer",
+    # State + fan-out (T-04-82)
+    "PerChannelFanout",
+    "BackfillTracker",
+    "PauseDisableState",
+    "LowEngagementTracker",
+    "ScheduleRegistry",
+    "ScheduleRow",
     # Payload
     "DIGEST_SCHEMA_VERSION",
     "DigestForm",
