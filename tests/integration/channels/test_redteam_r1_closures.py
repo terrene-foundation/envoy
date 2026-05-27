@@ -10,8 +10,8 @@ Each test docstring names the R1 finding it pins (e.g. ``H1-security``).
 
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import io
 import logging
 import pathlib
@@ -21,7 +21,6 @@ import pytest
 from envoy.channels import (
     ChannelAdapter,
     CLIChannelAdapter,
-    InvalidDecisionError,
     NotStartedError,
     OverflowDropEvent,
     PendingDecisionsCeilingError,
@@ -33,7 +32,6 @@ from envoy.channels.envelope import (
     GrantMomentPayload,
     InboundMessage,
     MessagePayload,
-    SendReceipt,
     VisibleSecret,
 )
 from envoy.channels.errors import (
@@ -440,7 +438,9 @@ class TestAllInvariant:
         # 3 ABC/concrete + 12 envelope payloads/dataclasses + 16 errors = 31
         # (R2 closures: PendingDecisionsCeilingError + InvalidDecisionError
         # added on top of the R1 NotStartedError + PhaseDeferredError hygiene.)
-        assert self._all_len("envoy/channels/__init__.py") == 31
+        # +1 TelegramChannelAdapter + 1 SlackChannelAdapter + 1 DiscordChannelAdapter
+        # (Wave-A phase-01 parallel siblings) = 34
+        assert self._all_len("envoy/channels/__init__.py") == 34
 
     def test_errors_module_all_count(self) -> None:
         # 1 base + 11 spec errors + 4 hygiene

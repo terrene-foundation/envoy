@@ -7,18 +7,18 @@ iMessage, Signal) implements.
 
 This shard ships:
 
-- `ChannelAdapter` ABC (specs lines 14-130).
-- `InboundMessage` + supporting dataclasses (specs lines 148-159, 132-143).
-- 11 typed errors (specs lines 199-214) + `PhaseDeferredError` for Phase-02
+- `ChannelAdapter` ABC (specs § Adapter contract).
+- `InboundMessage` + supporting dataclasses (specs § Message envelope).
+- Typed errors (specs § Error taxonomy) + `PhaseDeferredError` for Phase-02
   ritual-delivery surfaces.
 - `CLIChannelAdapter` wrapping `kailash.channels.cli_channel.CLIChannel`.
 - `WebChannelAdapter` wrapping `kailash.channels.api_channel.APIChannel`,
   localhost-bound with Origin allowlist enforcement per
   `rules/security.md` § "Network Transport Hardening".
 
-Wave-4 next shards (deferred to siblings of this PR):
+Wave-4 shipped Telegram, Slack, and Discord adapters (this PR). Deferred
+to later shards:
 
-- Telegram + Slack + Discord adapters wrapping `nexus.transports.webhook`.
 - WhatsApp + iMessage + Signal caveated channels.
 - `InboundRouter` concurrent fan-out across registered adapters.
 - `envoy.daily_digest` scheduler producing `DailyDigestPayload` payloads.
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from envoy.channels.adapter import ChannelAdapter
 from envoy.channels.cli import CLIChannelAdapter
+from envoy.channels.discord import DiscordChannelAdapter
 from envoy.channels.envelope import (
     ChannelCapabilities,
     DailyDigestPayload,
@@ -64,6 +65,8 @@ from envoy.channels.errors import (
     SendTimeoutError,
     StartupTimeoutError,
 )
+from envoy.channels.slack import SlackChannelAdapter
+from envoy.channels.telegram import TelegramChannelAdapter
 from envoy.channels.web import WebChannelAdapter
 
 __all__ = [
@@ -71,6 +74,9 @@ __all__ = [
     "ChannelAdapter",
     # Concrete adapters (Phase 01 foundation surfaces)
     "CLIChannelAdapter",
+    "DiscordChannelAdapter",
+    "SlackChannelAdapter",
+    "TelegramChannelAdapter",
     "WebChannelAdapter",
     # Envelope + payloads
     "ChannelCapabilities",
@@ -85,9 +91,9 @@ __all__ = [
     "SendReceipt",
     "VisibleSecret",
     "WeeklyPostureReviewPayload",
-    # 11 typed errors per spec § Error taxonomy + 1 base + 4 adapter-internal
-    # hygiene errors (NotStartedError + PendingDecisionsCeilingError +
-    # InvalidDecisionError + PhaseDeferredError) = 16 total
+    # 11 spec-taxonomy errors + 4 adapter-internal hygiene errors
+    # (spec § Adapter-internal hygiene errors) + 1 base class (ChannelAdapterError)
+    # = 16 exported error symbols.  OverflowDropEvent is Ledger-only (not raised).
     "AlreadyStartedError",
     "AuthenticationError",
     "ChannelAdapterError",

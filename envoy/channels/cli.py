@@ -321,7 +321,7 @@ class CLIChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: "GrantMomentRequest") -> None:
+    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
         """M1 render-only — satisfies `envoy.grant_moment.channel_handoff.ChannelAdapterProtocol`.
 
         Writes the rendering prose to the output stream WITHOUT awaiting a
@@ -430,7 +430,7 @@ class CLIChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_prose(request: "GrantMomentRequest") -> str:
+    def _render_grant_moment_request_prose(request: GrantMomentRequest) -> str:
         # M1 render-only — reads the canonical `GrantMomentRequest` shape
         # from `envoy.grant_moment.signed_consent` (per /redteam R3 MED-R3-02
         # closure: pre-R3 the renderer read `visible_secret`/`body`/

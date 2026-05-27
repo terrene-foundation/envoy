@@ -19,7 +19,10 @@ import pytest
 from envoy.channels import (
     ChannelAdapter,
     CLIChannelAdapter,
+    DiscordChannelAdapter,
     PhaseDeferredError,
+    SlackChannelAdapter,
+    TelegramChannelAdapter,
     WebChannelAdapter,
 )
 from envoy.channels.cli import CLIChannelConfig
@@ -29,8 +32,13 @@ from envoy.channels.envelope import (
 )
 from envoy.channels.web import WebChannelConfig
 
-
-PHASE_01_ADAPTERS = [CLIChannelAdapter, WebChannelAdapter]
+PHASE_01_ADAPTERS = [
+    CLIChannelAdapter,
+    WebChannelAdapter,
+    TelegramChannelAdapter,
+    SlackChannelAdapter,
+    DiscordChannelAdapter,
+]
 ABSTRACT_METHODS = {
     "channel_id",
     "startup",

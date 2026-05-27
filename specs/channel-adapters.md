@@ -34,6 +34,10 @@ async def shutdown(self, drain_timeout_seconds: int = 5) -> None:
     Drain pending sends, close transports.
     Timeout: drain_timeout_seconds (default 5s); after timeout, force-close.
     Idempotent: calling on already-shutdown adapter is a no-op.
+    Pending in-flight grant moment coroutines are cancelled: Future-based adapters
+    (Web, Slack, Discord) call `.cancel()` on each pending Future; queue-based
+    adapters (Telegram) push a shutdown sentinel into each pending queue. Awaiting
+    `send_grant_moment` calls raise `GrantMomentExpiredError`.
     """
 ```
 
@@ -146,10 +150,24 @@ def capabilities(self) -> ChannelCapabilities:
 async def rate_limit_status(self) -> RateLimitStatus:
     """
     Returns `RateLimitStatus {requests_remaining, window_resets_at, soft_quota_warning}`.
-    Soft warning at 80% utilization → `soft_quota_warning=True`.
+    `soft_quota_warning` always False in the current implementation.
     Hard quota raises `RateLimitExceededError` from `send_*` methods.
     """
 ```
+
+### Gate ordering invariant (INV-4)
+
+`send_message` and `send_grant_moment` MUST check gates in this order:
+
+1. **Lifecycle guard** — `_require_started(...)` raises `NotStartedError` if adapter not running.
+2. **Principal validation** — raises `PrincipalNotFoundError` if `target_principal_id` is empty/blank. Precedes rate-limit to prevent quota information leakage to callers supplying invalid principal IDs.
+3. **Rate-limit gate** — consults `rate_limit_status()` before every send; raises `RateLimitExceededError` if `requests_remaining == 0` or `soft_quota_warning` is True.
+
+Swapping 2 and 3 is BLOCKED: a caller supplying an invalid principal ID would receive quota information before identity is validated.
+
+### Pending-decision isolation
+
+`send_grant_moment` writes one `asyncio.Future` (or `asyncio.Queue` for queue-based adapters) per `request_id` into `_pending_decisions` at call entry via `_register_pending`. The entry is removed in a `finally` block regardless of outcome (timeout, cancellation, or decision). Each call gets a fresh Future/Queue — concurrent calls for different `request_id` values are fully isolated and do not share state.
 
 ## `ChannelCapabilities`
 
@@ -183,16 +201,16 @@ class InboundMessage:
 
 ## Phase 01 surfaces (8)
 
-| Channel                | Credentials              | Compliance                                | Phase 01 ship |
-| ---------------------- | ------------------------ | ----------------------------------------- | ------------- |
-| CLI                    | none                     | N/A                                       | Yes           |
-| Web                    | localhost bind           | N/A                                       | Yes           |
-| Telegram               | bot token                | Clean (official bot API)                  | Yes           |
-| Slack                  | bot token + OAuth        | Clean (App Directory)                     | Yes           |
-| Discord                | bot token                | Clean (Dev Terms)                         | Yes           |
-| WhatsApp               | WhatsApp Business API    | Paid tier; Foundation gateway OR user-own | Yes (caveat)  |
-| Signal                 | signal-cli OR Group Link | Phase 01 legal gate (Path B default)      | Yes (Path B)  |
-| iMessage (BlueBubbles) | user-owned Mac           | Apple ToS grey; user responsibility       | Yes (caveat)  |
+| Channel                | Credentials                                                               | Compliance                                | Phase 01 ship                                                                        |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| CLI                    | none                                                                      | N/A                                       | Yes                                                                                  |
+| Web                    | localhost bind                                                            | N/A                                       | Yes                                                                                  |
+| Telegram               | webhook `secret_token` + injected `send_fn` (`send_fn=None` is test-only) | Clean (official bot API)                  | Yes                                                                                  |
+| Slack                  | bot token + OAuth + signing_secret                                        | Clean (App Directory)                     | Yes                                                                                  |
+| Discord                | bot token + Ed25519 application_public_key + webhook_url (SSRF-guarded)   | Clean (Dev Terms)                         | Yes (adapter + signature + ritual; outbound delivery raises `ChannelTransportError`) |
+| WhatsApp               | WhatsApp Business API                                                     | Paid tier; Foundation gateway OR user-own | Yes (caveat)                                                                         |
+| Signal                 | signal-cli OR Group Link                                                  | Phase 01 legal gate (Path B default)      | Yes (Path B)                                                                         |
+| iMessage (BlueBubbles) | user-owned Mac                                                            | Apple ToS grey; user responsibility       | Yes (caveat)                                                                         |
 
 ## Phase 04 surfaces (17+)
 
@@ -216,6 +234,8 @@ High-stakes Grant Moments (above Financial/Communication threshold) render + app
 ## Network security (T-080)
 
 TLS 1.3 minimum. Certificate pinning for Foundation endpoints. Standard OS trust store for third-party channels.
+
+Discord `webhook_url` is SSRF-guarded at `startup()` via `_validate_webhook_url_ssrf` (`envoy/channels/discord.py`): rejects loopback (`127.0.0.0/8`, `::1/128`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` IPv6 ULA), link-local, RFC 1122 "this-network" (`0.0.0.0/8`), IMDS (`169.254.169.254`), IPv6-mapped IPv4 (`::ffff:0.0.0.0/96`), and numeric-encoded literal IPs in decimal (`2130706433`), hex-integer (`0x7f000001`), dotted-hex (`0x7f.0.0.1`), and octal-dotted (`0177.0.0.1`) forms. Hostname-level blocklist (string-match before IP-parse) rejects `localhost`, `metadata.google.internal`, `metadata.internal`, `169.254.169.254`, and `::` (the bracket-stripped form of `[::]`). The IP-network checks above already cover `::1`, `0.0.0.0`, and any `fd00::ec2:254`-class ULA via `::1/128`, `0.0.0.0/8`, and `fc00::/7` respectively. Failure raises `ChannelTransportError`.
 
 ## Error taxonomy
 
@@ -242,7 +262,7 @@ The implementation also ships 4 adapter-internal typed errors that are NOT part 
 | Error                          | Trigger                                                                                                              | User action                                       | Retry              |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------ |
 | `NotStartedError`              | `send_*` / `render_grant_moment` called before `startup`                                                             | Caller programming error — call `startup` first   | Never              |
-| `PendingDecisionsCeilingError` | In-flight pending-decision map at ceiling (DoS defense, Web adapter only today)                                      | Wait for existing grants to resolve, then retry   | Auto after drain   |
+| `PendingDecisionsCeilingError` | In-flight pending-decision map at ceiling (DoS defense, all Wave-A adapters: Web, Discord, Slack, Telegram)          | Wait for existing grants to resolve, then retry   | Auto after drain   |
 | `InvalidDecisionError`         | `_resolve_pending_decision` received a decision string NOT in `GrantMomentDecision` Literal vocabulary               | WS-handler programming / injection — check source | Never              |
 | `PhaseDeferredError`           | Phase-02 ritual surface called (`send_posture_review` / `send_monthly_report`) OR Web `send_message` (Phase-01 hold) | Phase 02 / Wave-4 sibling-shard wiring required   | Never (structural) |
 
@@ -264,14 +284,8 @@ The implementation also ships 4 adapter-internal typed errors that are NOT part 
 
 - `tests/integration/channels/test_<channel>_adapter_lifecycle.py` — startup/shutdown idempotency, drain timeout (Tier 2, real channel sandbox where available). File-pattern template: `<channel>` ∈ {cli, web, telegram, slack, discord, whatsapp, signal, imessage}. Phase 01 foundation ships `cli` + `web`; Wave-A/B siblings populate the remaining channels.
 - `tests/integration/channels/test_adapter_abc_contract.py` — ABC method-signature parity with spec § Adapter contract; Phase-02 ritual surfaces inherit `PhaseDeferredError`.
-- `tests/integration/channels/test_redteam_r{1,2,3}_closures.py` — /redteam round closure pins for the foundation shard.
+- `tests/integration/channels/test_redteam_r{1,2,3,4}_closures.py` — /redteam round closure pins for the foundation shard.
 - `tests/integration/test_h03_primary_channel_binding.py` — high-stakes Grant Moment routing (`NotPrimaryChannelError`).
-
-**Forward-declared for Wave-A/B sibling shards** (per `rules/spec-accuracy.md` Rule 4 work trackers extracted to `workspaces/phase-01-mvp/todos/active/wave-4-channels-regression-tests.md`):
-
-- `test_<channel>_send_message.py` — send_message timeout, rate-limit, payload-too-large per channel (Wave-A: TG/Slack/Discord; Wave-B: caveated).
-- `test_<channel>_ritual_delivery.py` — `send_grant_moment` / `send_digest` per channel.
-- T-018 visible-secret rendered every channel; T-070 clipboard auto-clear; T-080 TLS 1.3 + cert pin; T-023 Signal Path B; cross-channel session continuity (EC-7).
 
 ## Open questions
 
