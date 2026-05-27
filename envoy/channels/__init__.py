@@ -7,9 +7,9 @@ iMessage, Signal) implements.
 
 This shard ships:
 
-- `ChannelAdapter` ABC (specs lines 14-130).
-- `InboundMessage` + supporting dataclasses (specs lines 148-159, 132-143).
-- 11 typed errors (specs lines 199-214) + `PhaseDeferredError` for Phase-02
+- `ChannelAdapter` ABC (specs § Adapter contract).
+- `InboundMessage` + supporting dataclasses (specs § Message envelope).
+- Typed errors (specs § Error taxonomy) + `PhaseDeferredError` for Phase-02
   ritual-delivery surfaces.
 - `CLIChannelAdapter` wrapping `kailash.channels.cli_channel.CLIChannel`.
 - `WebChannelAdapter` wrapping `kailash.channels.api_channel.APIChannel`,
@@ -91,8 +91,9 @@ __all__ = [
     "SendReceipt",
     "VisibleSecret",
     "WeeklyPostureReviewPayload",
-    # 14 typed errors per spec § Error taxonomy (OverflowDropEvent is Ledger-only,
-    # not raised directly) + 1 base class (ChannelAdapterError) = 15 exported symbols.
+    # 11 spec-taxonomy errors + 4 adapter-internal hygiene errors
+    # (spec § Adapter-internal hygiene errors) + 1 base class (ChannelAdapterError)
+    # = 16 exported error symbols.  OverflowDropEvent is Ledger-only (not raised).
     "AlreadyStartedError",
     "AuthenticationError",
     "ChannelAdapterError",

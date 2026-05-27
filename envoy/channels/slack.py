@@ -339,7 +339,7 @@ class SlackChannelAdapter(ChannelAdapter):
                 target_principal_id=target_principal_id,
                 message="target_principal_id must be non-empty",
             )
-        # H-03 primary-channel binding (spec lines 183-185). Defense-in-depth:
+        # H-03 primary-channel binding (spec § Primary-channel binding). Defense-in-depth:
         # `grant.high_stakes is True` ALSO requires the primary channel even
         # when the caller forgot `primary_only=True`.
         must_be_primary = primary_only or grant.high_stakes

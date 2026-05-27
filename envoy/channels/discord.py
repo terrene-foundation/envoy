@@ -437,7 +437,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
             )
 
-        # Invariant 1 + 4: H-03 primary-channel binding (spec lines 183-185).
+        # Invariant 1 + 4: H-03 primary-channel binding (spec § Primary-channel binding).
         # Defense-in-depth: ``grant.high_stakes is True`` ALSO requires the
         # primary channel even when the caller forgot ``primary_only=True``.
         # Single-layer kwarg gating is insufficient — the adapter MUST also
