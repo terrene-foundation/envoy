@@ -96,8 +96,14 @@ class DiscordSigner:
         except InvalidSignature:
             # Expected failure path — not an error, just an invalid request.
             return False
-        except Exception:
+        except Exception as exc:
             # Catches ValueError (bad hex), UnicodeEncodeError, etc.  We must
             # not leak exceptions to the caller per the WebhookSigner contract.
-            logger.debug("discord_signer.verify: unexpected exception", exc_info=True)
+            # exc_info=True is intentionally omitted: the exception chain can
+            # include attacker-controlled header bytes (X-Signature-Ed25519)
+            # which would be written into the log verbatim — CWE-117 vector.
+            logger.debug(
+                "discord_signer.verify: unexpected exception (%s)",
+                type(exc).__name__,
+            )
             return False

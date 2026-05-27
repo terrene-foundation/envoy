@@ -139,8 +139,24 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
             channel_id=channel_id,
             message=f"webhook_url targets blocked host (SSRF guard): {hostname!r}",
         )
+    # Normalise decimal and hex integer literals to dotted-quad before calling
+    # ipaddress.ip_address, which would raise ValueError for those forms.
+    # Examples: "2130706433" == 127.0.0.1, "0x7f000001" == 127.0.0.1.
+    _hostname_for_ip = hostname
+    if hostname.isdigit():
+        # Pure decimal integer — convert via int first.
+        try:
+            _hostname_for_ip = str(ipaddress.ip_address(int(hostname)))
+        except (ValueError, OverflowError):
+            _hostname_for_ip = hostname  # fall through to the except below
+    elif hostname.lower().startswith("0x"):
+        # Hex integer literal.
+        try:
+            _hostname_for_ip = str(ipaddress.ip_address(int(hostname, 16)))
+        except (ValueError, OverflowError):
+            _hostname_for_ip = hostname  # fall through to the except below
     try:
-        ip = ipaddress.ip_address(hostname)
+        ip = ipaddress.ip_address(_hostname_for_ip)
         for net in _SSRF_BLOCKED_NETWORKS:
             if ip in net:
                 raise ChannelTransportError(

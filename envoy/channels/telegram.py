@@ -118,9 +118,13 @@ def _coerce_decision(
     matches = [d for d in _ALLOWED_DECISIONS if d.startswith(normalised)]
     if len(matches) == 1:
         return matches[0]  # type: ignore[return-value]
+    # Sanitize `raw` to 32 printable chars before passing to error (CWE-117).
+    # `raw` originates from untrusted inbound Telegram message text — an
+    # attacker-controlled string of unbounded length.
+    sanitized_raw = "".join(c for c in raw if c.isprintable())[:32]
     raise InvalidDecisionError(
         channel_id=_TELEGRAM_CHANNEL_ID,
-        decision=raw,
+        decision=sanitized_raw,
         allowed=tuple(sorted(_ALLOWED_DECISIONS)),
     )
 
@@ -236,6 +240,12 @@ class TelegramChannelAdapter(ChannelAdapter):
                         self._inbound_queue.get_nowait()
             except (asyncio.TimeoutError, asyncio.QueueEmpty):
                 pass
+        # Cancel every in-flight grant future before clearing the map so that
+        # coroutines awaiting send_grant_moment receive CancelledError instead
+        # of waiting forever.  Mirrors the Discord and Web adapter patterns.
+        for fut in list(self._pending_grants.values()):
+            if not fut.done():
+                fut.cancel()
         self._pending_grants.clear()
         logger.info("channel.shutdown", extra={"channel_id": _TELEGRAM_CHANNEL_ID})
 
