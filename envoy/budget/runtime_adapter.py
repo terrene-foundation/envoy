@@ -98,15 +98,24 @@ class BudgetRuntimeAdapter:
     def budget_velocity_check(self, session: Any) -> BudgetCheckResult:
         """Check the per-hour velocity window; raise if its ceiling is breached.
 
-        Per the runtime protocol docstring: raises `BudgetVelocityExceededError`
-        when the velocity ceiling is breached. A zero-cost `check` against the
-        binding window returns the current headroom without mutating state.
+        Per the runtime protocol docstring, raises `BudgetVelocityExceededError`
+        when the velocity ceiling is breached. The check accounts for BOTH
+        committed AND reserved (in-flight) microdollars — `BudgetSnapshot`
+        exposes only `committed`, so the adapter routes through
+        `EnvoyBudgetOrchestrator.window_check` which returns the per-window
+        `BudgetCheckResult` (committed + reserved + remaining), so the breach
+        condition catches in-flight reservations at the ceiling, not just
+        post-record state.
         """
-        snapshot = self._orchestrator.snapshot()
-        velocity = snapshot.per_hour_velocity
-        if velocity.committed >= velocity.allocated:
+        result = self._orchestrator.window_check("per_hour_velocity", 0)
+        if (
+            result.committed_microdollars + result.reserved_microdollars
+            >= result.allocated_microdollars
+        ):
             raise BudgetVelocityExceededError(
-                f"per-hour velocity ceiling breached: {velocity.committed} of "
-                f"{velocity.allocated} microdollars committed this hour"
+                f"per-hour velocity ceiling breached: "
+                f"{result.committed_microdollars} committed + "
+                f"{result.reserved_microdollars} reserved of "
+                f"{result.allocated_microdollars} microdollars this hour"
             )
-        return self._orchestrator.check(0, intent_id="velocity_check")
+        return result

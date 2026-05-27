@@ -33,6 +33,7 @@ impossible (design § 3.2 item 4).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
@@ -65,6 +66,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from kailash.trust.constraints.budget_tracker import BudgetCheckResult, BudgetEvent
 
 __all__ = ["EnvoyBudgetOrchestrator", "MultiWindowBudget"]
+
+logger = logging.getLogger(__name__)
 
 
 class _ReservationRecordSink(Protocol):
@@ -257,6 +260,10 @@ class EnvoyBudgetOrchestrator:
             per_session_remaining_microdollars=session_tracker.remaining_microdollars(),
         )
         if anomaly is not None:
+            logger.warning(
+                "envoy.budget.reserve.anomaly_detected",
+                extra={"intent_id": intent_id, "requested_microdollars": estimated_microdollars},
+            )
             raise anomaly
 
         # Reserve across all five windows; track successes for rollback.
@@ -273,6 +280,15 @@ class EnvoyBudgetOrchestrator:
             consulted.append(window)
             if not tracker.reserve(estimated_microdollars):
                 self._rollback(reserved_per_window, period_keys)
+                logger.warning(
+                    "envoy.budget.reserve.exhausted",
+                    extra={
+                        "intent_id": intent_id,
+                        "window": window,
+                        "requested_microdollars": estimated_microdollars,
+                        "remaining_microdollars": tracker.remaining_microdollars(),
+                    },
+                )
                 raise BudgetExhaustedError(
                     window=window,
                     requested_microdollars=estimated_microdollars,
@@ -287,6 +303,10 @@ class EnvoyBudgetOrchestrator:
             high_velocity = self._anomaly.record_ceiling_hit(now)
             if high_velocity is not None:
                 self._rollback(reserved_per_window, period_keys)
+                logger.warning(
+                    "envoy.budget.reserve.high_velocity_pattern",
+                    extra={"intent_id": intent_id, "hits": high_velocity.hits},
+                )
                 raise high_velocity
 
         handle = ReservationHandle(
@@ -299,6 +319,14 @@ class EnvoyBudgetOrchestrator:
             created_at=now,
         )
         self._active_reservations[handle.reservation_id] = handle
+        logger.info(
+            "envoy.budget.reserve.ok",
+            extra={
+                "reservation_id": handle.reservation_id,
+                "intent_id": intent_id,
+                "reserved_microdollars": estimated_microdollars,
+            },
+        )
         return handle
 
     def record_for_call(self, handle: ReservationHandle, actual_microdollars: int) -> None:
@@ -320,11 +348,30 @@ class EnvoyBudgetOrchestrator:
             )
 
         period_keys = self._period_keys_for(handle)
+        # Mark the reservation consumed BEFORE any state mutation
+        # (record-intent-first). This closes two accounting-corruption paths:
+        # (1) a repeated record of an EXPIRED handle now hits the double-record
+        #     guard above instead of re-running `_rollback`, which would
+        #     over-release sibling in-flight reservations' held capacity; and
+        # (2) a partial-failure retry (a window `record` raising mid-loop)
+        #     cannot double-charge the windows already committed on the first
+        #     attempt. The guard timing is the mirror of the EC-8 double-billing
+        #     invariant — no double-record AND no double-release.
+        self._recorded_reservations[handle.reservation_id] = now.isoformat()
+        self._active_reservations.pop(handle.reservation_id, None)
+
         if now > handle.expires_at:
             # Release the held reservation (record actual=0) so it is not leaked,
             # then refuse the late record.
             self._rollback(handle.reserved_per_window, period_keys)
-            self._active_reservations.pop(handle.reservation_id, None)
+            logger.info(
+                "envoy.budget.record.expired",
+                extra={
+                    "reservation_id": handle.reservation_id,
+                    "intent_id": handle.intent_id,
+                    "expired_at": handle.expires_at.isoformat(),
+                },
+            )
             raise ReservationExpiredError(
                 reservation_id=handle.reservation_id,
                 expired_at=handle.expires_at.isoformat(),
@@ -336,8 +383,14 @@ class EnvoyBudgetOrchestrator:
             tracker.record(reserved, actual_microdollars)
 
         self._windows.evict_per_call(period_keys["per_call"])
-        self._recorded_reservations[handle.reservation_id] = now.isoformat()
-        self._active_reservations.pop(handle.reservation_id, None)
+        logger.info(
+            "envoy.budget.record.ok",
+            extra={
+                "reservation_id": handle.reservation_id,
+                "intent_id": handle.intent_id,
+                "actual_microdollars": actual_microdollars,
+            },
+        )
 
         if self._ledger_emitter is not None:
             self._ledger_emitter.enqueue_reservation_record(handle, actual_microdollars)
@@ -363,6 +416,27 @@ class EnvoyBudgetOrchestrator:
             results,
             key=lambda r: (r.allowed, r.remaining_microdollars - estimated_microdollars),
         )
+
+    def window_check(
+        self,
+        window: WindowName,
+        estimated_microdollars: int = 0,
+        *,
+        intent_id: str = "window_check",
+    ) -> BudgetCheckResult:
+        """Non-mutating check against a SINGLE window's current-period tracker.
+
+        Unlike :meth:`check` (most-restrictive across all five windows), this
+        returns the per-window `BudgetCheckResult` — `committed + reserved` are
+        both populated, so callers can detect a ceiling breach (incl. in-flight
+        reservations) via `committed + reserved >= allocated`. Used by the
+        runtime-adapter `budget_velocity_check`."""
+        self._validate_microdollars(estimated_microdollars, "estimated_microdollars")
+        now = self._clock()
+        period_key = self._scheduler.current_period_key(
+            window, at_time=now, session_id=self._session_id, intent_id=intent_id
+        )
+        return self._windows.tracker(window, period_key).check(estimated_microdollars)
 
     def snapshot(self) -> MultiWindowSnapshot:
         """Snapshot all five windows at one instant."""
@@ -425,6 +499,15 @@ class EnvoyBudgetOrchestrator:
                 requested_microdollars=new_microdollars,
             )
         self._apply_override(window, new_microdollars)
+        logger.info(
+            "envoy.budget.velocity_raise.approved",
+            extra={
+                "window": window,
+                "prior_allocated_microdollars": current,
+                "new_allocated_microdollars": new_microdollars,
+                "grant_moment_ref": cooling_off_grant_ref,
+            },
+        )
         # An approved raise mutated the ceiling — record it for the audit trail
         # (Daily Digest consumes budget_extended; the independent verifier
         # hash-checks it). Per design § 3.2 item 7.

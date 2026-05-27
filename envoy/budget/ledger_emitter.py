@@ -31,6 +31,8 @@ runtime-abstraction contract) without losing the emission.
 
 from __future__ import annotations
 
+import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from dataflow.classification.event_payload import format_record_id_for_event
@@ -41,6 +43,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from envoy.ledger.facade import EnvoyLedger
 
 __all__ = ["LedgerEmitter"]
+
+logger = logging.getLogger(__name__)
 
 # Model name passed to format_record_id_for_event for budget-event principal ids;
 # matches the classification-model convention used across envoy event payloads.
@@ -68,7 +72,10 @@ class LedgerEmitter:
     ) -> None:
         self._ledger = ledger
         self._policy = classification_policy
-        self._pending: list[_PendingEmit] = []
+        # Bounded-friendly deque (O(1) popleft) per `rules/trust-plane` P6;
+        # the buffer drains promptly via `drain()` on the async hot path so a
+        # max-len is intentionally unbounded for Phase-01 (no truncation).
+        self._pending: deque[_PendingEmit] = deque()
 
     # ------------------------------------------------------------------
     # Sync enqueue (called from sync accounting + the upstream callback thread)
@@ -157,8 +164,12 @@ class LedgerEmitter:
         while self._pending:
             emit = self._pending[0]
             entry_id = await self._ledger.append(entry_type=emit.entry_type, content=emit.content)
-            self._pending.pop(0)
+            self._pending.popleft()
             entry_ids.append(entry_id)
+            logger.info(
+                "envoy.budget.ledger.emit",
+                extra={"entry_type": emit.entry_type, "entry_id": entry_id},
+            )
         return entry_ids
 
     @property

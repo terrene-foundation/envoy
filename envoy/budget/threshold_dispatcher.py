@@ -36,6 +36,7 @@ that is out of Phase-01 scope (single-thread asyncio).
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from envoy.budget.ledger_emitter import LedgerEmitter
 
 __all__ = ["ThresholdDispatcher"]
+
+logger = logging.getLogger(__name__)
 
 
 class ThresholdDispatcher:
@@ -112,5 +115,13 @@ class ThresholdDispatcher:
         await self._emitter.drain()
         # 2. Dispatch to the Grant-Moment seam if a consumer is wired.
         if self._on_grant_moment is not None:
+            logger.info(
+                "envoy.budget.grant_moment.dispatch",
+                extra={
+                    "window": event.window,
+                    "period_key": event.period_key,
+                    "threshold_bps": round(event.threshold_pct * 10000),
+                },
+            )
             await self._on_grant_moment(event)
         self._processed += 1
