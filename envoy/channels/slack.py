@@ -332,13 +332,6 @@ class SlackChannelAdapter(ChannelAdapter):
                 channel_id=_SLACK_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
             )
-        # DoS ceiling: refuse a new Grant Moment if the in-flight queue is full.
-        if len(self._pending_decisions) >= _MAX_PENDING_DECISIONS:
-            raise PendingDecisionsCeilingError(
-                channel_id=_SLACK_CHANNEL_ID,
-                ceiling=_MAX_PENDING_DECISIONS,
-                current_count=len(self._pending_decisions),
-            )
         logger.info(
             "channel.send_grant_moment.start",
             extra={
@@ -347,10 +340,8 @@ class SlackChannelAdapter(ChannelAdapter):
                 "high_stakes": grant.high_stakes,
             },
         )
-        # Register in-flight future for this decision.
-        loop = asyncio.get_running_loop()
-        decision_future: asyncio.Future[GrantMomentDecision] = loop.create_future()
-        self._pending_decisions[grant.request_id] = decision_future
+        # Register in-flight future for this decision (idempotent; ceiling enforced inside).
+        decision_future = self._register_pending(grant.request_id)
 
         # Render and deliver the Grant Moment block to the Slack channel.
         rendered = self._render_grant_moment_text(grant)
@@ -501,6 +492,32 @@ class SlackChannelAdapter(ChannelAdapter):
     def _require_started(self, method_name: str = "send_*") -> None:
         if not self._started or self._closed:
             raise NotStartedError(channel_id=_SLACK_CHANNEL_ID, method_name=method_name)
+
+    def _register_pending(self, request_id: str) -> "asyncio.Future[GrantMomentDecision]":
+        """Invariant 3: single write-site for pending-decisions state.
+
+        Returns the existing ``asyncio.Future[GrantMomentDecision]`` if one is
+        already registered for ``request_id`` (idempotent — prevents concurrent
+        ``send_grant_moment`` calls from stealing each other's responses).
+        Otherwise creates a new future, stores it, and returns it.
+        The caller awaits this future; ``post_decision`` resolves it.
+
+        Raises ``PendingDecisionsCeilingError`` when the in-flight map is at
+        capacity to prevent unbounded memory growth under sustained load.
+        """
+        existing = self._pending_decisions.get(request_id)
+        if existing is not None:
+            return existing
+        if len(self._pending_decisions) >= _MAX_PENDING_DECISIONS:
+            raise PendingDecisionsCeilingError(
+                channel_id=_SLACK_CHANNEL_ID,
+                ceiling=_MAX_PENDING_DECISIONS,
+                current_count=len(self._pending_decisions),
+            )
+        loop = asyncio.get_running_loop()
+        decision_future: asyncio.Future[GrantMomentDecision] = loop.create_future()
+        self._pending_decisions[request_id] = decision_future
+        return decision_future
 
     @staticmethod
     def _render_grant_moment_text(grant: GrantMomentPayload) -> str:

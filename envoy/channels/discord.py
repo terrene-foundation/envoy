@@ -187,9 +187,9 @@ class DiscordChannelConfig:
     """
 
     primary_channel_id: str
-    application_public_key: str
+    application_public_key: str = field(repr=False)  # excluded from repr to avoid leaking in logs
     bot_token: str = field(repr=False)  # excluded from repr to avoid leaking in logs
-    webhook_url: str | None = None
+    webhook_url: str | None = field(default=None, repr=False)  # contains auth token — excluded from repr
 
 
 class DiscordChannelAdapter(ChannelAdapter):
@@ -572,8 +572,10 @@ class DiscordChannelAdapter(ChannelAdapter):
     def _register_pending(self, request_id: str) -> asyncio.Future[GrantMomentDecision]:
         """Invariant 3: single write-site for pending-decisions state.
 
-        Creates a new ``asyncio.Future[GrantMomentDecision]`` for the given
-        ``request_id``, stores it in ``_pending_decisions``, and returns it.
+        Returns the existing ``asyncio.Future[GrantMomentDecision]`` if one is
+        already registered for ``request_id`` (idempotent — prevents concurrent
+        ``send_grant_moment`` calls from stealing each other's responses).
+        Otherwise creates a new future, stores it, and returns it.
         The caller awaits this future; ``post_decision`` resolves it.
 
         CRIT-1 closure: per-request futures prevent concurrent
@@ -583,6 +585,9 @@ class DiscordChannelAdapter(ChannelAdapter):
         Raises ``PendingDecisionsCeilingError`` when the in-flight map is at
         capacity to prevent unbounded memory growth under sustained load.
         """
+        existing = self._pending_decisions.get(request_id)
+        if existing is not None:
+            return existing
         if len(self._pending_decisions) >= _PENDING_DECISIONS_CEILING:
             raise PendingDecisionsCeilingError(
                 channel_id=_DISCORD_CHANNEL_ID,
@@ -694,50 +699,3 @@ class DiscordChannelAdapter(ChannelAdapter):
         lines.append("")
         return "\n".join(lines)
 
-    @staticmethod
-    def _coerce_decision(response: str, options: tuple[str, ...]) -> GrantMomentDecision:
-        """Coerce a user response string to a ``GrantMomentDecision``.
-
-        Invariant 2: closed-vocabulary enforcement. Invalid decisions that
-        are NOT in the options tuple AND NOT in ``_VALID_DECISIONS`` raise
-        ``InvalidDecisionError`` (after 32-char printable sanitization per
-        CWE-117).
-
-        Accepts either a literal option name OR a 1-based index number.
-        Unknown response defaults to ``"modify"`` (security-safe default
-        routes the runtime through the modification path rather than
-        silently approving an unparseable input).
-        """
-        stripped = response.strip()
-
-        # Exact option name match.
-        if stripped in options:
-            return cast("GrantMomentDecision", stripped)
-
-        # 1-based numeric index match.
-        if stripped.isdigit():
-            idx = int(stripped) - 1
-            if 0 <= idx < len(options):
-                return cast("GrantMomentDecision", options[idx])
-
-        # Closed-vocabulary check: reject any response not in _VALID_DECISIONS.
-        if stripped not in _VALID_DECISIONS:
-            # Sanitize to 32 printable chars before passing to error (CWE-117).
-            sanitized = "".join(c for c in stripped if c.isprintable())[:32]
-            raise InvalidDecisionError(
-                channel_id=_DISCORD_CHANNEL_ID,
-                decision=sanitized,
-                allowed=tuple(options),
-            )
-
-        # The response is a valid GrantMomentDecision vocabulary word but is
-        # NOT offered in this specific grant's ``decision_options``.
-        # Per CRIT-1/HIGH-R1-4: silently falling back to "modify"/"deny"/
-        # options[0] is a security risk (would silently approve an unparseable
-        # input or return a decision the grant never offered).  Raise instead.
-        sanitized = "".join(c for c in stripped if c.isprintable())[:32]
-        raise InvalidDecisionError(
-            channel_id=_DISCORD_CHANNEL_ID,
-            decision=sanitized,
-            allowed=tuple(options),
-        )
