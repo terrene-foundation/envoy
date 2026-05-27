@@ -268,8 +268,8 @@ def test_discord_ssrf_blocked_networks_fc00_comment_says_ula() -> None:
 @pytest.mark.regression
 def test_discord_ssrf_rejects_hex_dotted_loopback() -> None:
     """Pin: 0x7f.0.0.1 (== 127.0.0.1) MUST be rejected by the SSRF guard."""
-    from envoy.channels.errors import ChannelTransportError
     from envoy.channels.discord import _validate_webhook_url_ssrf
+    from envoy.channels.errors import ChannelTransportError
 
     with pytest.raises(ChannelTransportError, match="SSRF guard"):
         _validate_webhook_url_ssrf(
@@ -281,8 +281,8 @@ def test_discord_ssrf_rejects_hex_dotted_loopback() -> None:
 @pytest.mark.regression
 def test_discord_ssrf_rejects_hex_int_loopback() -> None:
     """Pin: 0x7f000001 (pure hex integer == 127.0.0.1) MUST also be rejected."""
-    from envoy.channels.errors import ChannelTransportError
     from envoy.channels.discord import _validate_webhook_url_ssrf
+    from envoy.channels.errors import ChannelTransportError
 
     with pytest.raises(ChannelTransportError, match="SSRF guard"):
         _validate_webhook_url_ssrf(
@@ -299,8 +299,8 @@ def test_discord_ssrf_rejects_hex_int_loopback() -> None:
 @pytest.mark.regression
 def test_discord_ssrf_rejects_malformed_octal_component() -> None:
     """Pin: 08.0.0.1 (invalid octal — digit 8) MUST raise ChannelTransportError."""
-    from envoy.channels.errors import ChannelTransportError
     from envoy.channels.discord import _validate_webhook_url_ssrf
+    from envoy.channels.errors import ChannelTransportError
 
     with pytest.raises(ChannelTransportError, match="malformed octal component"):
         _validate_webhook_url_ssrf(
@@ -312,8 +312,8 @@ def test_discord_ssrf_rejects_malformed_octal_component() -> None:
 @pytest.mark.regression
 def test_discord_ssrf_rejects_octal_loopback() -> None:
     """Pin: 0177.0.0.1 (== 127.0.0.1 in octal) MUST be rejected by SSRF guard."""
-    from envoy.channels.errors import ChannelTransportError
     from envoy.channels.discord import _validate_webhook_url_ssrf
+    from envoy.channels.errors import ChannelTransportError
 
     with pytest.raises(ChannelTransportError, match="SSRF guard"):
         _validate_webhook_url_ssrf(
@@ -367,9 +367,7 @@ def test_discord_send_grant_moment_cancelled_error_converts() -> None:
             # Check if this handler catches CancelledError
             handler_type = node.type
             catches_cancelled = False
-            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError":
-                catches_cancelled = True
-            elif isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
+            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError" or isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
                 catches_cancelled = True
 
             if catches_cancelled:
@@ -446,9 +444,12 @@ def test_slack_send_message_principal_check_precedes_rate_limit() -> None:
             val = node.value
             if isinstance(val, ast.Call):
                 func = val.func
-                if isinstance(func, ast.Attribute) and func.attr == "rate_limit_status":
-                    if rate_limit_call_line is None:
-                        rate_limit_call_line = node.lineno
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "rate_limit_status"
+                    and rate_limit_call_line is None
+                ):
+                    rate_limit_call_line = node.lineno
 
     assert principal_not_found_line is not None, (
         "slack.py send_message: no PrincipalNotFoundError raise found "
@@ -492,9 +493,7 @@ def test_slack_send_grant_moment_cancelled_error_converts() -> None:
         if isinstance(node, ast.ExceptHandler):
             handler_type = node.type
             catches_cancelled = False
-            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError":
-                catches_cancelled = True
-            elif isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
+            if isinstance(handler_type, ast.Attribute) and handler_type.attr == "CancelledError" or isinstance(handler_type, ast.Name) and handler_type.id == "CancelledError":
                 catches_cancelled = True
 
             if catches_cancelled:
@@ -566,9 +565,12 @@ def test_telegram_send_message_principal_check_precedes_rate_limit() -> None:
             val = node.value
             if isinstance(val, ast.Call):
                 func = val.func
-                if isinstance(func, ast.Attribute) and func.attr == "rate_limit_status":
-                    if rate_limit_call_line is None:
-                        rate_limit_call_line = node.lineno
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "rate_limit_status"
+                    and rate_limit_call_line is None
+                ):
+                    rate_limit_call_line = node.lineno
 
     assert principal_not_found_line is not None, (
         "telegram.py send_message: no PrincipalNotFoundError raise found "
@@ -595,8 +597,8 @@ def test_telegram_shutdown_sentinel_is_comparison_comment() -> None:
     Uses inspect.getsource to verify the comment text appears near the ``is``
     comparison.  Structural probe: checks source-text proximity, not semantics.
     """
-    import inspect
     import importlib
+    import inspect
     mod = importlib.import_module("envoy.channels.telegram")
     src = inspect.getsource(mod)
 

@@ -158,8 +158,10 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
             _hostname_for_ip = str(ipaddress.ip_address(int(hostname)))
         except (ValueError, OverflowError):
             _hostname_for_ip = hostname  # fall through to the except below
-    elif hostname.lower().startswith("0x"):
-        # Hex integer literal.
+    elif hostname.lower().startswith("0x") and "." not in hostname:
+        # Hex integer literal (no dots) e.g. "0x7f000001" == 127.0.0.1.
+        # Dotted-hex like "0x7f.0.0.1" falls through to the dotted-notation
+        # branch below (startswith("0x") with dots is NOT a pure integer).
         try:
             _hostname_for_ip = str(ipaddress.ip_address(int(hostname, 16)))
         except (ValueError, OverflowError):
