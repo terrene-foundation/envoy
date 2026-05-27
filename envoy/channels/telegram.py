@@ -57,6 +57,7 @@ from envoy.channels.errors import (
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
     PrincipalNotFoundError,
+    RateLimitExceededError,
     SendTimeoutError,
     StartupTimeoutError,
 )
@@ -80,6 +81,7 @@ _TELEGRAM_CHANNEL_ID = "telegram"
 
 # DoS ceiling: maximum concurrent in-flight grant moments.
 _MAX_PENDING_DECISIONS: int = 1000
+_RATE_LIMIT_RETRY_AFTER = 60  # seconds to suggest waiting when quota is exhausted
 
 
 def _hash_pii(value: str) -> str:
@@ -339,6 +341,13 @@ class TelegramChannelAdapter(ChannelAdapter):
             If the underlying send callable does not complete in time.
         """
         self._require_started("send_message")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
         if not target_principal_id or not target_principal_id.strip():
             raise PrincipalNotFoundError(
                 channel_id=_TELEGRAM_CHANNEL_ID,
@@ -438,6 +447,13 @@ class TelegramChannelAdapter(ChannelAdapter):
             If no decision arrives within ``timeout_seconds``.
         """
         self._require_started("send_grant_moment")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
         if not target_principal_id or not target_principal_id.strip():
             raise PrincipalNotFoundError(
                 channel_id=_TELEGRAM_CHANNEL_ID,

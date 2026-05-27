@@ -53,6 +53,7 @@ from envoy.channels.errors import (
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
     PrincipalNotFoundError,
+    RateLimitExceededError,
     SendTimeoutError,
     StartupTimeoutError,
 )
@@ -65,6 +66,7 @@ logger = logging.getLogger(__name__)
 _SLACK_CHANNEL_ID = "slack"
 _SLACK_MAX_MESSAGE_LENGTH = 40000  # Slack Block Kit body limit
 _MAX_PENDING_DECISIONS = 1000
+_RATE_LIMIT_RETRY_AFTER = 60  # seconds to suggest waiting when quota is exhausted
 
 # Closed vocabulary derived from the `GrantMomentDecision` Literal so the
 # two surfaces cannot drift (per /redteam R3 MED-R3-04 closure: derive from
@@ -247,6 +249,13 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 10,
     ) -> SendReceipt:
         self._require_started("send_message")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_SLACK_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
         if not target_principal_id or not target_principal_id.strip():
             raise PrincipalNotFoundError(
                 channel_id=_SLACK_CHANNEL_ID,
@@ -317,6 +326,13 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
         self._require_started("send_grant_moment")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_SLACK_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
         if not target_principal_id or not target_principal_id.strip():
             raise PrincipalNotFoundError(
                 channel_id=_SLACK_CHANNEL_ID,

@@ -73,6 +73,7 @@ from envoy.channels.errors import (
     PayloadTooLargeError,
     PendingDecisionsCeilingError,
     PrincipalNotFoundError,
+    RateLimitExceededError,
     SendTimeoutError,
     StartupTimeoutError,
 )
@@ -85,6 +86,7 @@ logger = logging.getLogger(__name__)
 _DISCORD_CHANNEL_ID = "discord"
 _DISCORD_MAX_MESSAGE_LENGTH = 2000  # Discord standard character limit
 _PENDING_DECISIONS_CEILING = 50
+_RATE_LIMIT_RETRY_AFTER = 60  # seconds to suggest waiting when quota is exhausted
 
 # Closed-vocabulary for GrantMomentDecision — derived structurally per
 # invariant 2 so the set automatically tracks future spec additions.
@@ -359,6 +361,13 @@ class DiscordChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 10,
     ) -> SendReceipt:
         self._require_started("send_message")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
         if len(payload.body) > _DISCORD_MAX_MESSAGE_LENGTH:
             raise PayloadTooLargeError(
                 channel_id=_DISCORD_CHANNEL_ID,
@@ -420,6 +429,13 @@ class DiscordChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
         self._require_started("send_grant_moment")
+        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
 
         # Invariant 1 + 4: H-03 primary-channel binding (spec lines 183-185).
         # Defense-in-depth: ``grant.high_stakes is True`` ALSO requires the
