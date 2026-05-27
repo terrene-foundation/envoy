@@ -28,6 +28,11 @@ Actions (with outbox items), refusals, spend (of monthly ceiling), pending Grant
 
 <2 Digest opens/week for 3 weeks → offer 3-line compact form or event-driven-only delivery (fires on Grant Moment pending or budget > 80%).
 
+The user's selection persists (Trust-store-backed) and overrides the
+engagement-auto form on every subsequent digest until they pick `rich` again.
+Selection surface: `envoy digest form --set rich|compact|event_only` (or the
+inbound channel adapter's reply-parser when a digest channel ships one).
+
 ## Channel-adaptive rendering
 
 Email/Web: rich format + attachments. Telegram/Slack/Discord: inline buttons. SMS/WhatsApp: compact 10-line. CLI: on `envoy digest today`.
@@ -85,12 +90,17 @@ Classified `record_id` and `principal_genesis_id` values routed through `format_
 
 ## Test location
 
-- `tests/e2e/test_daily_digest_morning_delivery.py` — scheduled delivery on each Phase-01 channel (Tier 3).
-- `tests/integration/test_digest_form_per_channel.py` — rich vs compact vs SMS rendering.
-- `tests/integration/test_low_engagement_fallback.py` — <2 opens × 3 weeks → compact offer.
-- `tests/integration/test_duress_banner_primary_only.py` — V2 C-02 banner on primary channel only.
-- `tests/regression/test_t019_habituation_low_engagement_fallback.py` — T-019 defense.
-- `tests/integration/test_digest_reply_no_yes_skip.py` — reply parsing + action extraction.
+- `tests/e2e/test_daily_digest_morning_delivery.py` — EC-3 7-consecutive-day fire battery (Tier 3).
+- `tests/tier2/test_daily_digest_service_wiring.py` — full aggregate→render→fan-out→ritual_completion path (Tier 2).
+- `tests/tier2/test_digest_form_per_channel.py` — rich vs compact form selection + channel wire-shape translation.
+- `tests/tier1/test_daily_digest_engagement_and_backfill.py` — low-engagement fallback (<2 opens × 3 weeks → compact) + backfill window.
+- `tests/tier1/test_daily_digest_duress_and_cli.py` — V2 C-02 duress banner on primary channel only (T-018) + `envoy digest` CLI surface.
+- `tests/regression/test_t019_habituation_low_engagement_fallback.py` — T-019 defense (threshold boundary pinned).
+- `tests/tier1/test_daily_digest_pause.py` — pause/resume persists across restart; "skip digest" reply maps to `DailyDigestService.pause`.
+
+Reply parsing (`no` / `yes` / `skip digest`) is the inbound channel adapter's
+contract (`specs/channel-adapters.md` § Adapter contract); the digest layer
+consumes only the `skip digest` → pause mapping, covered by the pause tests above.
 
 ## Open questions
 

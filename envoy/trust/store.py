@@ -46,7 +46,6 @@ from kailash.trust.posture.posture_store import SQLitePostureStore
 from kailash.trust.revocation.cascade import RevocationResult, cascade_revoke
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
 
-
 # ---------------------------------------------------------------------------
 # Envoy-side identifier safety guard
 # ---------------------------------------------------------------------------
@@ -109,6 +108,10 @@ from envoy.trust.types import (
     SeedResult,
     VisibleSecret,
 )
+
+# Module-level UTC alias so digest methods whose `timezone` parameter shadows
+# the `datetime.timezone` import (digest_schedule_set) can still reach UTC.
+_UTC = timezone.utc
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +257,18 @@ class TrustStoreAdapter:
         # into the AES-256-GCM TrustVault uniformly. It is NOT a parallel
         # persistence path — it is one more region of the same store.
         self._bc_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.bc.db")
+        # Daily Digest state — pause/schedule/backfill/engagement/active_channels
+        # persistence per `specs/daily-digest.md` § Interaction + § Schedule.
+        # T-04-82 sibling-file layout consistent with the BC store; the
+        # T-01-13 vault-container migration moves both into the AES-256-GCM
+        # TrustVault region uniformly. Same sync-helper / async-wrapper
+        # idiom as `_sync_init_bc_store` / `persist_boundary_conversation_state`
+        # — single SQLite db file, fresh connection per operation under
+        # `asyncio.to_thread`, parameterized queries throughout (per
+        # `rules/trust-plane-security.md` MUST Rule 5), 0o600 permissions on
+        # the db file (MUST Rule 6), `_validate_id_safety()` on every
+        # principal_id and channel_id reaching the SQLite primary keys.
+        self._digest_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.digest.db")
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
         self._posture_store = SQLitePostureStore(db_path=posture_db)
@@ -294,6 +309,7 @@ class TrustStoreAdapter:
         await self._chain_store.initialize()
         await self._authority_registry.initialize()
         await asyncio.to_thread(self._sync_init_bc_store)
+        await asyncio.to_thread(self._sync_init_digest_store)
         self._initialized = True
 
     async def close(self) -> None:
@@ -990,6 +1006,507 @@ class TrustStoreAdapter:
             )
             row: sqlite3.Row | None = cur.fetchone()
             return row
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Daily Digest state (T-04-82) — pause / schedule / backfill /
+    # engagement / active-channels persistence per specs/daily-digest.md.
+    # Same sync-helper / async-wrapper idiom as the BC store above; a
+    # single 0o600 SQLite sibling file (`*.digest.db`); fresh connection
+    # per op on the asyncio.to_thread worker; parameterized queries only
+    # (rules/trust-plane-security.md MUST Rule 5); every principal_id and
+    # channel_id reaching a primary key validated via _validate_id_safety.
+    # ------------------------------------------------------------------
+
+    _CREATE_DIGEST_PAUSE_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_pause (
+        principal_id    TEXT PRIMARY KEY,
+        paused_until    TEXT NOT NULL,
+        reason          TEXT NOT NULL,
+        paused_at       TEXT NOT NULL
+    )
+    """
+
+    _CREATE_DIGEST_SCHEDULE_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_schedule (
+        principal_id    TEXT PRIMARY KEY,
+        hour_utc        INTEGER NOT NULL,
+        timezone        TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    )
+    """
+
+    _CREATE_DIGEST_BACKFILL_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_backfill (
+        principal_id    TEXT NOT NULL,
+        channel_id      TEXT NOT NULL,
+        last_success    TEXT NOT NULL,
+        last_digest_id  TEXT NOT NULL,
+        PRIMARY KEY (principal_id, channel_id)
+    )
+    """
+
+    _CREATE_DIGEST_ENGAGEMENT_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_engagement (
+        principal_id    TEXT NOT NULL,
+        opened_at       TEXT NOT NULL,
+        PRIMARY KEY (principal_id, opened_at)
+    )
+    """
+
+    _CREATE_DIGEST_FORM_PREFERENCE_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_form_preference (
+        principal_id    TEXT PRIMARY KEY,
+        form            TEXT NOT NULL
+    )
+    """
+
+    _CREATE_DIGEST_ACTIVE_CHANNELS_SQL = """
+    CREATE TABLE IF NOT EXISTS digest_active_channels (
+        principal_id        TEXT PRIMARY KEY,
+        active_csv          TEXT NOT NULL,
+        primary_channel_id  TEXT NOT NULL
+    )
+    """
+
+    def _sync_init_digest_store(self) -> None:
+        """Create the 5 digest-state tables. Runs on an asyncio.to_thread worker.
+
+        Sets 0o600 on the db file per `rules/trust-plane-security.md` MUST
+        Rule 6 — digest schedule + engagement timing are user-behavior
+        signals that should not be world-readable.
+        """
+        db_file = Path(self._digest_db_path)
+        if not db_file.exists():
+            db_file.touch(mode=0o600)
+        else:
+            import contextlib
+            import os as _os
+            import stat as _stat
+
+            # chmod best-effort: Windows / FS-without-chmod is non-fatal (the
+            # touch above already set mode at create time on POSIX).
+            with contextlib.suppress(OSError):
+                _os.chmod(db_file, _stat.S_IRUSR | _stat.S_IWUSR)
+        conn = self._digest_connect()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(self._CREATE_DIGEST_PAUSE_SQL)
+            conn.execute(self._CREATE_DIGEST_SCHEDULE_SQL)
+            conn.execute(self._CREATE_DIGEST_BACKFILL_SQL)
+            conn.execute(self._CREATE_DIGEST_ENGAGEMENT_SQL)
+            conn.execute(self._CREATE_DIGEST_ACTIVE_CHANNELS_SQL)
+            conn.execute(self._CREATE_DIGEST_FORM_PREFERENCE_SQL)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _digest_connect(self) -> sqlite3.Connection:
+        """Short-lived connection to the digest-state db (fresh per op)."""
+        conn = sqlite3.connect(self._digest_db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _require_principal(self, principal_id: str) -> None:
+        """Validate a principal_id before it reaches a SQLite primary key."""
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
+
+    # ---- pause / resume -------------------------------------------------
+
+    async def digest_pause_set(
+        self, principal_id: str, *, paused_until: datetime, reason: str
+    ) -> None:
+        """Persist a pause window for `principal_id` (upsert)."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        now = datetime.now(tz=timezone.utc).isoformat()
+        await asyncio.to_thread(
+            self._sync_digest_pause_set,
+            principal_id,
+            paused_until.isoformat(),
+            reason,
+            now,
+        )
+
+    def _sync_digest_pause_set(
+        self, principal_id: str, paused_until: str, reason: str, now: str
+    ) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_pause (principal_id, paused_until, reason, paused_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    paused_until = excluded.paused_until,
+                    reason = excluded.reason,
+                    paused_at = excluded.paused_at
+                """,
+                (principal_id, paused_until, reason, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_pause_clear(self, principal_id: str) -> None:
+        """Remove any pause row for `principal_id` (no-op if absent)."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        await asyncio.to_thread(self._sync_digest_pause_clear, principal_id)
+
+    def _sync_digest_pause_clear(self, principal_id: str) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute("DELETE FROM digest_pause WHERE principal_id = ?", (principal_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_pause_get(self, principal_id: str) -> tuple[datetime, str, datetime] | None:
+        """Return `(paused_until, reason, paused_at)` or None if not paused."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        row = await asyncio.to_thread(self._sync_digest_pause_get, principal_id)
+        if row is None:
+            return None
+        return (
+            datetime.fromisoformat(row["paused_until"]),
+            row["reason"],
+            datetime.fromisoformat(row["paused_at"]),
+        )
+
+    def _sync_digest_pause_get(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT paused_until, reason, paused_at FROM digest_pause "
+                "WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    # ---- schedule -------------------------------------------------------
+
+    async def digest_schedule_set(self, principal_id: str, *, hour: int, timezone: str) -> None:
+        """Persist the principal's digest schedule (upsert)."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        now = datetime.now(tz=_UTC).isoformat()
+        await asyncio.to_thread(self._sync_digest_schedule_set, principal_id, hour, timezone, now)
+
+    def _sync_digest_schedule_set(
+        self, principal_id: str, hour: int, timezone: str, now: str
+    ) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_schedule (principal_id, hour_utc, timezone, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    hour_utc = excluded.hour_utc,
+                    timezone = excluded.timezone,
+                    updated_at = excluded.updated_at
+                """,
+                (principal_id, hour, timezone, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_schedule_get(self, principal_id: str) -> tuple[int, str] | None:
+        """Return `(hour_utc, timezone)` or None if no schedule set."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        row = await asyncio.to_thread(self._sync_digest_schedule_get, principal_id)
+        if row is None:
+            return None
+        return (row["hour_utc"], row["timezone"])
+
+    def _sync_digest_schedule_get(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT hour_utc, timezone FROM digest_schedule WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    async def digest_schedule_list_all(self) -> list[tuple[str, int, str]]:
+        """Return `(principal_id, hour_utc, timezone)` for every schedule."""
+        if not self._initialized:
+            await self.initialize()
+        rows = await asyncio.to_thread(self._sync_digest_schedule_list_all)
+        return [(r["principal_id"], r["hour_utc"], r["timezone"]) for r in rows]
+
+    def _sync_digest_schedule_list_all(self) -> list[sqlite3.Row]:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT principal_id, hour_utc, timezone FROM digest_schedule "
+                "ORDER BY principal_id"
+            )
+            return list(cur.fetchall())
+        finally:
+            conn.close()
+
+    # ---- backfill -------------------------------------------------------
+
+    async def digest_backfill_set(
+        self,
+        principal_id: str,
+        *,
+        channel_id: str,
+        last_success: datetime,
+        digest_id: str,
+    ) -> None:
+        """Record the last successful delivery for `(principal_id, channel_id)`."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        _validate_id_safety(channel_id, field="channel_id")
+        await asyncio.to_thread(
+            self._sync_digest_backfill_set,
+            principal_id,
+            channel_id,
+            last_success.isoformat(),
+            digest_id,
+        )
+
+    def _sync_digest_backfill_set(
+        self,
+        principal_id: str,
+        channel_id: str,
+        last_success: str,
+        digest_id: str,
+    ) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_backfill
+                    (principal_id, channel_id, last_success, last_digest_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(principal_id, channel_id) DO UPDATE SET
+                    last_success = excluded.last_success,
+                    last_digest_id = excluded.last_digest_id
+                """,
+                (principal_id, channel_id, last_success, digest_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_backfill_get(
+        self, principal_id: str, *, channel_id: str
+    ) -> tuple[datetime, str] | None:
+        """Return `(last_success, last_digest_id)` or None if never delivered."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        _validate_id_safety(channel_id, field="channel_id")
+        row = await asyncio.to_thread(self._sync_digest_backfill_get, principal_id, channel_id)
+        if row is None:
+            return None
+        return (datetime.fromisoformat(row["last_success"]), row["last_digest_id"])
+
+    def _sync_digest_backfill_get(self, principal_id: str, channel_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT last_success, last_digest_id FROM digest_backfill "
+                "WHERE principal_id = ? AND channel_id = ?",
+                (principal_id, channel_id),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    # ---- engagement -----------------------------------------------------
+
+    async def digest_engagement_record_open(
+        self, principal_id: str, *, opened_at: datetime
+    ) -> None:
+        """Record a digest-open event (idempotent on the exact timestamp)."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        await asyncio.to_thread(
+            self._sync_digest_engagement_record_open,
+            principal_id,
+            opened_at.isoformat(),
+        )
+
+    def _sync_digest_engagement_record_open(self, principal_id: str, opened_at: str) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO digest_engagement (principal_id, opened_at) "
+                "VALUES (?, ?)",
+                (principal_id, opened_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_engagement_opens_in_window(
+        self, principal_id: str, *, since: datetime, until: datetime
+    ) -> int:
+        """Count digest-open events in `[since, until)`."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        return await asyncio.to_thread(
+            self._sync_digest_engagement_opens_in_window,
+            principal_id,
+            since.isoformat(),
+            until.isoformat(),
+        )
+
+    def _sync_digest_engagement_opens_in_window(
+        self, principal_id: str, since: str, until: str
+    ) -> int:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS n FROM digest_engagement "
+                "WHERE principal_id = ? AND opened_at >= ? AND opened_at < ?",
+                (principal_id, since, until),
+            )
+            return int(cur.fetchone()["n"])
+        finally:
+            conn.close()
+
+    # ---- active channels ------------------------------------------------
+
+    async def digest_active_channels_set(
+        self, principal_id: str, *, channel_ids: list[str], primary: str
+    ) -> None:
+        """Persist the principal's active channel set + primary channel."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        for cid in channel_ids:
+            _validate_id_safety(cid, field="channel_id")
+        _validate_id_safety(primary, field="primary_channel_id")
+        if primary not in channel_ids:
+            raise ValueError(
+                f"primary channel {primary!r} must be in the active set {channel_ids!r}",
+            )
+        await asyncio.to_thread(
+            self._sync_digest_active_channels_set,
+            principal_id,
+            ",".join(channel_ids),
+            primary,
+        )
+
+    def _sync_digest_active_channels_set(
+        self, principal_id: str, active_csv: str, primary: str
+    ) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_active_channels
+                    (principal_id, active_csv, primary_channel_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    active_csv = excluded.active_csv,
+                    primary_channel_id = excluded.primary_channel_id
+                """,
+                (principal_id, active_csv, primary),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_active_channels_get(self, principal_id: str) -> tuple[list[str], str] | None:
+        """Return `(active_channel_ids, primary)` or None if unset."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        row = await asyncio.to_thread(self._sync_digest_active_channels_get, principal_id)
+        if row is None:
+            return None
+        active = [c for c in row["active_csv"].split(",") if c]
+        return (active, row["primary_channel_id"])
+
+    def _sync_digest_active_channels_get(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT active_csv, primary_channel_id FROM digest_active_channels "
+                "WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    # ---- form preference (rich / compact / event_only) ------------------
+
+    async def digest_form_preference_set(self, principal_id: str, *, form: str) -> None:
+        """Persist the user's explicit digest-form choice (upsert).
+
+        Set when the user accepts the low-engagement fallback offer
+        (`specs/daily-digest.md` § Low-engagement fallback) — they pick
+        `compact` or `event_only`; `rich` clears the downgrade.
+        """
+        if form not in ("rich", "compact", "event_only"):
+            raise ValueError(
+                f"form must be one of rich|compact|event_only (got {form!r})",
+            )
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        await asyncio.to_thread(self._sync_digest_form_preference_set, principal_id, form)
+
+    def _sync_digest_form_preference_set(self, principal_id: str, form: str) -> None:
+        conn = self._digest_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO digest_form_preference (principal_id, form)
+                VALUES (?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET form = excluded.form
+                """,
+                (principal_id, form),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def digest_form_preference_get(self, principal_id: str) -> str | None:
+        """Return the user's explicit form choice, or None if never set."""
+        if not self._initialized:
+            await self.initialize()
+        self._require_principal(principal_id)
+        row = await asyncio.to_thread(self._sync_digest_form_preference_get, principal_id)
+        return row["form"] if row is not None else None
+
+    def _sync_digest_form_preference_get(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._digest_connect()
+        try:
+            cur = conn.execute(
+                "SELECT form FROM digest_form_preference WHERE principal_id = ?",
+                (principal_id,),
+            )
+            return cur.fetchone()
         finally:
             conn.close()
 
