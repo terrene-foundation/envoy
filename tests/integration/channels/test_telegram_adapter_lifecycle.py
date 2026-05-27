@@ -539,13 +539,14 @@ class TestTelegramInvariantPins:
             f"got {list(adapter._pending_grants.keys())}"
         )
 
-        # _register_pending is the write-site.
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
-        adapter._register_pending("test-req-id", q)
+        # _register_pending is the write-site.  H-1 fix: the method now
+        # creates the Queue internally and returns it (idempotent single-
+        # write-site contract).
+        returned_q: asyncio.Queue[str] = adapter._register_pending("test-req-id")
         assert (
             "test-req-id" in adapter._pending_grants
         ), "_register_pending did not write to _pending_grants"
-        assert adapter._pending_grants["test-req-id"] is q
+        assert adapter._pending_grants["test-req-id"] is returned_q
 
         # post_decision only reads — it does NOT insert new keys.
         # Attempt post_decision for an unknown request_id.
@@ -561,7 +562,7 @@ class TestTelegramInvariantPins:
         result = adapter.post_decision("test-req-id", "deny")
         assert result is True, "post_decision on known key must return True"
         # The dict key still maps to the same queue (not replaced).
-        assert adapter._pending_grants["test-req-id"] is q
+        assert adapter._pending_grants["test-req-id"] is returned_q
         # The decision was put into the queue.
-        assert not q.empty(), "post_decision must put decision into the queue"
-        assert q.get_nowait() == "deny"
+        assert not returned_q.empty(), "post_decision must put decision into the queue"
+        assert returned_q.get_nowait() == "deny"

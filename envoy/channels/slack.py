@@ -326,13 +326,8 @@ class SlackChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
         self._require_started("send_grant_moment")
-        # H-05: rate-limit gate — consult rate_limit_status before every send.
-        rl = await self.rate_limit_status()
-        if rl.requests_remaining == 0 or rl.soft_quota_warning:
-            raise RateLimitExceededError(
-                channel_id=_SLACK_CHANNEL_ID,
-                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
-            )
+        # M-3 gate ordering: PrincipalNotFound guard precedes security and
+        # availability gates — identity errors are always caller faults.
         if not target_principal_id or not target_principal_id.strip():
             logger.warning(
                 "channel.send_grant_moment.principal_not_found",
@@ -349,6 +344,7 @@ class SlackChannelAdapter(ChannelAdapter):
         # H-03 primary-channel binding (spec § Primary-channel binding). Defense-in-depth:
         # `grant.high_stakes is True` ALSO requires the primary channel even
         # when the caller forgot `primary_only=True`.
+        # Security gate precedes rate-limit (INV-4 gate ordering).
         must_be_primary = primary_only or grant.high_stakes
         if must_be_primary and self._config.primary_channel_id != _SLACK_CHANNEL_ID:
             logger.warning(
@@ -362,6 +358,13 @@ class SlackChannelAdapter(ChannelAdapter):
             raise NotPrimaryChannelError(
                 channel_id=_SLACK_CHANNEL_ID,
                 primary_channel_id=self._config.primary_channel_id,
+            )
+        # Rate-limit gate after security checks (INV-4 gate ordering).
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_SLACK_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
             )
         logger.info(
             "channel.send_grant_moment.start",

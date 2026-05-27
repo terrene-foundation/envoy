@@ -113,13 +113,14 @@ _SSRF_BLOCKED_HOSTS: frozenset[str] = frozenset(
     }
 )
 _SSRF_BLOCKED_NETWORKS = (
-    ipaddress.ip_network("127.0.0.0/8"),    # loopback
-    ipaddress.ip_network("10.0.0.0/8"),     # RFC-1918 private A
-    ipaddress.ip_network("172.16.0.0/12"),  # RFC-1918 private B
-    ipaddress.ip_network("192.168.0.0/16"), # RFC-1918 private C
-    ipaddress.ip_network("169.254.0.0/16"), # link-local / IMDS
-    ipaddress.ip_network("::1/128"),        # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),       # IPv6 ULA
+    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC-1918 private A
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC-1918 private B
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC-1918 private C
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local / IMDS
+    ipaddress.ip_network("::1/128"),           # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
+    ipaddress.ip_network("::ffff:0.0.0.0/96"), # IPv6-mapped IPv4 (covers ::ffff:127.0.0.1 etc.)
 )
 
 
@@ -144,6 +145,11 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
     # Normalise decimal and hex integer literals to dotted-quad before calling
     # ipaddress.ip_address, which would raise ValueError for those forms.
     # Examples: "2130706433" == 127.0.0.1, "0x7f000001" == 127.0.0.1.
+    #
+    # Octal-dotted notation ("0177.0.0.1" == 127.0.0.1) must be detected
+    # BEFORE ip_address() is called because ip_address() raises ValueError for
+    # octal notation rather than interpreting it — allowing it through as a
+    # "hostname" and deferring to DNS lookup is an SSRF bypass.
     _hostname_for_ip = hostname
     if hostname.isdigit():
         # Pure decimal integer — convert via int first.
@@ -157,6 +163,28 @@ def _validate_webhook_url_ssrf(url: str, channel_id: str) -> None:
             _hostname_for_ip = str(ipaddress.ip_address(int(hostname, 16)))
         except (ValueError, OverflowError):
             _hostname_for_ip = hostname  # fall through to the except below
+    elif "." in hostname and all(
+        c in "0123456789abcdefABCDEFxXoO." for c in hostname
+    ):
+        # Potentially octal-dotted notation — any component starting with "0"
+        # followed by digits is octal (e.g. "0177" == 127).  Normalise each
+        # component to decimal so ipaddress.ip_address can parse it.
+        parts = hostname.split(".")
+        if len(parts) == 4:
+            try:
+                decimal_parts = []
+                has_octal = False
+                for p in parts:
+                    if len(p) > 1 and p.startswith("0") and not p.lower().startswith("0x"):
+                        # Octal component
+                        decimal_parts.append(str(int(p, 8)))
+                        has_octal = True
+                    else:
+                        decimal_parts.append(str(int(p, 0)))
+                if has_octal:
+                    _hostname_for_ip = ".".join(decimal_parts)
+            except (ValueError, OverflowError):
+                pass  # not parseable; fall through to ipaddress below
     try:
         ip = ipaddress.ip_address(_hostname_for_ip)
         for net in _SSRF_BLOCKED_NETWORKS:
@@ -361,7 +389,20 @@ class DiscordChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 10,
     ) -> SendReceipt:
         self._require_started("send_message")
-        # H-05: rate-limit gate — consult rate_limit_status before every send.
+        # L-1: PrincipalNotFound guard — parity with Telegram and Slack adapters.
+        if not target_principal_id or not target_principal_id.strip():
+            logger.warning(
+                "channel.send_message.principal_not_found",
+                extra={
+                    "channel_id": _DISCORD_CHANNEL_ID,
+                },
+            )
+            raise PrincipalNotFoundError(
+                channel_id=_DISCORD_CHANNEL_ID,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must not be blank",
+            )
+        # Rate-limit gate.
         rl = await self.rate_limit_status()
         if rl.requests_remaining == 0 or rl.soft_quota_warning:
             raise RateLimitExceededError(
@@ -429,19 +470,26 @@ class DiscordChannelAdapter(ChannelAdapter):
         timeout_seconds: int = 30,
     ) -> GrantMomentReceipt:
         self._require_started("send_grant_moment")
-        # H-05: rate-limit gate — consult rate_limit_status before every send.
-        rl = await self.rate_limit_status()
-        if rl.requests_remaining == 0 or rl.soft_quota_warning:
-            raise RateLimitExceededError(
+        # M-3 gate ordering: PrincipalNotFound guard precedes security and
+        # availability gates — identity errors are always caller faults.
+        if not target_principal_id or not target_principal_id.strip():
+            logger.warning(
+                "channel.send_grant_moment.principal_not_found",
+                extra={
+                    "channel_id": _DISCORD_CHANNEL_ID,
+                    "request_id": grant.request_id,
+                },
+            )
+            raise PrincipalNotFoundError(
                 channel_id=_DISCORD_CHANNEL_ID,
-                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+                target_principal_id=target_principal_id,
+                message="target_principal_id must not be blank",
             )
 
         # Invariant 1 + 4: H-03 primary-channel binding (spec § Primary-channel binding).
         # Defense-in-depth: ``grant.high_stakes is True`` ALSO requires the
         # primary channel even when the caller forgot ``primary_only=True``.
-        # Single-layer kwarg gating is insufficient — the adapter MUST also
-        # enforce on the payload-level discriminator.
+        # Security gate precedes rate-limit (INV-4 gate ordering).
         must_be_primary = primary_only or grant.high_stakes
         if must_be_primary and self._config.primary_channel_id != _DISCORD_CHANNEL_ID:
             logger.warning(
@@ -457,19 +505,12 @@ class DiscordChannelAdapter(ChannelAdapter):
                 primary_channel_id=self._config.primary_channel_id,
             )
 
-        # Guard: empty target_principal_id is always a caller error.
-        if not target_principal_id or not target_principal_id.strip():
-            logger.warning(
-                "channel.send_grant_moment.principal_not_found",
-                extra={
-                    "channel_id": _DISCORD_CHANNEL_ID,
-                    "request_id": grant.request_id,
-                },
-            )
-            raise PrincipalNotFoundError(
+        # Rate-limit gate after security checks (INV-4 gate ordering).
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
                 channel_id=_DISCORD_CHANNEL_ID,
-                target_principal_id=target_principal_id,
-                message="target_principal_id must not be blank",
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
             )
 
         # Invariant 3: single write-site for pending-decisions state.

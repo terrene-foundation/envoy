@@ -279,6 +279,26 @@ class TelegramChannelAdapter(ChannelAdapter):
                 method_name=method_name,
             )
 
+    def __repr__(self) -> str:
+        """L-2: mask ``_secret_token`` to prevent accidental credential exposure.
+
+        Phase-02 todo: refactor ``TelegramChannelConfig`` into a frozen
+        dataclass with a ``__repr__`` that masks ``secret_token`` at the
+        config level (mirrors ``DiscordChannelConfig`` and
+        ``SlackChannelConfig`` frozen-dataclass pattern).
+        """
+        token_hint = (
+            f"{self._secret_token[:4]}***" if self._secret_token else "<unset>"
+        )
+        return (
+            f"TelegramChannelAdapter("
+            f"started={self._started!r}, "
+            f"secret_token={token_hint!r}, "
+            f"primary_channel_id={self._primary_channel_id!r}, "
+            f"pending_grants={len(self._pending_grants)}"
+            f")"
+        )
+
     # ------------------------------------------------------------------
     # ChannelAdapter: inbound
     # ------------------------------------------------------------------
@@ -434,19 +454,28 @@ class TelegramChannelAdapter(ChannelAdapter):
     # ChannelAdapter: ritual delivery — grant moments
     # ------------------------------------------------------------------
 
-    def _register_pending(self, request_id: str, response_queue: asyncio.Queue[str]) -> None:
+    def _register_pending(self, request_id: str) -> asyncio.Queue[str]:
         """INV-3/6: Single write-site for pending grant moment state.
 
-        Raises ``PendingDecisionsCeilingError`` if the in-flight count would
-        exceed ``_MAX_PENDING_DECISIONS`` (DoS protection).
+        Idempotent: if ``request_id`` already has an in-flight queue, the
+        existing queue is returned without overwriting (prevents duplicate
+        sends from orphaning the original awaiter).
+
+        Raises ``PendingDecisionsCeilingError`` if a NEW entry would exceed
+        ``_MAX_PENDING_DECISIONS`` (DoS protection).
         """
+        existing = self._pending_grants.get(request_id)
+        if existing is not None:
+            return existing
         if len(self._pending_grants) >= _MAX_PENDING_DECISIONS:
             raise PendingDecisionsCeilingError(
                 channel_id=_TELEGRAM_CHANNEL_ID,
                 ceiling=_MAX_PENDING_DECISIONS,
                 current_count=len(self._pending_grants),
             )
+        response_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
         self._pending_grants[request_id] = response_queue
+        return response_queue
 
     async def send_grant_moment(
         self,
@@ -471,13 +500,8 @@ class TelegramChannelAdapter(ChannelAdapter):
             If no decision arrives within ``timeout_seconds``.
         """
         self._require_started("send_grant_moment")
-        # H-05: rate-limit gate — consult rate_limit_status before every send.
-        rl = await self.rate_limit_status()
-        if rl.requests_remaining == 0 or rl.soft_quota_warning:
-            raise RateLimitExceededError(
-                channel_id=_TELEGRAM_CHANNEL_ID,
-                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
-            )
+        # INV-4 (M-3 gate ordering): PrincipalNotFound guard precedes all
+        # availability gates — identity errors are always caller faults.
         if not target_principal_id or not target_principal_id.strip():
             logger.warning(
                 "channel.send_grant_moment.principal_not_found",
@@ -492,7 +516,8 @@ class TelegramChannelAdapter(ChannelAdapter):
                 message="target_principal_id must be non-empty",
             )
 
-        # INV-4: defense-in-depth — enforce even when primary_only=False.
+        # INV-4: defense-in-depth primary-channel / high-stakes gate precedes
+        # rate-limit so security refusals are never mistaken for availability.
         must_be_primary = primary_only or grant.high_stakes
         if must_be_primary and self._primary_channel_id != _TELEGRAM_CHANNEL_ID:
             logger.warning(
@@ -508,6 +533,14 @@ class TelegramChannelAdapter(ChannelAdapter):
                 primary_channel_id=self._primary_channel_id,
             )
 
+        # Rate-limit gate after security checks (INV-4 gate ordering).
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
+
         logger.info(
             "channel.send_grant_moment.start",
             extra={
@@ -518,13 +551,15 @@ class TelegramChannelAdapter(ChannelAdapter):
             },
         )
 
-        # INV-3/6: register via the single write-site.
-        response_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
-        self._register_pending(grant.request_id, response_queue)
+        # INV-3/6: register via the single write-site (idempotent).
+        # If request_id already has an in-flight queue, reuse it and skip
+        # re-sending the prompt so the original awaiter is not orphaned.
+        is_new_registration = grant.request_id not in self._pending_grants
+        response_queue = self._register_pending(grant.request_id)
 
-        # Send the prompt text to Telegram.
+        # Send the prompt text to Telegram only on first registration.
         prompt_text = self._render_grant_moment_prose(grant)
-        if self._send_fn is not None:
+        if is_new_registration and self._send_fn is not None:
             try:
                 async with asyncio.timeout(self._send_timeout):
                     await self._send_fn(target_principal_id, prompt_text)
@@ -682,11 +717,28 @@ class TelegramChannelAdapter(ChannelAdapter):
 
         Called by the webhook transport layer when a user sends a response.
 
+        INV-2: vocabulary guard — only closed-vocabulary strings and valid
+        numeric index strings (which ``_coerce_decision`` maps to decision
+        options) are accepted; anything else is rejected here before being
+        placed in the queue to prevent garbage from reaching ``_coerce_decision``.
+
         Returns ``True`` if a pending grant was found and the decision was
-        posted, ``False`` if no matching pending grant exists.
+        posted, ``False`` if no matching pending grant exists or the
+        ``raw_decision`` fails vocabulary validation.
         """
         response_queue = self._pending_grants.get(request_id)
         if response_queue is None:
+            return False
+        # INV-2: accept closed-vocabulary literals OR digit strings (numeric
+        # index inputs are handled by _coerce_decision; e.g. "1" → first option).
+        if raw_decision not in _ALLOWED_DECISIONS and not raw_decision.strip().isdigit():
+            logger.warning(
+                "channel.post_decision.invalid_vocab",
+                extra={
+                    "channel_id": _TELEGRAM_CHANNEL_ID,
+                    "request_id": request_id,
+                },
+            )
             return False
         try:
             response_queue.put_nowait(raw_decision)
@@ -722,6 +774,13 @@ class TelegramChannelAdapter(ChannelAdapter):
             If the underlying send callable does not complete in time.
         """
         self._require_started("send_digest")
+        # Rate-limit gate: digest delivery is also subject to quota.
+        rl = await self.rate_limit_status()
+        if rl.requests_remaining == 0 or rl.soft_quota_warning:
+            raise RateLimitExceededError(
+                channel_id=_TELEGRAM_CHANNEL_ID,
+                retry_after_seconds=_RATE_LIMIT_RETRY_AFTER,
+            )
 
         logger.info(
             "channel.send_digest.start",
