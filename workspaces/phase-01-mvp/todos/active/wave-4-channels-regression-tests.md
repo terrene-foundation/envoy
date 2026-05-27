@@ -17,3 +17,15 @@
 **Re-pickup gate per `rules/value-prioritization.md` MUST-3:** before resuming any of these tests, re-validate the EC-7 / EC-8 anchor still applies in the user's current brief — Phase 01 may have de-scoped 6 of 8 channels per de-scope #1 fallback.
 
 **Status:** deferred to Wave-A/B sibling shards.
+
+## Phase-02 deferred hardening (recorded during /redteam R3 of PR #43 Wave-A)
+
+Three LOW/MED-class items deferred from Wave-A's R3 closures (HEAD `750660b`).
+Code closures shipped; these are structural-consistency / Phase-02 work that
+exceeds the Wave-A shard budget.
+
+| ID         | Defect                                                    | Rationale for deferring                                  | Phase-02 owner |
+| ---------- | --------------------------------------------------------- | --------------------------------------------------------- | -------------- |
+| L-2-R3     | Telegram `secret_token` stored as plain instance attr; sibling adapters use `frozen=True` dataclass with `field(repr=False)`. No active leak (default object repr shows address only); structural inconsistency. | Refactor to `TelegramChannelConfig` touches every Telegram test call site (~40 LOC + many test updates); LOW severity; no leak. | Wave-B / Phase-02 polish |
+| LOW-R3-L-02| `PrincipalNotFoundError` stores raw `target_principal_id` as a public attribute; in-adapter WARN paths already hash. Downstream loggers serializing exception attributes could leak PII. | `envoy/channels/errors.py` is foundation-frozen this shard; hashing the stored attr changes public error contract. Per `rules/spec-accuracy.md` Rule 1c document and defer rather than silent change. | Phase-02 hardening |
+| MED-R3-3   | Discord `_deliver_message` raises `ChannelTransportError` unconditionally (R2 H-3 honest noop-fix); spec matrix now qualifies "Yes (adapter + signature + ritual; outbound raises ChannelTransportError until Phase 02 wires native HTTP)". | Phase-01 has no real Discord bot tokens to deliver to; the deeper refactor would align Discord + Slack to Telegram's injected-`send_fn` pattern so all 3 adapters share one delivery contract. | Phase-02 — align all 3 adapters on injected delivery callable |
