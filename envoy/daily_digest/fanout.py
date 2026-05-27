@@ -195,9 +195,11 @@ class PerChannelFanout:
         """Append a `ritual_completion` Ledger entry for a successful delivery.
 
         Per specs/ledger.md L73 + L118 (ritual_kind="daily_digest"). The
-        entry's content carries digest_id, channel_id, form, delivered_at,
-        receipt_hash — sufficient for the EC-3 acceptance test to verify
-        consecutive 7-day emission via Ledger query.
+        entry's content carries digest_id, channel_id, form, scheduled_for,
+        delivered_at, receipt_hash — sufficient for the EC-3 acceptance test
+        to verify consecutive-day emission via Ledger query. `scheduled_for`
+        (the digest's logical delivery day) is the EC-3 consecutive-day key;
+        `delivered_at` is the wall-clock send time on the channel.
         """
         await self._ledger.append(
             entry_type="ritual_completion",
@@ -207,6 +209,7 @@ class PerChannelFanout:
                 "digest_id": payload.digest_id,
                 "channel_id": channel_id,
                 "form": payload.form,
+                "scheduled_for": payload.scheduled_for,
                 "delivered_at": receipt.delivered_at.isoformat(),
                 "receipt_hash": payload.receipt_hash,
             },
