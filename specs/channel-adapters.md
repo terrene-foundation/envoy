@@ -201,16 +201,16 @@ class InboundMessage:
 
 ## Phase 01 surfaces (8)
 
-| Channel                | Credentials                                                               | Compliance                                | Phase 01 ship                                                                                                |
-| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| CLI                    | none                                                                      | N/A                                       | Yes                                                                                                          |
-| Web                    | localhost bind                                                            | N/A                                       | Yes                                                                                                          |
-| Telegram               | webhook `secret_token` + injected `send_fn` (`send_fn=None` is test-only) | Clean (official bot API)                  | Yes                                                                                                          |
-| Slack                  | bot token + OAuth + signing_secret                                        | Clean (App Directory)                     | Yes                                                                                                          |
-| Discord                | bot token + Ed25519 application_public_key + webhook_url (SSRF-guarded)   | Clean (Dev Terms)                         | Yes (adapter + signature + ritual; outbound raises `ChannelTransportError` until Phase 02 wires native HTTP) |
-| WhatsApp               | WhatsApp Business API                                                     | Paid tier; Foundation gateway OR user-own | Yes (caveat)                                                                                                 |
-| Signal                 | signal-cli OR Group Link                                                  | Phase 01 legal gate (Path B default)      | Yes (Path B)                                                                                                 |
-| iMessage (BlueBubbles) | user-owned Mac                                                            | Apple ToS grey; user responsibility       | Yes (caveat)                                                                                                 |
+| Channel                | Credentials                                                               | Compliance                                | Phase 01 ship                                                                        |
+| ---------------------- | ------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| CLI                    | none                                                                      | N/A                                       | Yes                                                                                  |
+| Web                    | localhost bind                                                            | N/A                                       | Yes                                                                                  |
+| Telegram               | webhook `secret_token` + injected `send_fn` (`send_fn=None` is test-only) | Clean (official bot API)                  | Yes                                                                                  |
+| Slack                  | bot token + OAuth + signing_secret                                        | Clean (App Directory)                     | Yes                                                                                  |
+| Discord                | bot token + Ed25519 application_public_key + webhook_url (SSRF-guarded)   | Clean (Dev Terms)                         | Yes (adapter + signature + ritual; outbound delivery raises `ChannelTransportError`) |
+| WhatsApp               | WhatsApp Business API                                                     | Paid tier; Foundation gateway OR user-own | Yes (caveat)                                                                         |
+| Signal                 | signal-cli OR Group Link                                                  | Phase 01 legal gate (Path B default)      | Yes (Path B)                                                                         |
+| iMessage (BlueBubbles) | user-owned Mac                                                            | Apple ToS grey; user responsibility       | Yes (caveat)                                                                         |
 
 ## Phase 04 surfaces (17+)
 
