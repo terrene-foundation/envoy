@@ -30,6 +30,18 @@ The structural invariant under test is: the cascade orchestrator returns
 through the per-channel ``RecordingChannelAdapter.renders`` log (proving
 the channels really were exercised independently).
 
+**Scope-out (per the orchestrator's Protocol contract at
+``envoy/grant_moment/cascade_orchestrator.py`` lines 108-115 — "the BFS
+itself lives upstream"):** this shard exercises ONLY the orchestrator's
+verify half of the cascade contract — given a correct revoked-set from
+upstream, the orchestrator detects missing descendants and raises the
+typed ``CascadeIncompleteError``.  The lineage-graph BFS derivation
+itself (computing the correct revoked-set from a root_id by walking the
+Phase-02 TrustStore lineage edges) is the Phase-02 TrustStore's
+responsibility and is NOT under test here.  Test fixtures pre-stage the
+``cascade_responses`` dict to model what the Phase-02 backend would
+return for the narrative cases.
+
 Per `rules/testing.md` § Tier 2: real ``EnvoyGrantMomentRuntime`` + real
 ``EnvoyLedger`` + real ``ChannelHandoff`` + real ``CascadeRevocationOrchestrator``
 against per-channel ``RecordingChannelAdapter`` instances. NO ``unittest.mock``.

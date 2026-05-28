@@ -30,6 +30,18 @@ EC-8(b) no-double-billing is covered by
 exercises (a) state-equivalence and (c) cross-channel cascade in the
 day-by-day shape.
 
+**Scope partitioning (per the security gate-review for shard 13):** the
+load-bearing byte-identity assertion (EC-8(a) at the envelope layer) is
+in ``tests/tier2/test_envelope_compiler_session_envelope_byte_identity.py``;
+the cascade-orchestrator verify-half contract (EC-8(c)) is in
+``tests/tier2/test_grant_moment_cascade_cross_channel.py``.  This
+battery's per-adapter render-count assertions (~line 195) prove
+``ChannelHandoff`` fan-out only — NOT byte-identity of the rendered
+surfaces (which is the envelope-layer test's job).  The Day-7 cascade
+assertion verifies the orchestrator's verify half given the stub-staged
+revoked set; the lineage-graph BFS derivation itself is Phase-02
+TrustStore territory and is NOT under test here.
+
 Per `rules/testing.md` § Tier 3: real ``EnvoyGrantMomentRuntime`` + real
 ``EnvoyLedger`` + real ``ChannelHandoff`` over multiple per-channel
 ``RecordingChannelAdapter`` instances; every write is verified with a
