@@ -2,16 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """EC-7 acceptance battery (de-scope #1 — 5 channels × N=3 onboardings).
 
-Acceptance gate per ``workspaces/phase-01-mvp/02-mvp-objectives.md`` EC-7
-line 104 + ``workspaces/phase-01-mvp/02-plans/02-test-strategy.md`` § EC-7
-line 228 (8-channel × N=3 onboarding battery) + line 242 (de-scope #1
-fallback — 5 channels): for each of CLI + Web + Telegram + Slack + Discord,
-run N=3 first-time-user sessions starting from that channel; each session
-MUST complete the Boundary Conversation (S0→S10) and produce a parseable
-``EnvelopeConfig`` whose ``envelope_id`` is set.
+Acceptance gate per ``workspaces/phase-01-mvp/01-analysis/02-mvp-objectives.md``
+EC-7 line 104 + ``workspaces/phase-01-mvp/02-plans/02-test-strategy.md``
+§ EC-7 line 228 (8-channel × N=3 onboarding battery) + line 242 (de-scope
+#1 fallback — 5 channels): for each of CLI + Web + Telegram + Slack +
+Discord, run N=3 first-time-user sessions starting from that channel;
+each session MUST complete the Boundary Conversation (S0→S10) and
+produce a parseable ``EnvelopeConfig`` whose ``envelope_id`` is set.
 
 This file is the de-scope #1 implementation (per
-``02-mvp-objectives.md`` line 171 + ``01-shard-plan.md`` § 5 wave-D row
+``01-analysis/02-mvp-objectives.md`` line 171 + ``01-shard-plan.md``
+§ 5 wave-D row
 "iMessage/Signal feasibility"): the iMessage + Signal channels deferred
 to Phase-02, the Phase-01 EC-7 acceptance becomes 5 channels × N=3 = 15
 onboardings.
@@ -83,7 +84,7 @@ from envoy.trust.vault import TrustVault
 from tests.helpers.deterministic_llm_provider import DeterministicModelRouter
 
 
-# Phase-01 de-scope-#1 channel set per `02-mvp-objectives.md` line 171.
+# Phase-01 de-scope-#1 channel set per `01-analysis/02-mvp-objectives.md` line 171.
 _FIVE_CHANNELS = ("cli", "web", "telegram", "slack", "discord")
 _SESSIONS_PER_CHANNEL = 3
 
@@ -169,7 +170,12 @@ async def _build_runtime_for_session(
     passphrase = f"phase01-ec7-passphrase-{principal_id}"
     try:
         await vault.unlock(passphrase)
-    except Exception:  # noqa: BLE001 — fresh adapter-created vault may not exist yet
+    except FileNotFoundError:
+        # Fresh adapter-created vault file does not exist yet — create it.
+        # Narrow to FileNotFoundError per envoy/trust/vault.py:249-250 (the
+        # only expected first-time-use exception); a corrupted-vault /
+        # wrong-passphrase / param-mismatch surfaces immediately rather
+        # than being coerced into a confusing double-create path.
         await vault.create(b"ec7-initial-payload", passphrase)
         await vault.unlock(passphrase)
 
@@ -304,7 +310,7 @@ class TestEC7FiveChannelOnboardingBattery:
 
         outcome = await _drive_session_to_completion(runtime, principal_id)
 
-        # Acceptance gate per `02-mvp-objectives.md` EC-7 line 104:
+        # Acceptance gate per `01-analysis/02-mvp-objectives.md` EC-7 line 104:
         # "completes Boundary Conversation, produces parseable EnvelopeConfig".
         assert outcome.state == "COMPLETE", (
             f"EC-7 onboarding via {channel_id} session {session_index} did "
