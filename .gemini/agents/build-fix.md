@@ -122,4 +122,4 @@ Escalate to a different agent if:
 
 When this guidance is insufficient, consult:
 
-- `.claude/skills/31-error-troubleshooting/`
+- `.gemini/skills/31-error-troubleshooting/`

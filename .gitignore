@@ -62,9 +62,6 @@ envoy-data/
 envoy-ledger/
 *.ledger.jsonl
 
-# Session state — never public
-.session-notes
-
 # COC runtime + learning state — per-repo, contains absolute filesystem
 # paths from the user's local machine and free-text agent observations.
 # Never tracked publicly. Preserved across /sync per template convention.
