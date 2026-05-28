@@ -51,6 +51,13 @@ PR #47 + shard 14 PR #48):
   location) is a release smoke check, not a per-PR gate; landing it
   requires every CI runner to have ``pipx`` available.
 
+- Platform coverage: this battery resolves the Unix ``.venv/bin/envoy``
+  entry-point only and therefore runs on macOS and Linux. Milestone 5
+  (``02-plans/01-build-sequence.md`` line 333) cites Windows x86_64 as
+  a packaging target; Windows packaging-shape verification lives in the
+  Option-B release smoke check (which exercises the ``.venv/Scripts/
+  envoy.exe`` layout on a real Windows runner), not this per-PR gate.
+
 Per ``rules/testing.md`` § Tier 3: real entry-point. Per
 ``rules/probe-driven-verification.md`` MUST-3: structural probes only
 (exit codes + presence-of-subcommand-name in top-level help text); no
