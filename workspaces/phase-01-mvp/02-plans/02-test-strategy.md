@@ -251,9 +251,9 @@ If iMessage + Signal fail Tier 3 onboarding (per `01-shard-plan.md` § 5 wave-D 
 
 - `tests/integration/test_trust_store_cross_channel_session_id_resolution.py` — `session_id` resolved via Trust store; same `session_id` returned for the same principal across every adapter.
 - `tests/integration/test_envoy_ledger_query_filter_principal_id.py` — per-principal Ledger query is tenant-isolated (`rules/tenant-isolation.md` Rule 1).
-- `tests/integration/test_envelope_compiler_session_envelope_byte_identity.py` — Day-1 envelope compiled on CLI; Day-6 action initiating from Slack reads the SAME `content_hash` byte-identical.
-- `tests/integration/test_grant_moment_cascade_cross_channel.py` — Day-1 grant on Telegram → Day-6 child grant on Slack → revoke Day-1 → cascade reaches Day-6 grant.
-- `tests/integration/test_budget_no_double_billing_multi_channel.py` — same intent_id across two channels does NOT double-charge the budget.
+- `tests/tier2/test_envelope_compiler_session_envelope_byte_identity.py` — Day-1 envelope compiled on CLI; Day-6 action initiating from Slack reads the SAME `content_hash` byte-identical.
+- `tests/tier2/test_grant_moment_cascade_cross_channel.py` — Day-1 grant on Telegram → Day-6 child grant on Slack → revoke Day-1 → cascade reaches Day-6 grant.
+- `tests/tier2/test_budget_no_double_billing_multi_channel.py` — same intent_id across two channels does NOT double-charge the budget.
 
 #### Tier 3 end-to-end battery — the EC-8 7-day cross-channel coherence
 
