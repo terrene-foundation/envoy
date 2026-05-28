@@ -1,6 +1,6 @@
 # /redteam Round-4 — rolling round on EC-7 + EC-8 + F5.1 delta
 
-**Status:** ONE banked rolling round at 0 CRIT + 0 HIGH; Round-5 dispatched to confirm 2-consecutive-clean for this subscope.
+**Status:** SUBSCOPE CONVERGES — Round-4 + Round-5 both at 0 CRIT + 0 HIGH; 2-consecutive-clean banked for EC-7 + EC-8 + F5.1. See `round-5-closure-parity-rolling-2026-05-28.md` for the R5 verdict + R5-MED-1 (value-anchor citation re-anchored in `.session-notes` per MUST-6).
 **Posture:** L5_DELEGATED (fresh repo).
 **Date:** 2026-05-28.
 **Scope:** delta `aa50ef1..5b93856` (PRs #47 EC-8 cascade + cross-channel coherence; PR #48 EC-7 5-channel × N=3 onboarding; PR #49 F5.1 Wave-5 CLI packaging Tier-3 acceptance). ~915 LOC of test code + helpers.
@@ -82,9 +82,13 @@ The reviewer re-grepped every Round-3 R1 + R2 finding ID against current HEAD. A
 
 ---
 
-## Wave-2 next step
+## Round-5 result (added 2026-05-28 post-dispatch)
 
-**Round-5 dispatched** to: (a) verify the in-shard closures from this PR (F1 + F3 + MED-1 ledger row); (b) re-sweep the EC-7 + EC-8 + F5.1 subscope at the new HEAD; (c) confirm 2-consecutive-clean for this subscope. If Round-5 returns 0 CRIT + 0 HIGH the rolling round subscope converges and that closure becomes one of the two Phase-01-ship EC-6 contributions (the other being the F2-gated full-Phase-01 sweep).
+**Round-5 verdict**: 0 CRIT + 0 HIGH + 1 MED + 0 LOW (task `a1b3e012b96cf8802`, report `round-5-closure-parity-rolling-2026-05-28.md`). 9/9 closures VERIFIED at PR #51 HEAD `ed023b7` — all 3 R4 in-shard closures (F1 strict=True, F3 spec-path, MED-1 → F8 ledger row) and all 6 R3 prior closures (HIGH-1/2/3 + MED-1/2/3) intact. `pytest tests/e2e/test_envoy_cli_packaging_acceptance.py` confirms `3 passed, 9 xfailed` with zero XPASS (F1 strict=True behavior holds at HEAD).
+
+**R5-MED-1**: F9/F10/F11 value-anchors cited `rules/*.md`, not a closed-allowlist source per `value-prioritization.md` MUST-1 + MUST-6 (closed allowlist = brief / briefs/ / journal DECISION / literal user quote / spec § success criterion). Disposition: re-anchored in-shard. F9 → EC-7 line 104 + EC-8 line 116 verbatim. F10 → EC-2 line 42 + EC-8(c) line 116 verbatim. F11 → EC-5(d) line 80 verbatim. Code-health citations (`rules/*.md`) downgraded to secondary anchors per MUST-5.
+
+**Convergence verdict**: EC-7 + EC-8 + F5.1 subscope CONVERGES at 2-consecutive-clean rounds (R4 + R5) per EC-6 bar. This is ONE of the two Phase-01-ship EC-6 contributions; the OTHER (full-Phase-01 EC-6 sweep) remains gated on F2 (independent ledger verifier in `terrene-foundation/envoy-ledger-verifier`) per `rules/repo-scope-discipline.md`.
 
 ---
 
