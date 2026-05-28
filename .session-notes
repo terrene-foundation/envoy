@@ -1,0 +1,29 @@
+# Session Notes — 2026-05-01
+
+## Where we are
+
+Phase 00 specs/ CONVERGED 2026-04-29 (0 CRIT + 0 HIGH × 2 consecutive full-sibling redteam rounds R5+R6). 37 specs FROZEN v1 in `specs/`. Round-by-round trajectory + freeze declaration recorded in `specs/_index.md`. The redteam item of the Phase 00 exit gate is now closed; remaining gate items are external (board, GH issues, deep audits, kailash-py#605, kailash-rs#520).
+
+## Read first
+
+1. `specs/_index.md` — convergence declaration + 37-spec FROZEN v1 status; round-trajectory table.
+2. `workspaces/phase-00-alignment/04-validate/round-6-specs-comprehensive.md` — final 0-HIGH findings doc; 3 MED + 4 LOW deferred.
+3. `specs/acceptance-metrics.md` — Phase 00 exit criteria (9 items; only the redteam one closed by this session).
+4. `.claude/rules/specs-authority.md` MUST Rule 5b — any spec edit re-triggers full-sibling re-derivation.
+
+## In-flight state
+
+- 2 specs minted this session (`envelope-library.md`, `model-adapter.md`) plus consolidated `## Ledger entry schemas` block in `specs/ledger.md` (~20 entry-type JSON blocks). Round-1 through round-6 findings docs in `workspaces/phase-00-alignment/04-validate/`. All uncommitted.
+
+## Traps
+
+- MUST Rule 5b: any future spec edit re-triggers full-sibling re-derivation. Convergence is a snapshot, not permanent. A single new HIGH finding resets the 2-consecutive-round counter, including from Phase 01 implementation work that touches specs/.
+- Phase 00 exit gate has 9 items — only the redteam item is closed by this session. The other 8 are external (trademark, board endorsement, GH issue manifest, deep audits, kailash-py#605, kailash-rs#520).
+- The 6 round-N comprehensive findings docs are the authoritative trail of every closure decision; re-open with a NEW round number rather than rewriting any of them.
+- Post-edit formatter on this repo reflows markdown — re-`Read` before `Edit` if `old_string` spans whitespace.
+
+## Open questions for the human
+
+- Should the 7 newly-minted specs (5 from R1, 2 from R2) trigger new mint# / kailash-py# / kailash-rs# binding-gap GH issues, or wait until Phase 01 entry?
+- Phase 01 entry decision — ready to proceed given specs/ is frozen?
+- Disposition for the 3 residual MEDs (R6-1 ledger-merge field doc; R6-2 CO-validator corpus governance; R6-3 per-dimension posture slider) — file as workspace todos, or tackle as encountered during Phase 01?

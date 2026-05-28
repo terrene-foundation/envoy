@@ -1,0 +1,63 @@
+# Session Notes — 2026-05-28
+
+## Where we are
+
+Shard 12 (multi-window Budget tracker primitive) is built + /implement-gate
+converged (single round: parallel reviewer + security-reviewer; 1 HIGH + 2
+MEDIUM + 3 LOW closed same-shard per autonomous-execution.md Rule 4). Pushed
+as **PR #45** (`feat/phase-01-shard-12-budget-tracker`, HEAD `bf293c2`).
+Removes the 4 `Phase02SubstrateNotWiredError` budget stubs in the kailash-py
+runtime adapter — orchestrator now on the production hot path. Closes the
+"Budget tracker" Phase-01 cross-cutting deliverable AND unblocks EC-8(b)
+"no double-billing in Budget tracker against multi-channel actions."
+
+PR is NOT yet merged — that's the first action next session (owner
+admin-merge per `rules/git.md`). After merge, the natural next pick is the
+EC-8 acceptance suite (the original user-chosen workstream the Budget
+tracker was a prerequisite for).
+
+## Read first
+
+1. `workspaces/phase-01-mvp/journal/0041-DISCOVERY-shard-12-budget-tracker-gate-review-closures.md` — convergence verdict + 2 patterns + receipts (agent task IDs, commit SHAs)
+2. `specs/budget-tracker.md` § Ledger entries emitted (new) + § Test location (reconciled)
+3. `envoy/budget/{orchestrator,ledger_emitter,threshold_dispatcher,runtime_adapter}.py` — facade + the sync-accounting / async-emission seam
+4. `envoy/runtime/adapters/kailash_py.py:388-447` — the 4 budget_* methods now delegate (the orphan-detection hot-path landing)
+5. `workspaces/phase-01-mvp/02-plans/02-test-strategy.md` § EC-8 (lines 246-279) — the 4 EC-8 acceptance tests named for the next shard
+
+## In-flight state
+
+- **PR #45 open, unmerged.** Next session: admin-merge then start EC-8 acceptance.
+- **PR #44 (Wave-4 daily digest) merged this session** to clear the prior session's first-action carry-forward. Local branch + 11 orphan worktrees / 14 stale branches cleaned up.
+- **Two pending journal stubs (channels M-1..M-4) DISCARDED this session** — they were duplicates already documented in `journal/0039`.
+- Local `feat/phase-01-shard-12-budget-tracker` branch is up to date with `origin/`; no other open branches.
+
+## Traps
+
+- **The Ledger is int-only.** `envoy.ledger.canonical.canonical_dumps` rejects floats — caught one in this session when `threshold_pct: float` in the budget_threshold_crossed payload raised. Fix: encode as integer basis points (`threshold_bps`, 0.80 → 8000). Any new ledger entry type with a fractional field MUST do the same.
+- **`EnvoyLedger.verify_chain()` and `EnvoyLedger.query()` are BOTH `async def`**, despite the inspect.signature stub showing only `-> VerificationReport` / `-> list[EntryEnvelope]`. Pyright catches the missing `await` — don't trust the apparent sync signature, run pyright/await.
+- **Threshold callbacks fire OUTSIDE the upstream `BudgetTracker._lock` but on the calling thread.** The dispatcher's `enqueue` (sync `put_nowait`) is the ONLY work allowed on that thread. The async Grant-Moment wiring runs in the dispatcher worker, off the callback thread — re-entrancy safe. `_arm_thresholds` excludes `per_call` (the anomaly detector owns single-call magnitude; arming per_call would fire on every substantial call).
+- **The double-billing guard is timed BEFORE mutation** (record-intent-first) in `record_for_call` — both expiry and success branches set `_recorded_reservations` before `_rollback`/record-loop. This is the dual defense (no double-CHARGE AND no double-RELEASE). Don't move it back to "after success" without breaking HIGH#1.
+- **Anomaly detector dominates small-budget tests.** The single-call >50%-of-session-remaining detector fires aggressively when `per_session` is small. For tests of OTHER behaviors, inject `no_op_anomaly_detector()` from `tests/helpers/budget_harness.py` (uses unreachable `1e18` threshold).
+- **`budget_velocity_check` is now reserved-aware** (commit 53135ab, M2 fix). Uses `EnvoyBudgetOrchestrator.window_check` (per-window `BudgetCheckResult`) — `committed + reserved >= allocated` is the breach predicate.
+- **freezegun is still NOT in `.venv`** — the budget tests use a `_Clock()` helper class (mutable `.now`), same pattern as daily_digest's `_utc_now()` seam.
+- **pyright duck-typing noise persists**: `Import "envoy.budget.*" could not be resolved` on the new package files is stale (runtime imports work + 1580 tests pass). ruff IS the lint of record here.
+
+## Forest vs trees + value-anchored deferrals
+
+- **Forest (next pick):** **EC-8 acceptance suite** (the original user-chosen workstream this shard unblocked). Per `02-test-strategy.md` § EC-8 (lines 246-279), the 4 tests are:
+  - `tests/tier2/test_envelope_compiler_session_envelope_byte_identity.py` — Day-1 CLI envelope = Day-6 Slack envelope, byte-identical `content_hash`.
+  - `tests/tier2/test_grant_moment_cascade_cross_channel.py` — Telegram Day-1 → Slack Day-6 child → revoke Day-1 → cascade reaches Day-6.
+  - `tests/tier2/test_budget_no_double_billing_multi_channel.py` — same `intent_id` across 2 channels charges once (the EC-8b test, now buildable against the Budget tracker just landed).
+  - `tests/e2e/test_envoy_7_day_cross_channel_coherence.py` — 7-day acceptance battery.
+
+  Value-anchor: `02-mvp-objectives.md` EC-8 line 116 ("cross-channel coherence is the channel-as-UI thesis; if broken, the thesis is at risk") + the strict ship-predicate conjunction (line 149). All 3 sub-conditions now testable against shipped primitives. ~1 session.
+
+- **Deferred this shard:**
+  - `specs/ledger.md` enumeration update (the spec's "35 types" is now 38 with budget). Value-anchor: spec-accuracy completeness across the producer-side spec set. Deferred because editing `ledger.md` triggers Rule-5b sibling re-derivation (a multi-session sweep); the budget types ARE documented in `specs/budget-tracker.md` § Ledger entries emitted (additive) and the producer code accepts them. Flagged for `/codify` discussion in journal 0041 § For Discussion #2.
+  - Reviewer M2 (threshold_bps lossy for non-canonical thresholds via public `subscribe_threshold`). Value-anchor: API-surface contract integrity for callers passing custom thresholds outside the spec's 4 defaults. Not reachable through Phase-01 production (only `_arm_thresholds` arms thresholds, and only the 4 spec defaults). Phase-02 disposition: document/validate at `subscribe_threshold` boundary.
+  - L2 (`apply_override` discards in-flight reservations). Documented Phase-01 boundary per reviewer; not a security hole.
+  - L4 (dispatcher shared buffer interleave). Single-thread asyncio scope; Phase-02 multi-thread would route through `loop.call_soon_threadsafe`.
+
+- **EC-7 status:** still 5/8 channels (CLI + Web + Telegram + Slack + Discord). `02-mvp-objectives.md` § 5 disposition: DEGRADE-ACCEPTABLE via pre-declared de-scope #1 (5-channel set). No new work needed unless user invokes 8-channel Wave-B.
+
+- **EC-9 still requires repo context-switch** (separate `terrene-foundation/envoy-ledger-verifier` per `01-analysis/07-independent-verifier-design.md` § 3.1 + `rules/repo-scope-discipline.md`). Not autonomously executable from this envoy session.

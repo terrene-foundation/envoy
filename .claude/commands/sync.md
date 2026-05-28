@@ -8,11 +8,11 @@ Pull the latest CO/COC artifacts from the upstream template and merge them into 
 
 ## Context
 
-This repo inherits its `.claude/` directory from a USE template (`kailash-coc-claude-rs`). The template is updated when the loom/ source runs `/sync`. This command pulls those updates into your repo.
+This repo inherits its `.claude/` directory from a USE template (recorded in `.claude/.coc-sync-marker`; auto-detected at first run per § 1 below). The template is updated when the loom/ source runs `/sync`. This command pulls those updates into your repo.
 
 ```
-loom/ (source) → kailash-coc-claude-rs/ (USE template) → THIS REPO
-                                                              ↑ you are here
+loom/ (source) → USE template → THIS REPO
+                                     ↑ you are here
 ```
 
 ## BUILD vs USE Repo Distinction
@@ -40,9 +40,15 @@ This is a **merge**, not an overwrite. Three categories of files:
 
 Check `.claude/.coc-sync-marker` for the template. If missing, auto-detect:
 
-- `pyproject.toml` has `kailash-enterprise` → `kailash-coc-claude-rs`
-- `Gemfile` has `kailash` gem → `kailash-coc-claude-rs`
-- `pyproject.toml` has `kailash` dependency → `kailash-coc-claude-py`
+1. **Multi-CLI consumers** (any of `AGENTS.md`, `GEMINI.md` present at repo root):
+   - `pyproject.toml` has `kailash-enterprise` → `kailash-coc-rs`
+   - `pyproject.toml` has `kailash` dependency → `kailash-coc-py`
+2. **Legacy CC-only consumers** (only `CLAUDE.md` at repo root):
+   - `pyproject.toml` has `kailash-enterprise` → `kailash-coc-claude-rs`
+   - `Gemfile` has `kailash` gem → `kailash-coc-claude-rb` (Ruby projects; legacy mappings to `kailash-coc-claude-rs` predated the rb USE template — see issue #140)
+   - `pyproject.toml` has `kailash` dependency → `kailash-coc-claude-py`
+
+If detection is ambiguous (e.g., the consumer migrated CC-only → multi-CLI without updating the marker), set `KAILASH_COC_TEMPLATE_PATH` or write the correct template name to `.claude/.coc-sync-marker` before re-running.
 
 ### 2. Locate template
 
@@ -50,8 +56,8 @@ Resolution order (canonical, v2.9.1+) — **GitHub-backed cache wins by default*
 
 1. **`KAILASH_COC_TEMPLATE_PATH` env var** — explicit developer escape hatch. Use this when iterating on un-pushed local template changes. MUST point at a directory containing `.claude/`.
 2. **Cache** at `~/.cache/kailash-coc/<template>/`. Auto-update via `git -C <cache> fetch --depth 1 origin main && git -C <cache> reset --hard origin/main` on every sync.
-3. **Shallow clone** to cache if no cache exists: `git clone --depth 1 --single-branch --branch main https://github.com/terrene-foundation/kailash-coc-claude-rs.git ~/.cache/kailash-coc/kailash-coc-claude-rs/`.
-4. **Offline fallback only** — local sibling `../{template}/` or `~/repos/loom/{template}/`. Used ONLY when steps 2-3 all fail (network unreachable). Emit `freshness NOT guaranteed` notice.
+3. **Shallow clone** to cache if no cache exists: `git clone --depth 1 --single-branch --branch main https://github.com/terrene-foundation/<TEMPLATE>.git ~/.cache/kailash-coc/<TEMPLATE>/` where `<TEMPLATE>` is the value resolved in § 1 (e.g., `kailash-coc-rs` for multi-CLI, `kailash-coc-claude-rs` for legacy CC-only).
+4. **Offline fallback only** — local sibling resolved via `bin/lib/loom-links.mjs` (`use-template.<key>` logical key — canonical NAME→location binding per `cross-repo.md` MUST-1, subsumes `$LOOM_PATH` under the `loom` / `use-template.*` keys), NOT a positional `../{template}/` / `~/repos/loom/{template}/` guess. Used ONLY when steps 2-3 all fail (network unreachable). No declared linkage → explicit not-found, not a positional fallback. Emit `freshness NOT guaranteed` notice. (`$LOOM_PATH` is superseded by the resolver; a back-compat read still works if set, but the resolver is canonical.)
 
 If a local sibling is detected during online resolution but NOT used, emit one-line stderr notice: "Found local clone at X but using GitHub-backed cache for freshness. Set KAILASH_COC_TEMPLATE_PATH=X to use the local clone instead."
 
@@ -131,7 +137,7 @@ Compare `.coc-sync-marker` timestamps. If already fresh: "Already up to date."
 ### 8. Report
 
 ```
-## Sync Complete: kailash-coc-claude-rs → this repo
+## Sync Complete: <TEMPLATE> → this repo
 
 Updated: {N} shared artifacts
 Added: {N} new artifacts from template
@@ -147,6 +153,7 @@ BUILD repos and downstream USE repos behave differently when `/codify` runs:
 
 - **BUILD repos** (kailash-py, kailash-rs, kailash-prism): `/codify` writes to canonical locations (`agents/frameworks/`, `skills/NN-name/`, `rules/*.md`) AND appends entries to `.claude/.proposals/latest.yaml` for upstream flow to loom/. Then open loom/ and run `/sync rs` — Gate 1 classifies each change (global vs variant), Gate 2 distributes to USE templates.
 - **Downstream USE repos** (consumer projects): `/codify` writes to `.claude/agents/project/` and `.claude/skills/project/` and stays LOCAL. No `.proposals/latest.yaml` is created; no upstream flow. These artifacts are preserved across `/sync` runs by the "Project-specific" rule above.
+- **COC-artifact improvements** (method/rules/skills/agents/COC-tooling) MAY be proposed at the USE-template repo (`kailash-coc-*`); loom Gate-1 ingests this stream symmetrically with the BUILD stream, and either origin is disclosure-scrubbed on intake. This is the authoritative target flow per `guides/co-setup/09-proposal-protocol.md` Step 7b.
 
 **Never** edit the template directly. All shared artifact changes flow through loom/.
 

@@ -1,0 +1,48 @@
+# Session Notes — 2026-05-03 (post §A + namespace recheck)
+
+## Where we are
+
+**Phase 00 agent-side: 100% closed.** All draftable / verifiable / mechanical items shipped. This session landed three commits on top of the prior session's 4:
+
+- `f6ec8dc` — §A claim-verification surgical edits (12 edit groups, 6 files, +bonus pipe-escape fix on the DECISIONS Phase migration table).
+- `e015097` — §B namespace recheck snapshot (envoy-agent: npm/PyPI/crates.io/GitHub-org/GitHub-user all 404 / available as of 2026-05-03; closes the §121 GitHub-org open question).
+- (in flight) — Phase-00 todo tracker sync + this session-notes refresh.
+
+Repo state: public on `terrene-foundation/envoy`, branch protection now ON (1-review for non-admins, force-push + deletion blocked, admin-bypass for owner). 3 commits on `origin/main` since the prior wrapup.
+
+Phase-01 entry remains gated EXTERNALLY on: (1) trademark sweep close (USPTO/EUIPO/UK IPO), (2) Foundation board endorsement of ADR-0009 runtime pluggability, (3) counsel sign-off on composite LICENSE + SPDX + export-control + compat statement, (4) AT-PHASE-DATE launch-time re-runs (mailboxes, CoC link, kailash-py PyPI name, namespace re-snapshot).
+
+## Read first
+
+1. `ROADMAP.md` Phase-00 section — both "Envoy-claim verification" bullets now ticked; "Naming + namespace" GitHub-org bullet annotated with 2026-05-03 recheck stamp. The full external gate list is what remains.
+2. `workspaces/phase-00-alignment/todos/phase-00.md` — fully synced with delivered reality this session; "Status summary (as of 2026-05-03)" at bottom enumerates the 4 external gates.
+3. `workspaces/phase-00-alignment/02-plans/claim-verification/01-sweep.md` §B + §C — the only remaining audit work is the launch-time re-checks (§B) and the counsel queue (§C). §A is fully closed by commit `f6ec8dc`.
+4. `DECISIONS.md` ADR-0002 §121-122 — namespace recheck stamps live here; next recheck must happen immediately before public Envoy launch.
+5. `.claude/rules/specs-authority.md` MUST Rule 5b — the specs/ tree is FROZEN-v1; any spec edit re-triggers full-sibling redteam. The 3 R6 residual MEDs in `todos/active/phase-00-residual-meds.md` stay parked for Phase 01 by this rule's economics.
+
+## In-flight state
+
+- Branch protection: ON, Foundation pattern (1 review, admin-bypass).
+- Origin/main: in sync after this session's pushes.
+- No pending sweeps. No pending edits. Working tree clean expected after the todos+notes commit.
+- §B partial snapshot done (namespaces ✓); 3 §B items NOT yet checked (mailbox `info@terrene.foundation` + `security@terrene.foundation`, CoC link `terrene.foundation/code-of-conduct`, kailash-py actual PyPI name). Reason: §B contract says "immediately before launch" — running them now risks decay before launch and adds noise.
+
+## Traps
+
+- **Spec edits re-trigger redteam.** R6 MEDs are parked precisely because each fix costs a full 37-spec sibling sweep. Don't tick them off in isolation.
+- **Public repo blast radius.** Every commit-message body, every doc-claim correction, every workspace artifact (if path-leaked) is now indexed. The "kailash-py = Apache 2.0 + CC BY 4.0" conflation that this session purged is the canonical example of how a doc bug becomes a credibility bug overnight.
+- **Branch protection + admin bypass.** You can still direct-push as owner. External contributors / forks must PR. Don't disable admin-bypass without considering that every Phase-00→01 transition commit is owner-direct.
+- **Pipe-in-table cells.** DECISIONS Phase migration table had a `curl | sh` literal that the markdown formatter turned into a column split when the row was widened by an edit. Lesson: any time a future edit widens a cell containing `|`, escape with `\|`. The §A commit fixed this once; it can recur on the next reflow if a new pipe slips in.
+- **`/redteam` after spec edits.** If a future session edits even one spec/, re-derive against ALL siblings (spec-authority.md MUST Rule 5b). Two-session reproducibility validates this — narrow scope ships silent drift.
+
+## Open questions for the human
+
+None blocking. Every decision the human owns at this stage is external (board, counsel, USPTO). When you return:
+
+- If the Foundation board has endorsed → unlock the §C counsel queue and start `/analyze` for Phase 01.
+- If not yet → the agent can do nothing useful in this repo until that endorsement lands; consider working in a sibling repo.
+- If a §B item has decayed (e.g., a namespace was claimed in the interim) → that's a Phase-00 issue requiring an ADR-0002 update before launch.
+
+## Next entry point
+
+Phase 01 entry is via `/analyze` (NOT `/todos`) per ROADMAP line 33: "**Exit criteria:** all items ✅. Then `/analyze` Phase 01." All current external gates must close first. There is no productive agent work in `envoy` between now and that transition.

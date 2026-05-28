@@ -1,6 +1,6 @@
 template: kailash-coc-rs
 template_type: multi-cli
-template_version: 2.22.3
+template_version: 2.23.1
 template_repo: terrene-foundation/kailash-coc-rs
 clis:
   - claude
@@ -11,54 +11,53 @@ migrated_from:
   template: kailash-coc-claude-rs
   template_version: 2.19.0
   migrated_at: "2026-05-11T00:00:00Z"
-last_synced: "2026-05-11T00:00:00Z"
-loom_version: 2.29.4
-loom_sha: b50f869
-sync_direction: "Multi-CLI migration from kailash-coc-claude-rs 2.19.0 (CC-only) to kailash-coc-rs 2.22.3 (multi-CLI: Claude+Codex+Gemini). Adopted .codex/, .codex-mcp-guard/, .gemini/, AGENTS.md, GEMINI.md top-level overlays. Refreshed .claude/ from sister (agents, commands, rules, skills, guides, hooks, audit-fixtures, bin, .coc-obsoleted, settings.json). Preserved CLAUDE.md (project-customized: 'envoy is a docs/specs project' framing kept; multi-CLI Per-CLI Baselines section NOT applied — envoy can adopt later). Preserved .claude/learning/ (per-repo state), .claude/settings.local.json, .claude/variants/rs/ (project-local rule overrides), workspaces/."
-scope: "Full multi-CLI migration. All loom 2.22.3 (rs multi-CLI) artifacts adopted including v2.20-v2.22 cumulative additions: state-file-write-guard rule + hook lib, value-prioritization updates, journal-classifier hook lib, audit-fixtures for session-end-hook + violation-patterns, .github/workflows from sister."
+prior_sync:
+  template_version: 2.22.3
+  last_synced: "2026-05-11T00:00:00Z"
+last_synced: "2026-05-28T00:00:00Z"
+loom_version: 2.35.0
+sync_direction: "rsync template @ 2.23.1 (loom 2.35.0) into consumer. Pulled refreshed agents, commands, rules, skills, guides, hooks, bin, audit-fixtures, codex-mcp-guard, codex-templates, gemini-templates, sync-manifest. New rules adopted: knowledge-convergence, multi-operator-coordination, user-flow-validation, rule-authoring v10+v11 (proximity-band + recurrent-extraction-escalation), self-referential-codify allowlist extensions, llm-deployment-coverage, variant-authoring. New commands: onboard, certify, claim, claims, release-claim, whoami (multi-operator coordination surface). New skills: 41-onboard, 42-certify, hook-authoring, command-authoring, skill-authoring. Preserved CLAUDE.md, .claude/learning/, .claude/settings.local.json, .claude/variants/rs/, workspaces/. Purged .claude/skills/management/ per .coc-obsoleted manifest. Companion change: .gitignore now tracks workspace .session-notes (project-tracking — workspaces should not be gitignored per co-owner directive)."
 files_adopted:
-  - .codex/                           # NEW: Codex config + prompts + skills
-  - .codex-mcp-guard/                 # NEW: Codex MCP policy enforcement
-  - .gemini/                          # NEW: Gemini agents + commands + settings
-  - AGENTS.md                         # NEW: Codex baseline (711 lines)
-  - GEMINI.md                         # NEW: Gemini baseline (711 lines)
-  - .claude/agents/                   # REFRESHED from sister
-  - .claude/commands/                 # REFRESHED from sister
-  - .claude/rules/                    # REFRESHED from sister (incl. NEW state-file-write-guard.md)
-  - .claude/skills/                   # REFRESHED from sister
-  - .claude/guides/                   # REFRESHED from sister
-  - .claude/hooks/                    # REFRESHED from sister (incl. NEW journal-classifier.js, state-file-write-guard.js)
-  - .claude/bin/                      # NEW: emit/compose/repin tooling
-  - .claude/audit-fixtures/           # NEW: hook regression fixtures
-  - .claude/.coc-obsoleted            # REFRESHED manifest
-  - .claude/settings.json             # REFRESHED from sister
-  - .github/workflows/auto-merge.yml  # NEW
-  - .github/workflows/validate.yml    # NEW
-  - .github/coc-sdk-refs-allowlist.txt # NEW
+  - .claude/agents/                   # REFRESHED
+  - .claude/commands/                 # REFRESHED + new (onboard, certify, claim, claims, release-claim, whoami)
+  - .claude/rules/                    # REFRESHED + new (knowledge-convergence, multi-operator-coordination, user-flow-validation, llm-deployment-coverage, variant-authoring, rule-authoring v10+v11)
+  - .claude/skills/                   # REFRESHED + new (41-onboard, 42-certify, hook-authoring, command-authoring, skill-authoring)
+  - .claude/guides/                   # REFRESHED
+  - .claude/hooks/                    # REFRESHED + new lib (codify-lease.js, journal-reserve.js, journal-body-anchor.js, multi-operator-sessionstart.js, etc.)
+  - .claude/bin/                      # REFRESHED + new (validate-extraction-history.mjs, sync-tier-aware.mjs, etc.)
+  - .claude/audit-fixtures/           # REFRESHED + new fixture trees
+  - .claude/codex-mcp-guard/          # REFRESHED
+  - .claude/codex-templates/          # REFRESHED
+  - .claude/gemini-templates/         # REFRESHED
+  - .claude/sync-manifest.yaml        # REFRESHED
+  - .claude/.coc-obsoleted            # REFRESHED
+  - .claude/VERSION                   # REFRESHED to upstream loom 2.35.0
+  - .codex/                           # REFRESHED full overlay (skills, prompts)
+  - .codex-mcp-guard/                 # REFRESHED policies
+  - .gemini/                          # REFRESHED full overlay (agents, commands, skills)
+  - AGENTS.md                         # REFRESHED Codex baseline
+  - GEMINI.md                         # REFRESHED Gemini baseline
 preserved:
-  - CLAUDE.md                         # PROJECT-OWNED — local 'docs/specs project' framing kept
+  - CLAUDE.md                         # PROJECT-OWNED — 'docs/specs project' framing kept
   - .claude/settings.local.json       # PROJECT-LOCAL permissions
-  - .claude/learning/                 # PER-REPO STATE: violations.jsonl, observations.jsonl, posture state
-  - .claude/variants/rs/              # PROJECT-LOCAL variant overrides (build-speed, testing, release, agents, ci-runners, dataflow-null-typing, build cmd)
-  - workspaces/                       # PROJECT WORKSTREAMS
-purged_per_obsoleted_manifest: []
+  - .claude/learning/                 # PER-REPO STATE
+  - .claude/variants/rs/              # PROJECT-LOCAL variant overrides
+  - workspaces/                       # PROJECT WORKSTREAMS (now also fully tracked — workspace .session-notes no longer gitignored)
+  - README.md                         # PROJECT-OWNED
+  - .gitignore                        # PROJECT-OWNED (this sync removes the global .session-notes ignore so workspace continuity tracks)
+purged_per_obsoleted_manifest:
+  - .claude/skills/management/
 sdk_pins:
-  kailash-rs (workspace): "3.27.0"
-  eatp: "0.1.0"
-  kailash-governance: "0.1.0"
-  kailash-pact: "0.1.0"
-stats:
-  baselines_emitted:
-    cc: false        # CLAUDE.md preserved (project-owned)
-    codex: true      # AGENTS.md (52956 bytes)
-    gemini: true     # GEMINI.md (52965 bytes)
-  cli_artifacts:
-    codex: true      # .codex/ tree copied from sister
-    gemini: true     # .gemini/ tree copied from sister
-  mcp_guard:
-    policies_populated: true  # .codex-mcp-guard/policies.json present
+  kailash: "2.23.0"
+  kailash-dataflow: "2.10.0"
+  kailash-nexus: "2.6.3"
+  kailash-kaizen: "2.24.0"
+  kailash-pact: "0.12.0"
+  kailash-mcp: "0.2.14"
+  kailash-ml: "1.7.4"
+  kailash-align: "0.7.1"
 hooks_verified:
   count: 18
-  libs: 11
-  note: "Full hooks/ dir installed before settings.json update so next-tool-call hook resolution works."
-trust_posture_caveat: "Trust posture is per-CLI. `posture show` works on Claude Code today; Codex/Gemini posture surfaces are session-local until cross-CLI posture sync ships. See rules/trust-posture.md MUST Rule 1."
+  libs_resolved: all
+  note: "Every hook in settings.json has a script on disk; every require('./lib/...') resolves."
+</content>

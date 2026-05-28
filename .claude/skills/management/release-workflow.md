@@ -88,11 +88,11 @@ git push && git push --tags
 
 ```bash
 # Watch the run
-gh run list --repo esperie/kailash --workflow release.yml --limit 3
+gh run list --repo terrene-foundation/kailash --workflow release.yml --limit 3
 gh run watch  # follow latest run
 
 # Check specific job
-gh run view RUN_ID --repo esperie/kailash
+gh run view RUN_ID --repo terrene-foundation/kailash
 ```
 
 ## 6. Post-Release Verification
@@ -116,7 +116,7 @@ cargo search kailash-plugin-macros
 ## 7. Dry Run (Test Without Publishing)
 
 ```bash
-gh workflow run release.yml --repo esperie/kailash --field dry_run=true
+gh workflow run release.yml --repo terrene-foundation/kailash --field dry_run=true
 ```
 
 ---
@@ -160,7 +160,7 @@ launchctl load ~/Library/LaunchAgents/com.github.actions.runner.kailash.plist
 
 ```bash
 launchctl list com.github.actions.runner.kailash
-gh api repos/esperie/kailash/actions/runners --jq '.runners[] | {name, status}'
+gh api repos/terrene-foundation/kailash/actions/runners --jq '.runners[] | {name, status}'
 ```
 
 ### Missing Python versions
@@ -176,8 +176,8 @@ brew install python@3.13
 
 | Secret            | Purpose               | Set Command                                            |
 | ----------------- | --------------------- | ------------------------------------------------------ |
-| `PYPI_TOKEN`      | Upload wheels to PyPI | `gh secret set PYPI_TOKEN --repo esperie/kailash`      |
-| `CRATES_IO_TOKEN` | Publish plugin SDK    | `gh secret set CRATES_IO_TOKEN --repo esperie/kailash` |
+| `PYPI_TOKEN`      | Upload wheels to PyPI | `gh secret set PYPI_TOKEN --repo terrene-foundation/kailash`      |
+| `CRATES_IO_TOKEN` | Publish plugin SDK    | `gh secret set CRATES_IO_TOKEN --repo terrene-foundation/kailash` |
 
 ---
 

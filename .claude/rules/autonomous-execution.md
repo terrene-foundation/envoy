@@ -81,7 +81,7 @@ A single shard (one session, one worktree, one implementation pass) MUST stay wi
   update all 14 call sites, add integration tests, migrate legacy callers
 ```
 
-**Why:** Beyond the budget the model stops tracking cross-file invariants and pattern-matches instead. Errors on line 400 poison everything after and surface only at `/redteam`. Evidence: the Phase 5.11 orphan (2,407 LOC of trust integration code with zero production call sites) was one conceptual change that exceeded the invariant budget — nothing caught it until the audit.
+**Why:** Beyond the budget the model stops tracking cross-file invariants and pattern-matches instead. Errors on line 400 poison everything after and surface only at `/redteam`. See Origin for Phase 5.11 evidence.
 
 ### 2. Size By Complexity, Not LOC Alone (MUST)
 
@@ -142,11 +142,15 @@ When a gate-level review (reviewer, security-reviewer, gold-standards-validator)
 - "Budget allows it but the blast radius is higher if something breaks"
 - "Splitting into two PRs is the conservative approach"
 
-**Why:** Same-bug-class gaps surfaced during review cost the least to fix while the context is loaded — the invariants, call graph, and domain model are all warm in attention. Filing a follow-up issue requires the next session to reload the entire context from scratch, typically 2–5× the marginal cost of continuing. Evidence: 2026-04-20 — a reviewer flagged 40+ sibling sites with the same hardcode pattern as the just-fixed PR. The agent filed a follow-up issue instead of fixing; the user pushed back ("why aren't you resolving it"); the fix shipped same session. Filing the follow-up wasted one user-turn of friction and one session-handoff context-reload that was unnecessary.
+**Why:** Same-bug-class gaps surfaced during review cost the least to fix while the context is loaded — the invariants, call graph, and domain model are all warm in attention. Filing a follow-up issue requires the next session to reload the entire context from scratch, typically 2–5× the marginal cost of continuing. See Origin for 2026-04-20 + cross-class evidence (kailash-rs PRs #735/#736, kailash-kaizen PR #836).
 
 **Bounded by the shard budget.** This rule does NOT override MUST Rule 1 (shard threshold). If the surfaced gap exceeds ≤500 LOC load-bearing / ≤5–10 invariants / ≤3–4 call-graph hops, filing the follow-up issue IS the correct disposition — the gap is a new shard, not a continuation of the current one.
 
 Origin: 2026-04-20 — a null-bind fix shipped on one path; review surfaced a sibling path gap (same bug class, ~300 LOC, one shard); initial disposition was "file follow-up issue"; user corrected; fix shipped same session. Additional cross-class evidence — kailash-rs 2026-05-01 session: (a) bedrock register_bedrock_region rustdoc broken-intra-doc-link on a feature-gated symbol, fixed in same shard via plain-backticks (PR #735 commit 01c18ece); (b) PyOAuth2Client `#[pymethods]` rustdoc private_intra_doc_links because PyO3 methods are private-by-default, fixed in same shard via plain-backticks (PR #736 commit 729630cd); (c) PyNexus EventBus #679 Wave-2 implementation following Wave-1's premature deferral — the deferred-shard-was-actually-fittable signal that triggered same-shard fix-immediately. Three evidence points across two distinct rule-violation classes (rustdoc broken-link feature-gated, rustdoc private_intra_doc_links on PyO3) confirm Rule 4 generalizes beyond null-bind sibling sweeps. Additional cross-class evidence — kailash-kaizen 2.20.0 release cycle 2026-05-06: security-reviewer flagged 1 HIGH (prompt-injection via output-rendered traits) + 2 MEDIUM (raw-role logging, unbounded cache DoS) findings against PR #836; all three fit within the shard's remaining budget (each <30 LOC, 4 invariants total); all three landed in the same commit `ba476b88`; security-reviewer re-approved on the post-fix diff. Confirms Rule 4 generalizes from code-reviewer surfacings to security-reviewer surfacings — same gate-level review pattern.
+
+## Multi-Operator Capacity Considerations
+
+Concurrent-operator capacity guidance — per-operator capacity bounded per-`verified_id` (not per-session), cross-operator parallelization throughput multiplier (NON-SAME adjacency only), `/claim`-record discipline as the coordination signal — lives in `rules/multi-operator-coordination.md` §8. That rule is `scope: path-scoped` so the capacity clauses load only on paths where multi-operator coordination applies, keeping this baseline rule under its per-rule emission budget.
 
 ## MUST NOT (Sharding)
 
