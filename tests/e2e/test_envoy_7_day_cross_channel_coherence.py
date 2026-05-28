@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """EC-8 7-day cross-channel coherence battery.
 
-Acceptance gate per `workspaces/phase-01-mvp/02-mvp-objectives.md` line 116
+Acceptance gate per `workspaces/phase-01-mvp/01-analysis/02-mvp-objectives.md` line 116
 + `workspaces/phase-01-mvp/02-plans/02-test-strategy.md` § EC-8 Tier-3 line
 260 (day-by-day table) + line 273 (daily cross-channel state-equivalence)
 + line 279 (the three sub-condition acceptance gates a/b/c).
