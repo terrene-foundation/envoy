@@ -65,15 +65,30 @@ RAISING any velocity limit CANNOT be inline. Requires Weekly Posture Review OR c
 - specs/threat-model.md — T-019, T-093.
 - specs/ledger.md — budget reservation + record entries.
 
+## Ledger entries emitted
+
+The Budget tracker emits three Ledger entry types via `envoy.budget.ledger_emitter.LedgerEmitter`, appended through `envoy.ledger.EnvoyLedger.append`. Numeric fields are integer microdollars; the threshold fraction is encoded as integer basis points (`threshold_bps`, 0.80 → 8000) because the Phase-01 Ledger is int-only (`envoy.ledger.canonical.canonical_dumps` rejects floats). `principal_id` is redacted through `dataflow.classification.event_payload.format_record_id_for_event` before the content is built.
+
+- `budget_reservation_record` — emitted on every `EnvoyBudgetOrchestrator.record_for_call`. Content: `intent_id`, `reservation_id`, `reserved_microdollars`, `actual_microdollars`, `per_window_reserved`.
+- `budget_threshold_crossed` — emitted on every threshold-cross `EnvoyBudgetEvent` drained by `envoy.budget.threshold_dispatcher.ThresholdDispatcher`. Content: redacted `principal_id`, `window`, `period_key`, `threshold_bps`, `committed_microdollars`, `reserved_microdollars`, `allocated_microdollars`, `observed_at`.
+- `budget_extended` — emitted on every `EnvoyBudgetOrchestrator.raise_velocity_limit` approved with a cooling-off Grant-Moment ref. Content: `window`, `prior_allocated_microdollars`, `new_allocated_microdollars`, `grant_moment_ref`.
+
 ## Test location
 
-- `tests/unit/test_microdollar_arithmetic.py` — integer-only, no float drift, overflow detection.
-- `tests/unit/test_sliding_window_velocity.py` — O(log n) sliding-window sum correctness.
-- `tests/integration/test_reserve_record_concurrency.py` — concurrent reservations sum against ceilings (Tier 2).
-- `tests/integration/test_threshold_callback_invocation.py` — `set_threshold_callback` fires at correct % thresholds.
+- `tests/tier1/test_microdollar_arithmetic.py` — integer-only, no float drift, overflow detection.
+- `tests/tier1/test_sliding_window_velocity.py` — multi-window accumulation + per-hour velocity ceiling.
+- `tests/tier2/test_reserve_record_concurrency.py` — concurrent reservations sum against ceilings + double-record guard (EC-8).
+- `tests/tier2/test_threshold_callback_invocation.py` — `set_threshold_callback` fires at correct % thresholds + rising-edge one-shot.
 - `tests/regression/test_t019_velocity_raise_inline_block.py` — T-019 defense; inline raise refused.
 - `tests/regression/test_t093_budget_exhaustion_fraud.py` — T-093 anomaly + high-velocity-pattern detection.
-- `tests/integration/test_velocity_raise_24h_cooling_off.py` — Sunday→Monday effect window.
+- `tests/tier2/test_velocity_raise_24h_cooling_off.py` — cooling-off Grant-Moment ref unlocks the raise + `budget_extended` emit.
+- `tests/tier2/test_envoy_budget_orchestrator_wiring.py` — orchestrator reserve→record round-trip against real Ledger (hash-chain-verifiable).
+- `tests/tier2/test_threshold_dispatcher_wiring.py` — threshold cross → `budget_threshold_crossed` Ledger entry + Grant-Moment seam.
+- `tests/tier2/test_per_principal_partitioning.py` — tenant-isolation cache-key shape; no cross-principal consumption.
+- `tests/tier2/test_reset_boundary_determinism.py` — period-key boundary determinism + replay equivalence.
+- `tests/tier2/test_ledger_emitter_classified_redaction.py` — single-point principal-id redaction.
+
+> Test-location paths reconciled to the project's tier-based layout (`tests/tier1/`, `tests/tier2/`, `tests/regression/`) per `rules/spec-accuracy.md` Rule 1; the prior `tests/unit/` / `tests/integration/` citations named a layout the project does not use.
 
 ## Open questions
 
