@@ -1,46 +1,46 @@
-# Session Notes — 2026-05-28
+# Session Notes — 2026-05-29
 
 ## Where we are
 
-F1 (EC-8 acceptance suite, PR #47 → `a9b9ee9`), F3 (EC-7 5-channel session-continuity, PR #48 → `5215890`), and **F5.1 (Wave-5 CLI packaging Tier-3 acceptance test scaffold, PR #49 → `3bcfa13`)** all merged on main. F5's xfail list is the Milestone-5 progress signal — each of the 9 unwired subcommands flips to PASSED as shard 19 lands them. Critical-path F4 still gated on F2 (out-of-repo verifier); F5.2 (the shard-19 Wave-5 build proper) is the remaining in-repo workstream.
+Phase-01-mvp rolling `/redteam` subscope (EC-7 + EC-8 + F5.1) converged at R4 + R5 — PR **#51** open against main on branch `fix/phase-01-redteam-round-4-closures` (head `14601a6`). Full-Phase-01 EC-6 still gated on F2 cross-repo. Multi-operator roster still NOT enrolled — legacy single-writer `.session-notes` fallback.
 
 ## Read first
 
-1. `tests/e2e/test_envoy_cli_packaging_acceptance.py` — F5.1 Tier-3 packaging-shape battery. Per-PR gate on `.venv/bin/envoy --help`; xfail list flips to PASSED as shard 19 wires each Milestone-5 subcommand. Append to `REGISTERED_AS_OF_F5` frozenset when adding a new subcommand.
-2. `tests/e2e/test_session_continuity_5_channels.py` — F3 deterministic LLM stub pattern + scope-out discipline (the model for future Phase-01 acceptance tests that need to run in CI without Ollama)
-3. `tests/helpers/deterministic_llm_provider.py` — Protocol-Satisfying Deterministic Adapter; registered via `monkeypatch.setitem(runtime._PRESET_PROVIDER, ...)`; dispatch by signature output-field-name
-4. `tests/e2e/test_envoy_7_day_cross_channel_coherence.py` — F1's 7-day battery scope-out docstring template
-5. `workspaces/phase-01-mvp/02-plans/01-build-sequence.md` § Wave 5 (line 264) + § Milestone 5 (line 333) — canonical anchor for F5; spec verbatim list of the 11 subcommands
+1. `04-validate/round-4-rolling-convergence-2026-05-28.md` — convergence note (R4 + R5 incorporated); single entry point to both rounds + the four deferred shards F8–F11.
+2. `04-validate/round-5-closure-parity-rolling-2026-05-28.md` — R5 verdict + R5-MED-1 disposition (value-anchor citation discipline per `value-prioritization.md` MUST-6).
+3. `01-analysis/02-mvp-objectives.md` lines 42 / 80 / 104 / 116 — EC-2 / EC-5(d) / EC-7 / EC-8 acceptance gates; canonical closed-allowlist anchors for F8–F11 (and every future deferred-shard re-anchor per MUST-6).
+4. `02-plans/01-build-sequence.md` § Wave 5 line 264 + § Milestone 5 line 333 — F5.2 / F5.3 anchor + Wave-5 dependency graph.
 
 ## In-flight state
 
-- No uncommitted work. Working tree clean after PR #49 merge.
-- Multi-operator roster: this clone still **NOT enrolled**; legacy single-writer `.session-notes` fallback in effect (`rules/knowledge-convergence.md` MUST-1 split-layout not yet activated).
+- PR #51 open with 2 commits (`ed023b7` R4 closures + initial defer; `14601a6` R5 verification + F9/F10/F11 re-anchor). No CI matrix on envoy; admin-merge path per `rules/coc-sync-landing.md` MUST-3. Local branch == origin; working tree clean.
 
 ## Outstanding ledger (forest)
 
-| ID  | Item                                                                     | Value-anchor (MUST-1 source)                                                                          | Status                                                                                          |
-| --- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| F2  | EC-4 + EC-9 independent ledger verifier (`terrene-foundation/envoy-ledger-verifier`) | `01-analysis/02-mvp-objectives.md` EC-9 + `01-analysis/07-independent-verifier-design.md` § 3.1 | BLOCKED — separate-repo context-switch per `rules/repo-scope-discipline.md`                     |
-| F4  | EC-6 full-Phase-01 redteam sweep (2 consecutive clean rounds)            | `01-analysis/02-mvp-objectives.md` EC-6 ship gate                                                     | BLOCKED on F2 (F1+F3 closed; F2 is last out-of-repo dep before F4 can run)                      |
-| F5.1 | Wave-5 CLI packaging Tier-3 acceptance test (Option A — in-process subprocess) | `02-plans/01-build-sequence.md` § Wave 5 line 264 + § Milestone 5 line 333; `briefs/00-phase-01-mvp-scope.md` § Surfaces line 21 | **CLOSED** — PR #49 → merge `3bcfa13`; reviewer + security-reviewer both 0 CRIT / 0 HIGH        |
-| F5.2 | Wave-5 shard 19 build (wire 9 remaining Milestone-5 subcommands: `init` / `up` / `boundaries` / `ledger` / `grant` / `posture` / `connection` / `model` / `version`) | same spec anchors as F5.1                                                                            | queued — depends on Boundary Conversation runtime + Trust Vault + Connection Vault + Model adapter primitives all landing first per Wave 5 dependency graph |
-| F5.3 | Wave-5 release-time `pipx install -e .` smoke check (Option B — covers Windows packaging surface) | `02-plans/01-build-sequence.md` § Milestone 5 line 333 (macOS / Linux desktop-env / Windows x86_64)   | queued — release-readiness gate, not per-PR; requires pipx on every CI runner                  |
-| F6  | `specs/ledger.md` enumeration update (3 budget entry types — 35 → 38)    | `rules/spec-accuracy.md` Rule 1 — spec count drift                                                    | queued — Rule-5b multi-session sibling sweep across 37 specs                                    |
-| F7  | `subscribe_threshold` non-canonical-pct boundary validation              | shard 12 reviewer M2 — API contract integrity                                                         | queued — not reachable through Phase-01 production; Phase-02 disposition                        |
+| ID   | Item                                                                                            | Value-anchor                                                                              | Status                                                              |
+| ---- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| F2   | EC-4 + EC-9 independent ledger verifier (`terrene-foundation/envoy-ledger-verifier`)            | `01-analysis/02-mvp-objectives.md` EC-9 + `01-analysis/07-independent-verifier-design.md` § 3.1 | BLOCKED — cross-repo per `rules/repo-scope-discipline.md`           |
+| F4   | EC-6 full-Phase-01 redteam sweep (2 consecutive clean rounds)                                   | `01-analysis/02-mvp-objectives.md` EC-6 ship gate                                          | BLOCKED on F2; rolling subscope EC-7+EC-8+F5.1 converged R4+R5 (PR #51) |
+| F5.2 | Wave-5 shard 19 — wire 9 remaining Milestone-5 subcommands                                      | `02-plans/01-build-sequence.md` § Wave 5 line 264                                          | queued — depends on Wave-2/3/4 primitives landing first              |
+| F5.3 | Release-time `pipx install -e .` Windows packaging smoke (Option B)                             | `02-plans/01-build-sequence.md` § Milestone 5 line 333 (Windows x86_64)                    | queued — needs pipx on every CI runner                               |
+| F6   | `specs/ledger.md` enumeration update (35 → 38)                                                  | `rules/spec-accuracy.md` Rule 1 (secondary; primary spec-anchor missing — surface at pickup) | queued — Rule-5b multi-session sibling sweep                         |
+| F7   | `subscribe_threshold` non-canonical-pct validation                                              | shard 12 reviewer M2                                                                       | queued — Phase-02 disposition                                        |
+| F8   | EC-7 ≤2× CLI-baseline parity assertion (timing + message-count)                                 | `01-analysis/02-mvp-objectives.md` EC-7 line 104 verbatim                                  | queued — R4 reviewer MED-1                                           |
+| F9   | Observability (caplog key) assertions for EC-7 + EC-8 acceptance batteries                      | `01-analysis/02-mvp-objectives.md` EC-7 line 104 + EC-8 line 116 verbatim                  | queued — R4 testing-discipline F2                                    |
+| F10  | Tier-2 facade test for `KailashPyRuntime.trust_cascade_revoke` (production binding, not stub)   | `01-analysis/02-mvp-objectives.md` EC-2 line 42 (cascade hard-constraint) + EC-8(c) line 116 | queued — R4 reviewer MED-2                                           |
+| F11  | Migrate 8 `CREATE TABLE IF NOT EXISTS` out of `envoy/trust/store.py` to `db/migrations/`         | `01-analysis/02-mvp-objectives.md` EC-5(d) line 80 (clear-language error, not binary dump) | queued — R4 reviewer LOW-1                                           |
 
-Closed this session: `F1` → PR #47 / merge `a9b9ee9`. `F3` → PR #48 / merge `5215890`. **`F5.1` → PR #49 / merge `3bcfa13`.**
+Closed this session: (no ID-level closures; R4 + R5 banked rolling-subscope convergence as partial progress on `F4`, PR #51.)
 
 ## Traps
 
-- **Spec path is `workspaces/phase-01-mvp/01-analysis/02-mvp-objectives.md`** (not `workspaces/phase-01-mvp/02-mvp-objectives.md`) — both PR #47 and PR #48 reviewers flagged the short-form as drift per `spec-accuracy.md` Rule 1. Cite the full path in all new test docstrings.
-- **Channel adapter constructors differ** — Telegram takes kwargs directly (`primary_channel_id`, `secret_token`); CLI/Web/Slack/Discord take a Config dataclass. No `TelegramChannelConfig` class.
-- **`BudgetSnapshot` is upstream kailash type** — has only `allocated` + `committed`, NO `reserved` field. Inspect via `dir(snap.per_session)` before asserting on field names.
-- **`BoundaryConversationRuntime` does NOT take a channel adapter** — it's channel-agnostic at the state-machine surface. EC-7 acceptance proves per-channel routing via parametrization on `channel_id` strings + fresh runtime per session, not adapter-aware runtime construction.
-- **`adapter.capabilities` is a `@property`, not a method** — `adapter.capabilities()` raises `TypeError`.
-- **Pyright `tests.helpers.*` import warnings are stale** — runtime imports work; ignore.
+- R3 (Wave-4 digest) and R4+R5 (EC-7+EC-8+F5.1) are DIFFERENT subscopes — their 2-consecutive-clean banks do NOT compose into the full-Phase-01 EC-6 sweep. F4 still needs the F2-gated full sweep.
+- F1 closure at `tests/e2e/test_envoy_cli_packaging_acceptance.py:188` is `strict=True` — when F5.2 wires a subcommand, XPASS fires and CI fails until `REGISTERED_AS_OF_F5` (line 99) is updated in the SAME PR.
+- F6 carries only a `rules/*.md` (secondary per `value-prioritization.md` MUST-5) anchor; pickup MUST surface a primary spec-anchor or close-with-gate per MUST-4.
+- PR #51 not yet merged — if F5.2 work or any other branch picks up before merge, expect conflict on `.session-notes` + `tests/e2e/test_envoy_cli_packaging_acceptance.py`.
 
 ## Open questions for the human
 
-- F5 acceptance test scope: in-process subprocess of `.venv/bin/envoy --help` (fast, CI-friendly) vs actual `pipx install -e .` smoke (slower, real-deployment-shape) — decide at F5 start.
-- F6 timing: if `specs/ledger.md` is edited in the next /codify cycle, the Rule-5b sibling sweep runs then (cheaper). Otherwise stays queued.
+- Authorize F2 cross-repo work (User-Authorized Exception per `rules/repo-scope-discipline.md`) to unblock F4 + Phase-01 ship gate?
+- Merge PR #51 first, or stack F8/F9/F10 work on top of the same branch?
+- F6 — surface a primary user-anchored source (which spec § success criterion does the 35→38 enumeration defend?) OR dispose via close-not-planned with user gate?

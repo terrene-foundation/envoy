@@ -186,13 +186,17 @@ def test_envoy_subcommand_help_per_milestone_5(
     if subcommand not in REGISTERED_AS_OF_F5:
         request.applymarker(
             pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     f"`envoy {subcommand}` not yet wired in "
                     f"`envoy/cli/main.py`; scheduled for shard 19 per "
                     f"`workspaces/phase-01-mvp/02-plans/01-build-sequence.md` "
-                    f"§ Wave 5. xfail flips to passing once shard 19 "
-                    f"registers the {subcommand!r} subcommand."
+                    f"§ Wave 5. strict=True per `rules/test-skip-discipline.md` "
+                    f"+ Round-4 F1 disposition — when shard 19 registers "
+                    f"{subcommand!r}, this xfail flips to XPASS and CI fails "
+                    f"loudly, forcing the implementer to append "
+                    f"{subcommand!r} to REGISTERED_AS_OF_F5 in the same PR. "
+                    f"The XPASS→assertion-flip IS the Milestone-5 progress signal."
                 ),
             )
         )
