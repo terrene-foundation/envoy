@@ -2,7 +2,7 @@
 
 ## Where we are
 
-Phase-01-mvp rolling `/redteam` subscope (EC-7 + EC-8 + F5.1) converged at R4 + R5 — PR **#51** open against main on branch `fix/phase-01-redteam-round-4-closures` (head `14601a6`). Full-Phase-01 EC-6 still gated on F2 cross-repo. Multi-operator roster still NOT enrolled — legacy single-writer `.session-notes` fallback.
+PR **#51** (R4+R5 rolling-subscope convergence) **MERGED** to main at `5221897`. This session then fixed **F10** (cascade-revoke facade silent-empty bug) on branch `fix/phase-01-f10-cascade-revoke-facade` (head `468d18d`, PR pending). **F2 re-scoped** to a FRESH session (EC-9 producer-contamination — see journal/0042). Full-Phase-01 EC-6 still gated on F2. Multi-operator roster still NOT enrolled — legacy single-writer `.session-notes` fallback.
 
 ## Read first
 
@@ -13,13 +13,14 @@ Phase-01-mvp rolling `/redteam` subscope (EC-7 + EC-8 + F5.1) converged at R4 + 
 
 ## In-flight state
 
-- PR #51 open with 2 commits (`ed023b7` R4 closures + initial defer; `14601a6` R5 verification + F9/F10/F11 re-anchor). No CI matrix on envoy; admin-merge path per `rules/coc-sync-landing.md` MUST-3. Local branch == origin; working tree clean.
+- PR #51 MERGED (`5221897`). F10 fix on branch `fix/phase-01-f10-cascade-revoke-facade` (`468d18d`), PR pending push. No CI matrix on envoy; admin-merge path per `rules/coc-sync-landing.md` MUST-3.
+- Read journal/0042-DECISION first — captures F10 disposition + F2 re-scope + the EC-9 finding + new findings F12/F13.
 
 ## Outstanding ledger (forest)
 
 | ID   | Item                                                                                            | Value-anchor                                                                              | Status                                                              |
 | ---- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| F2   | EC-4 + EC-9 independent ledger verifier (`terrene-foundation/envoy-ledger-verifier`)            | `01-analysis/02-mvp-objectives.md` EC-9 + `01-analysis/07-independent-verifier-design.md` § 3.1 | BLOCKED — cross-repo per `rules/repo-scope-discipline.md`           |
+| F2   | EC-4 + EC-9 independent ledger verifier (`terrene-foundation/envoy-ledger-verifier`)            | `01-analysis/02-mvp-objectives.md` EC-9 line 128 + `01-analysis/07-independent-verifier-design.md` § 3.1 | AUTHORIZED + RE-SCOPED to FRESH session (EC-9 "different agent" — journal/0042). Python variant REQUIRED; bounded scope = §3.1+§3.2+§3.5 |
 | F4   | EC-6 full-Phase-01 redteam sweep (2 consecutive clean rounds)                                   | `01-analysis/02-mvp-objectives.md` EC-6 ship gate                                          | BLOCKED on F2; rolling subscope EC-7+EC-8+F5.1 converged R4+R5 (PR #51) |
 | F5.2 | Wave-5 shard 19 — wire 9 remaining Milestone-5 subcommands                                      | `02-plans/01-build-sequence.md` § Wave 5 line 264                                          | queued — depends on Wave-2/3/4 primitives landing first              |
 | F5.3 | Release-time `pipx install -e .` Windows packaging smoke (Option B)                             | `02-plans/01-build-sequence.md` § Milestone 5 line 333 (Windows x86_64)                    | queued — needs pipx on every CI runner                               |
@@ -27,20 +28,23 @@ Phase-01-mvp rolling `/redteam` subscope (EC-7 + EC-8 + F5.1) converged at R4 + 
 | F7   | `subscribe_threshold` non-canonical-pct validation                                              | shard 12 reviewer M2                                                                       | queued — Phase-02 disposition                                        |
 | F8   | EC-7 ≤2× CLI-baseline parity assertion (timing + message-count)                                 | `01-analysis/02-mvp-objectives.md` EC-7 line 104 verbatim                                  | queued — R4 reviewer MED-1                                           |
 | F9   | Observability (caplog key) assertions for EC-7 + EC-8 acceptance batteries                      | `01-analysis/02-mvp-objectives.md` EC-7 line 104 + EC-8 line 116 verbatim                  | queued — R4 testing-discipline F2                                    |
-| F10  | Tier-2 facade test for `KailashPyRuntime.trust_cascade_revoke` (production binding, not stub)   | `01-analysis/02-mvp-objectives.md` EC-2 line 42 (cascade hard-constraint) + EC-8(c) line 116 | queued — R4 reviewer MED-2                                           |
+| F10  | Tier-2 facade test for `KailashPyRuntime.trust_cascade_revoke` (production binding, not stub)   | `01-analysis/02-mvp-objectives.md` EC-2 line 42 (cascade hard-constraint) + EC-8(c) line 116 | **CLOSED** — surfaced + fixed silent-empty bug; branch `fix/phase-01-f10-cascade-revoke-facade` |
 | F11  | Migrate 8 `CREATE TABLE IF NOT EXISTS` out of `envoy/trust/store.py` to `db/migrations/`         | `01-analysis/02-mvp-objectives.md` EC-5(d) line 80 (clear-language error, not binary dump) | queued — R4 reviewer LOW-1                                           |
+| F12  | Cascade-revoke production WIRING orphan (real store → runtime → orchestrator path unwired)       | `01-analysis/02-mvp-objectives.md` EC-8 line 116(c) — cross-channel cascade demonstrated only via stubs | queued (NEW, journal/0042) — F4/EC-6 orphan-wiring shard            |
+| F13  | Pre-existing pyright type-narrowing in `envoy/runtime/adapters/kailash_py.py` `runtime_verify`   | code-health (secondary) — `str \| bytearray \| memoryview` → `verify_signature(str)`     | queued (NEW, journal/0042) — cleanup, different bug class           |
 
-Closed this session: (no ID-level closures; R4 + R5 banked rolling-subscope convergence as partial progress on `F4`, PR #51.)
+Closed this session: **F10** (PR pending on `fix/phase-01-f10-cascade-revoke-facade`) — surfaced + fixed a real EC-8(c) hard-constraint bug: the production cascade-revoke facade silently returned an empty set against the only real (async) backing store. Receipt: 5/5 F10 tests + 275 tier2 + 1641 collect clean. Also banked PR #51 merge (`5221897`).
 
 ## Traps
 
 - R3 (Wave-4 digest) and R4+R5 (EC-7+EC-8+F5.1) are DIFFERENT subscopes — their 2-consecutive-clean banks do NOT compose into the full-Phase-01 EC-6 sweep. F4 still needs the F2-gated full sweep.
 - F1 closure at `tests/e2e/test_envoy_cli_packaging_acceptance.py:188` is `strict=True` — when F5.2 wires a subcommand, XPASS fires and CI fails until `REGISTERED_AS_OF_F5` (line 99) is updated in the SAME PR.
 - F6 carries only a `rules/*.md` (secondary per `value-prioritization.md` MUST-5) anchor; pickup MUST surface a primary spec-anchor or close-with-gate per MUST-4.
-- PR #51 not yet merged — if F5.2 work or any other branch picks up before merge, expect conflict on `.session-notes` + `tests/e2e/test_envoy_cli_packaging_acceptance.py`.
+- **F2 MUST run from a FRESH session** (EC-9 "different agent / without reference to producer source"). This session is producer-contaminated → cannot author the Python verifier. Rust variant would be EC-9-compliant from any session but is OPTIONAL, not REQUIRED. The fresh session MUST write its OWN pre-action cross-repo journal receipt + `cross-repo-authorized:` marker per `rules/repo-scope-discipline.md` before the first cross-repo command.
+- **F10 / F12 distinction:** F10 fixed the facade METHOD (silent-empty → honest typed error). F12 is the deeper gap — no production path WIRES cascade-revoke end-to-end (real store → runtime → orchestrator); EC-8(c) is stub-demonstrated only. Do NOT conflate: F10 is closed, F12 is open.
 
 ## Open questions for the human
 
-- Authorize F2 cross-repo work (User-Authorized Exception per `rules/repo-scope-discipline.md`) to unblock F4 + Phase-01 ship gate?
-- Merge PR #51 first, or stack F8/F9/F10 work on top of the same branch?
+- F2: confirm whether the fresh session does the REQUIRED Python variant (per re-scope) or you want the Rust variant first.
+- F8/F9/F11/F12 sequencing — F12 (cascade-wiring orphan) is the highest-value open in-scope item (EC-8(c) hard-constraint, stub-only today); F8/F9 are EC-7/EC-8 observability; F11 is EC-5(d) schema-migration. Which next?
 - F6 — surface a primary user-anchored source (which spec § success criterion does the 35→38 enumeration defend?) OR dispose via close-not-planned with user gate?
