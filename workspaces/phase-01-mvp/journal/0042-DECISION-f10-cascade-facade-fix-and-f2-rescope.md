@@ -1,8 +1,17 @@
-# 0042 — DECISION: F10 cascade-facade fix + F2 verifier re-scope (EC-9 contamination)
+---
+type: DECISION
+date: 2026-05-29
+created_at: 2026-05-29T00:00:00Z
+author: co-authored
+session_id: envoy-2026-05-29
+session_turn: post-PR-51-merge
+project: phase-01-mvp
+topic: F10 cascade-facade fix + F2 verifier re-scope (EC-9 contamination)
+phase: redteam
+tags: [F10, F2, EC-9, EC-8, cascade-revocation, runtime-adapter, repo-scope]
+---
 
-Date: 2026-05-29
-Type: DECISION
-Session: post-PR-#51-merge (R4+R5 convergence landed on main)
+# 0042 — DECISION: F10 cascade-facade fix + F2 verifier re-scope (EC-9 contamination)
 
 ## Context
 
@@ -74,3 +83,21 @@ tests collect clean. Branch `fix/phase-01-f10-cascade-revoke-facade`.
   `runtime_verify` (line ~490) passes `str | bytearray | memoryview` to
   `verify_signature(signature: str, public_key: str)`. Pre-existing (untouched
   by F10); surfaced via line-shift re-scan. Different bug class. Queued cleanup.
+
+## For Discussion
+
+1. **Counterfactual:** if F12 (the production cascade-revoke WIRING path) is
+   never built before Phase-01 ship, can EC-8(c) be honestly claimed? The
+   async `TrustStoreAdapter.revoke` + `CascadeRevocationOrchestrator` each work,
+   and F10 now makes the unwired facade fail loud — but nothing exercises the
+   end-to-end cross-channel cascade against real infra. Is stub-demonstrated
+   EC-8(c) sufficient for the EC-6 ship gate, or does F12 block ship?
+2. **Data-referencing:** `specs/runtime-abstraction.md:31` fixes the Protocol
+   as sync for cross-runtime byte-identical SET equality (EC-9). When the
+   Phase-02 sync↔async bridge lands, does the sync contract still hold, or does
+   the rs-bindings runtime (`07-independent-verifier-design.md` §3.2) force an
+   async re-think that would itself be a spec deviation?
+3. **Re-scope risk:** the F2 fresh-session handoff assumes a clean-context
+   session is a sufficient proxy for EC-9's "different agent without reference
+   to producer source." Is that proxy strong enough, or should the verifier be
+   authored by a genuinely separate operator to satisfy EC-9's intent?
