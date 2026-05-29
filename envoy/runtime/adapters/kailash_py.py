@@ -44,6 +44,7 @@ The actual kailash signatures discovered via inspect were:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 
@@ -186,29 +187,52 @@ class KailashPyRuntime:
         return self._trust_store.get_chain(record)
 
     def trust_cascade_revoke(self, root_id: str) -> set[str]:
-        """Forward to `TrustStoreAdapter.revoke` + collect cascaded ids.
+        """Forward to a sync trust store's `revoke` + collect cascaded ids.
 
-        Upstream signature drift: kailash's `cascade_revoke(agent_id, store,
-        reason, revoked_by, ...)` requires a real TrustStore handle and a
-        reason/revoked_by tuple. Phase 01 narrow forwards through the
-        TrustStoreAdapter which owns the store handle. When the store is
-        not supplied, raise the typed Phase02 error pointing to T-01-15
-        as the substrate owner.
+        The `KailashRuntime` Protocol declares `trust_cascade_revoke` SYNC
+        (`specs/runtime-abstraction.md:31` — `(str) -> set[str]`, byte-identical
+        SET equality for cross-runtime conformance). The Phase-01 real backing
+        store `envoy.trust.store.TrustStoreAdapter.revoke` is `async def`; a
+        sync Protocol method cannot drive it without an event-loop bridge that
+        is ITSELF the Phase-02 substrate (a naive `asyncio.run()` raises under
+        the async cross-channel flows EC-8 exercises). When handed an async
+        store, this method detects the returned coroutine, closes it to avoid
+        an unawaited-coroutine leak, and raises the typed Phase02 error —
+        NEVER silently returns an empty set. A silent empty cascade would
+        invisibly violate the EC-2 + EC-8(c) cascade hard-constraint (a revoked
+        parent leaving its children alive). When a sync Protocol-satisfying
+        store is supplied (a future T-01-15 sync wrapper), its RevocationResult
+        is unpacked directly — no silent default.
         """
         if self._trust_store is None:
             raise Phase02SubstrateNotWiredError(
-                "trust_cascade_revoke: requires a TrustStoreAdapter; pass "
-                "`trust_store=` to KailashPyRuntime(...) once T-01-15 has "
-                "exposed a `cascade_revoke(root_id)` method that wraps the "
-                f"upstream 4-arg signature; tracked at {_TODO_WAVE_2}"
+                "trust_cascade_revoke: requires a trust store; pass "
+                "`trust_store=` to KailashPyRuntime(...). The store MUST expose "
+                "a SYNC `revoke(*, agent_id, reason, revoked_by) -> RevocationResult` "
+                f"per the sync Protocol contract; tracked at {_TODO_WAVE_2}"
             )
-        # TrustStoreAdapter.revoke returns RevocationResult; extract the set.
         result = self._trust_store.revoke(
             agent_id=root_id,
             reason="envoy.runtime.cascade_revoke",
             revoked_by="envoy.runtime.kailash_py",
         )
-        return set(getattr(result, "revoked_agents", []))
+        if inspect.iscoroutine(result):
+            # Async store handed to a sync Protocol method. Close the coroutine
+            # so it does not leak a "coroutine was never awaited" RuntimeWarning,
+            # then fail loud — do NOT fall back to an empty revoked set.
+            result.close()
+            raise Phase02SubstrateNotWiredError(
+                "trust_cascade_revoke: the wired trust store's `revoke` is async, "
+                "but the KailashRuntime Protocol method is sync per "
+                "specs/runtime-abstraction.md:31. The sync<->async bridge is the "
+                "Phase-02 substrate; until it lands, cascade revocation routes "
+                "through the async TrustStoreAdapter + CascadeRevocationOrchestrator "
+                f"directly, NOT this facade; tracked at {_TODO_PHASE_02}"
+            )
+        # Sync store path: RevocationResult MUST expose `revoked_agents`. No
+        # silent `[]` default — a missing attribute is a contract violation
+        # (loud AttributeError), not an empty revoke.
+        return set(result.revoked_agents)
 
     def trust_verify_subset_proof(self, parent: Any, sub: Any) -> Any:
         """Subset-proof verification per specs/sub-agent-delegation.md.
