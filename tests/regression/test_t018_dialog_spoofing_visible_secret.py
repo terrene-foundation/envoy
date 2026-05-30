@@ -79,7 +79,7 @@ class TestT018VisibleSecretMismatch:
             def __init__(self, runtime_ref: list) -> None:
                 self._runtime_ref = runtime_ref
 
-            async def render_grant_moment(self, _request) -> None:
+            async def render_grant_moment(self, _request, *, visible_secret: object = None) -> None:
                 runtime = self._runtime_ref[0]
                 expected = await runtime.visible_secret_hash_for(DEFAULT_PRINCIPAL_ID)
                 rendered = hashlib.sha256(self.spoof_phrase.encode("utf-8")).hexdigest()

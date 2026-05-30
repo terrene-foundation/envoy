@@ -378,8 +378,15 @@ class WebChannelAdapter(ChannelAdapter):
             channel_signature=f"web-sig-{uuid.uuid4().hex[:16]}",
         )
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: object = None
+    ) -> None:
         """M1 render-only — satisfies `ChannelAdapterProtocol`.
+
+        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
+        yet rendered on this channel — tracked as F15-b.2 (only the primary
+        CLI channel renders the secret in F15-b.1; high-stakes Grant Moments
+        render ONLY on the primary per `specs/grant-moment.md` § Rendering).
 
         Foundation shard: registers a pending-decision Future and returns;
         the WS handler resolves the future via `_resolve_pending_decision`

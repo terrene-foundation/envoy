@@ -54,7 +54,9 @@ class _StubChannelAdapter:
         self.calls: list[GrantMomentRequest] = []
         self._raise_with = raise_with
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: object = None
+    ) -> None:
         self.calls.append(request)
         if self._raise_with is not None:
             raise self._raise_with("simulated render failure")

@@ -153,7 +153,7 @@ class ChannelAdapter(ABC):
         """
 
     @abstractmethod
-    async def render_grant_moment(self, request: Any) -> None:
+    async def render_grant_moment(self, request: Any, *, visible_secret: Any = None) -> None:
         """M1 dispatch render — invoked by `ChannelHandoff.dispatch`.
 
         Renders the Grant Moment on this channel WITHOUT awaiting the user's
@@ -164,6 +164,13 @@ class ChannelAdapter(ABC):
         `request` is a `GrantMomentRequest` (from `envoy.grant_moment.runtime`)
         — typed `Any` here to avoid a circular import; concrete adapters
         narrow via local TYPE_CHECKING import.
+
+        `visible_secret` (F15-b) is the runtime-resolved `VisibleSecret`
+        (icon + color + phrase) passed SEPARATELY from `request` so the phrase
+        never enters the signed request / Phase-A ledger row (R1-HIGH-1b). The
+        adapter renders it per `specs/grant-moment.md` § Rendering ("Every
+        dialog shows: Visible secret") — the T-018 anti-spoofing surface.
+        `None` when no secret is set (Boundary Conversation S7 incomplete).
 
         Raises on transport / render failure so `ChannelHandoff` records the
         adapter in `HandoffPlan.refused_channels` per its dispatch contract.

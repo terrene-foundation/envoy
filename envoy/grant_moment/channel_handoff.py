@@ -59,7 +59,7 @@ This module is pure Python; depends only on
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from envoy.grant_moment.signed_consent import GrantMomentRequest
 
@@ -101,7 +101,9 @@ class ChannelAdapterProtocol(Protocol):
 
     channel_id: str
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None: ...
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: Any = None
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +204,7 @@ class ChannelHandoff:
         *,
         request: GrantMomentRequest,
         high_stakes: bool,
+        visible_secret: Any = None,
     ) -> HandoffPlan:
         """Dispatch the request to adapters; return the per-channel plan.
 
@@ -238,7 +241,7 @@ class ChannelHandoff:
                 continue
 
             try:
-                await adapter.render_grant_moment(request)
+                await adapter.render_grant_moment(request, visible_secret=visible_secret)
             except Exception as exc:
                 # Per docstring + spec § Rendering: capture-and-continue so
                 # the caller's HandoffPlan records every channel's outcome.

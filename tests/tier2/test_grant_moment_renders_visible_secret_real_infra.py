@@ -73,9 +73,11 @@ _REAL_COLOR = "#1b4d3e"
 @pytest.fixture
 async def runtime_with_real_secret(
     tmp_path: Path,
-) -> AsyncGenerator[tuple[EnvoyGrantMomentRuntime, io.StringIO], None]:
+) -> AsyncGenerator[tuple[EnvoyGrantMomentRuntime, io.StringIO, InMemoryAuditStore], None]:
     """Real runtime wired to a real CLIChannelAdapter (output captured) + a real
-    TrustStoreAdapter holding a set visible secret for the runtime's principal."""
+    TrustStoreAdapter holding a set visible secret for the runtime's principal.
+    Yields the audit store too so tests can assert the phrase never leaks into
+    the Phase-A ledger row (R1-HIGH-1b)."""
     key_manager = InMemoryKeyManager()
     await key_manager.generate_keypair(DEFAULT_DELEGATION_KEY)
     await key_manager.generate_keypair(DEFAULT_LEDGER_SIGNING_KEY)
@@ -126,29 +128,22 @@ async def runtime_with_real_secret(
         novelty_read_delay_seconds=0.0,
     )
     try:
-        yield runtime, captured
+        yield runtime, captured, audit_store
     finally:
         await trust_store.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="F15-b: the M1 dispatch render path (render_grant_moment → "
-    "_render_grant_moment_request_prose) omits the visible secret "
-    "(cli.py:442-444); GrantMomentPayload is orphaned. Wiring the "
-    "runtime-resolved VisibleSecret into the channel-adapter render — phrase "
-    "kept out of the signed request/ledger — flips this xpass. See "
-    "journal/0044 F15 + specs/grant-moment.md:80-82 (T-018 anti-spoofing).",
-)
 async def test_production_grant_moment_renders_real_visible_secret(
-    runtime_with_real_secret: tuple[EnvoyGrantMomentRuntime, io.StringIO],
+    runtime_with_real_secret: tuple[EnvoyGrantMomentRuntime, io.StringIO, InMemoryAuditStore],
 ) -> None:
     """specs/grant-moment.md:80-82 — every dialog MUST show the visible secret.
 
     Drive the real dispatch path and assert the rendered Grant Moment the user
-    sees contains their REAL stored phrase. FAILS today (xfail strict)."""
-    runtime, captured = runtime_with_real_secret
+    sees contains their REAL stored phrase. PASSES as of F15-b (the runtime
+    resolves the VisibleSecret at dispatch and the CLI adapter renders it; the
+    xfail red-gate is removed per orphan-detection.md Rule 4a)."""
+    runtime, captured, _audit_store = runtime_with_real_secret
 
     await runtime.issue_grant_moment(**make_issue_kwargs())
 
@@ -158,3 +153,32 @@ async def test_production_grant_moment_renders_real_visible_secret(
         "production Grant-Moment render omits the user's real visible secret — "
         "T-018 anti-spoofing surface absent (F15)"
     )
+    # The icon renders alongside the phrase per the spec's "icon + phrase".
+    assert _REAL_ICON in rendered
+
+
+@pytest.mark.asyncio
+async def test_visible_secret_phrase_never_lands_in_ledger(
+    runtime_with_real_secret: tuple[EnvoyGrantMomentRuntime, io.StringIO, InMemoryAuditStore],
+) -> None:
+    """R1-HIGH-1b regression lock: the phrase renders to the user (above) but
+    MUST NOT appear in ANY ledger entry — the F15-b fix resolves it at dispatch
+    and passes it as a separate render arg, never serializing it into the
+    signed request / Phase-A ledger row. Pins the phrase-out-of-ledger
+    invariant the security-sensitive F15-b change must preserve."""
+    from kailash.trust.audit_store import AuditFilter
+
+    runtime, captured, audit_store = runtime_with_real_secret
+
+    await runtime.issue_grant_moment(**make_issue_kwargs())
+
+    # The phrase reached the user-facing render...
+    assert _REAL_PHRASE in captured.getvalue()
+    # ...but is absent from every ledger entry's serialized content.
+    events = await audit_store.query(AuditFilter())
+    assert events, "expected at least the Phase-A ledger entry to be written"
+    for event in events:
+        assert _REAL_PHRASE not in repr(event), (
+            "visible-secret phrase leaked into a ledger entry — R1-HIGH-1b "
+            "phrase-never-in-ledger contract violated by F15-b"
+        )

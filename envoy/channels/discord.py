@@ -615,8 +615,13 @@ class DiscordChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: object = None
+    ) -> None:
         """M1 render-only dispatch per `ChannelAdapterProtocol`.
+
+        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
+        yet rendered on this channel — tracked as F15-b.2.
 
         Renders the ``GrantMomentRequest`` to Discord as an embed-style text
         block WITHOUT awaiting a user decision; the decision arrives async
