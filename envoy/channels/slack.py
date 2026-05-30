@@ -171,6 +171,7 @@ class SlackChannelAdapter(ChannelAdapter):
                 credential_kind="bot_token",
                 message="bot_token must be non-empty",
             )
+
         # Startup work with a 10-second timeout per spec.
         async def _slack_startup_work() -> None:
             await asyncio.sleep(0)
@@ -440,9 +441,7 @@ class SlackChannelAdapter(ChannelAdapter):
             channel_signature=f"slack-{uuid.uuid4().hex[:16]}",
         )
 
-    async def _resolve_pending_decision(
-        self, request_id: str, decision: str
-    ) -> None:
+    async def _resolve_pending_decision(self, request_id: str, decision: str) -> None:
         """Webhook handler hook: resolve an in-flight Grant Moment decision.
 
         Called by the Slack webhook handler when a user interacts with the
@@ -463,8 +462,13 @@ class SlackChannelAdapter(ChannelAdapter):
         if fut is not None and not fut.done():
             fut.set_result(decision)  # type: ignore[arg-type]
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: object = None
+    ) -> None:
         """M1 dispatch render — no decision await.
+
+        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
+        yet rendered on this channel — tracked as F15-b.2.
 
         Per /redteam R3 HIGH-R3-1 closure: reads canonical `GrantMomentRequest`
         discriminators (`novelty_class == "high_stakes"` and `primary_only`)

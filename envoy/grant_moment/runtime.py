@@ -601,11 +601,25 @@ class EnvoyGrantMomentRuntime:
         # strictly enforced; any subsequent state mutation reuses ``next_state``.
         pending.state = next_state(pending.state, GrantMomentEvent.DISPATCH_TO_CHANNELS)
 
+        # Resolve the visible secret for the render (F15-b). Resolved HERE —
+        # AFTER the Phase-A ledger append above — and passed as a SEPARATE
+        # dispatch argument so the phrase never enters the signed request or
+        # the Phase-A ledger row (R1-HIGH-1b "phrase never in ledger"). The
+        # rendered Grant Moment shows it per `specs/grant-moment.md`
+        # § Rendering (T-018 anti-spoofing). None when no secret is set.
+        visible_secret = (
+            await self._trust_store.get_visible_secret(self._principal_id)
+            if self._trust_store is not None
+            else None
+        )
+
         # M1 dispatch through ChannelHandoff. The dispatch surface enforces
         # primary-binding for high_stakes / primary_only routes; refusal
         # records land in the returned HandoffPlan.
         handoff_plan = await self._channel_handoff.dispatch(
-            request=signed_request, high_stakes=high_stakes
+            request=signed_request,
+            high_stakes=high_stakes,
+            visible_secret=visible_secret,
         )
         pending.handoff_plan = handoff_plan
 

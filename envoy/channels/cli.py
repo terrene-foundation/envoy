@@ -321,8 +321,15 @@ class CLIChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: VisibleSecret | None = None
+    ) -> None:
         """M1 render-only — satisfies `envoy.grant_moment.channel_handoff.ChannelAdapterProtocol`.
+
+        `visible_secret` is the runtime-resolved `VisibleSecret` (F15-b),
+        passed separately so the phrase never enters the signed request /
+        Phase-A ledger row; rendered first per `specs/grant-moment.md`
+        § Rendering (T-018 anti-spoofing). `None` when no secret is set.
 
         Writes the rendering prose to the output stream WITHOUT awaiting a
         user decision; the decision arrives async via
@@ -361,7 +368,7 @@ class CLIChannelAdapter(ChannelAdapter):
             },
         )
         out = self._config.output_stream or sys.stdout
-        rendered = self._render_grant_moment_request_prose(request)
+        rendered = self._render_grant_moment_request_prose(request, visible_secret)
         await asyncio.to_thread(out.write, rendered)
         await asyncio.to_thread(out.flush)
 
@@ -430,18 +437,26 @@ class CLIChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_prose(request: GrantMomentRequest) -> str:
+    def _render_grant_moment_request_prose(
+        request: GrantMomentRequest, visible_secret: VisibleSecret | None = None
+    ) -> str:
         # M1 render-only — reads the canonical `GrantMomentRequest` shape
         # from `envoy.grant_moment.signed_consent` (per /redteam R3 MED-R3-02
         # closure: pre-R3 the renderer read `visible_secret`/`body`/
         # `decision_options` which do NOT exist on the dataclass, silently
         # falling through to empty defaults — the silent-fallback pattern in
-        # `rules/zero-tolerance.md` Rule 3). The canonical 5 elements
-        # available on `GrantMomentRequest` are: request_id + tool_name +
-        # why_asking + consequence_preview (4 sub-fields) + novelty_class.
-        # The visible-secret render happens in the full-ritual
-        # `_render_grant_moment_prose` path (consumes the runtime-resolved
-        # `VisibleSecret`); the M1 dispatch surface does not carry it.
+        # `rules/zero-tolerance.md` Rule 3). The canonical elements available
+        # on `GrantMomentRequest` are: request_id + tool_name + why_asking +
+        # consequence_preview (4 sub-fields) + novelty_class.
+        #
+        # F15-b: the visible secret is NOT a field on the signed
+        # `GrantMomentRequest` (it MUST NOT enter the Phase-A ledger row per
+        # the R1-HIGH-1b "phrase never in ledger" contract). It is resolved by
+        # the runtime at dispatch time and passed as the separate
+        # `visible_secret` argument so the rendered dialog satisfies
+        # `specs/grant-moment.md` § Rendering ("Every dialog shows: Visible
+        # secret") — the T-018 anti-spoofing surface. None → no secret set
+        # (Boundary Conversation S7 not yet completed); render without it.
         request_id = getattr(request, "request_id", None)
         if not request_id:
             raise ValueError("GrantMomentRequest is missing request_id; cannot render.")
@@ -449,6 +464,11 @@ class CLIChannelAdapter(ChannelAdapter):
         why = getattr(request, "why_asking", "")
         consequence = getattr(request, "consequence_preview", None)
         lines = [f"\n--- Grant Moment ({request_id}) ---"]
+        # Visible secret FIRST per `specs/grant-moment.md` § Rendering ("Every
+        # dialog shows: Visible secret (icon + color + phrase)") — the T-018
+        # anti-spoofing surface the user checks before trusting the prompt.
+        if visible_secret is not None:
+            lines.append(f"Safety phrase: {visible_secret.icon} {visible_secret.phrase}")
         if tool_name:
             lines.append(f"Proposed action: {tool_name}")
         if why:

@@ -637,8 +637,11 @@ class TelegramChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: Any) -> None:
+    async def render_grant_moment(self, request: Any, *, visible_secret: object = None) -> None:
         """M1 dispatch render — renders WITHOUT awaiting the user's decision.
+
+        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
+        yet rendered on this channel — tracked as F15-b.2.
 
         INV-1 (request side): reads ``novelty_class == "high_stakes"`` via
         ``getattr`` on ``GrantMomentRequest`` — NOT ``grant.high_stakes``.

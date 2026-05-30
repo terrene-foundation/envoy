@@ -56,7 +56,13 @@ class RecordingChannelAdapter:
     raise_on_render: type[Exception] | None = None
     render_delay_seconds: float = 0.0
 
-    async def render_grant_moment(self, request: GrantMomentRequest) -> None:
+    async def render_grant_moment(
+        self, request: GrantMomentRequest, *, visible_secret: object = None
+    ) -> None:
+        # `visible_secret` (F15-b) accepted for ChannelAdapterProtocol
+        # conformance; this recording stub records the request shape, not the
+        # rendered prose, so it ignores the secret (real-render assertions live
+        # in test_grant_moment_renders_visible_secret_real_infra.py).
         if self.render_delay_seconds > 0:
             await asyncio.sleep(self.render_delay_seconds)
         if self.raise_on_render is not None:
