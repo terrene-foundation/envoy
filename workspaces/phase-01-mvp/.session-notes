@@ -2,7 +2,7 @@
 
 ## Where we are
 
-PR **#51** (R4+R5 rolling-subscope convergence) **MERGED** to main at `5221897`. This session then fixed **F10** (cascade-revoke facade silent-empty bug) on branch `fix/phase-01-f10-cascade-revoke-facade` (head `468d18d`, PR pending). **F2 re-scoped** to a FRESH session (EC-9 producer-contamination — see journal/0042). Full-Phase-01 EC-6 still gated on F2. Multi-operator roster still NOT enrolled — legacy single-writer `.session-notes` fallback.
+PR **#51** (R4+R5) MERGED (`5221897`). **F10** facade fix MERGED (PR #52). **F12-a + F14** cascade fixes on branch `fix/phase-01-f14-cascade-registry-wiring` (PR pending). Three cascade findings closed this session: F10 (facade silent-empty), F12-a (real-infra EC-8(c) test), **F14 (CRITICAL — real engine never revoked descendants; cascade hard-constraint was violated in production)**. F12-b/F12-c + **F2** remain deferred (F2 → FRESH session, EC-9; journal/0042). Full-Phase-01 EC-6 still gated on F2. Multi-operator roster NOT enrolled — single-writer fallback.
 
 ## Read first
 
@@ -13,8 +13,8 @@ PR **#51** (R4+R5 rolling-subscope convergence) **MERGED** to main at `5221897`.
 
 ## In-flight state
 
-- PR #51 MERGED (`5221897`). F10 fix on branch `fix/phase-01-f10-cascade-revoke-facade` (`468d18d`), PR pending push. No CI matrix on envoy; admin-merge path per `rules/coc-sync-landing.md` MUST-3.
-- Read journal/0042-DECISION first — captures F10 disposition + F2 re-scope + the EC-9 finding + new findings F12/F13.
+- PR #51 + #52 (F10) MERGED. F12-a + F14 on branch `fix/phase-01-f14-cascade-registry-wiring`, PR pending push. No CI matrix on envoy; admin-merge path per `rules/coc-sync-landing.md` MUST-3.
+- Read journal/0042 (F10 + F2 re-scope + F12/F13) then journal/0043 (F14 cascade-engine root cause + fix) first.
 
 ## Outstanding ledger (forest)
 
@@ -30,10 +30,11 @@ PR **#51** (R4+R5 rolling-subscope convergence) **MERGED** to main at `5221897`.
 | F9   | Observability (caplog key) assertions for EC-7 + EC-8 acceptance batteries                      | `01-analysis/02-mvp-objectives.md` EC-7 line 104 + EC-8 line 116 verbatim                  | queued — R4 testing-discipline F2                                    |
 | F10  | Tier-2 facade test for `KailashPyRuntime.trust_cascade_revoke` (production binding, not stub)   | `01-analysis/02-mvp-objectives.md` EC-2 line 42 (cascade hard-constraint) + EC-8(c) line 116 | **CLOSED** — surfaced + fixed silent-empty bug; branch `fix/phase-01-f10-cascade-revoke-facade` |
 | F11  | Migrate 8 `CREATE TABLE IF NOT EXISTS` out of `envoy/trust/store.py` to `db/migrations/`         | `01-analysis/02-mvp-objectives.md` EC-5(d) line 80 (clear-language error, not binary dump) | queued — R4 reviewer LOW-1                                           |
-| F12  | Cascade-revoke production WIRING orphan (real store → runtime → orchestrator path unwired)       | `01-analysis/02-mvp-objectives.md` EC-8 line 116(c) — cross-channel cascade demonstrated only via stubs | queued (NEW, journal/0042) — F4/EC-6 orphan-wiring shard            |
+| F12  | Cascade-revoke production WIRING orphan (real store → runtime → orchestrator path unwired)       | `01-analysis/02-mvp-objectives.md` EC-8 line 116(c) — cross-channel cascade demonstrated only via stubs | F12-a **CLOSED** (real-infra EC-8(c) test); F12-b (facade async bridge → Phase-02) + F12-c (entrypoint → Wave-2) deferred w/ value-anchor (journal/0043) |
+| F14  | **(NEW, CRITICAL)** Real cascade engine never revoked descendants — `revoke` passed no `delegation_registry` to `cascade_revoke` (empty registry → only root revoked) | `01-analysis/02-mvp-objectives.md` EC-2 line 42 + EC-8 line 116(c) — cascade hard-constraint VIOLATED in production | **CLOSED** — chain-derived registry fix (journal/0043); branch `fix/phase-01-f14-cascade-registry-wiring` |
 | F13  | Pre-existing pyright type-narrowing in `envoy/runtime/adapters/kailash_py.py` `runtime_verify`   | code-health (secondary) — `str \| bytearray \| memoryview` → `verify_signature(str)`     | queued (NEW, journal/0042) — cleanup, different bug class           |
 
-Closed this session: **F10** (PR pending on `fix/phase-01-f10-cascade-revoke-facade`) — surfaced + fixed a real EC-8(c) hard-constraint bug: the production cascade-revoke facade silently returned an empty set against the only real (async) backing store. Receipt: 5/5 F10 tests + 275 tier2 + 1641 collect clean. Also banked PR #51 merge (`5221897`).
+Closed this session: PR #51 merge (`5221897`); **F10** facade fix (PR #52 merged); **F12-a** real-infra EC-8(c) cascade test; **F14** (CRITICAL) real-cascade-engine descendant-revocation fix — `revoke` now derives a `DelegationRegistry` from persisted chains and passes it to `cascade_revoke` (was passing none → empty registry → only root revoked). Receipt: tier1+tier2+regression 1287 passed / 9 skipped; tier3+e2e 45 passed / 9 xfailed.
 
 ## Traps
 

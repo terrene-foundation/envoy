@@ -43,6 +43,7 @@ from kailash.trust.exceptions import TrustChainNotFoundError as _UpstreamTrustCh
 from kailash.trust.key_manager import InMemoryKeyManager
 from kailash.trust.operations import CapabilityRequest
 from kailash.trust.posture.posture_store import SQLitePostureStore
+from kailash.trust.revocation.broadcaster import InMemoryDelegationRegistry
 from kailash.trust.revocation.cascade import RevocationResult, cascade_revoke
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
 
@@ -606,16 +607,35 @@ class TrustStoreAdapter:
                 f"revoke() identifier failed safety validation: {exc}",
             ) from exc
 
+        # Build the delegator → [delegatee] adjacency ONCE from the persisted
+        # chains; derive both the pre-revoke snapshot AND the DelegationRegistry
+        # the cascade BFS uses, so the two cannot drift.
+        adjacency = await self._build_delegation_adjacency()
+
         # PRE-revoke snapshot: enumerate the GROUND-TRUTH descendants of
         # agent_id in the active delegation graph. The cascade_revoke call
         # below soft-deletes chains; a post-revoke walk would miss them.
-        snapshot = await self._snapshot_descendants(agent_id)
+        snapshot = self._descendants_from_adjacency(adjacency, agent_id)
+
+        # Populate the DelegationRegistry kailash's cascade BFS uses to discover
+        # descendants. WITHOUT this, cascade_revoke falls back to a fresh empty
+        # InMemoryDelegationRegistry() and revokes ONLY the root — the EC-8(c)
+        # hard-constraint violation surfaced by F12-a (journal/0042 F14: a
+        # revoked Day-1 parent leaving its Day-6 cross-channel children alive).
+        # Rebuilt each revoke from the SAME persisted-chain adjacency as the
+        # snapshot, so it survives adapter restarts (the chains persist; the
+        # in-memory registry does not need to).
+        delegation_registry = InMemoryDelegationRegistry()
+        for delegator_id, delegatees in adjacency.items():
+            for delegatee_id in delegatees:
+                delegation_registry.register_delegation(delegator_id, delegatee_id)
 
         result = await cascade_revoke(
             agent_id=agent_id,
             store=self._chain_store,
             reason=reason,
             revoked_by=revoked_by,
+            delegation_registry=delegation_registry,
         )
         # Bounded LRU update: pop oldest if at capacity, then insert/refresh.
         if agent_id in self._last_revocations:
@@ -644,16 +664,41 @@ class TrustStoreAdapter:
         `list_chains_for_root(root)` or descendant-query helper, switch to
         an O(log N) lookup instead of the O(N×M) full walk.
         """
+        adjacency = await self._build_delegation_adjacency()
+        return self._descendants_from_adjacency(adjacency, root_agent_id)
+
+    async def _build_delegation_adjacency(self) -> dict[str, list[str]]:
+        """Build the delegator_id → [delegatee_id] adjacency from every active
+        delegation across all persisted chains.
+
+        Single source of truth for BOTH the pre-revoke descendant snapshot AND
+        the cascade's `DelegationRegistry` (`revoke()`), so the two cannot
+        drift. Per kailash `DelegationRecord`: `delegator_id` / `delegatee_id`.
+        The edge is persisted on the DELEGATEE's chain, so the full walk across
+        all chains is required to reconstruct the graph.
+
+        Phase 02: replace the O(N×M) full walk with a `SqliteTrustStore`
+        descendant-query helper when it lands.
+        """
         chains = await self._chain_store.list_chains()
-        delegations_by_delegator: dict[str, list[str]] = {}
+        adjacency: dict[str, list[str]] = {}
         for chain in chains:
             for d in chain.get_active_delegations():
-                delegations_by_delegator.setdefault(d.delegator_id, []).append(d.delegatee_id)
+                adjacency.setdefault(d.delegator_id, []).append(d.delegatee_id)
+        return adjacency
+
+    @staticmethod
+    def _descendants_from_adjacency(
+        adjacency: dict[str, list[str]], root_agent_id: str
+    ) -> frozenset[str]:
+        """BFS the delegation adjacency from `root_agent_id`; return the
+        descendant set (NOT including the root), matching the spec contract
+        that `RevocationResult.revoked_agents` is the descendant set."""
         descendants: set[str] = set()
         queue: list[str] = [root_agent_id]
         while queue:
             node = queue.pop(0)
-            for child in delegations_by_delegator.get(node, []):
+            for child in adjacency.get(node, []):
                 if child not in descendants and child != root_agent_id:
                     descendants.add(child)
                     queue.append(child)
