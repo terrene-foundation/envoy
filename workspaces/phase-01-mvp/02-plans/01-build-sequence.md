@@ -261,7 +261,7 @@ Estimate: **2 sessions** (scheduler + aggregator + renderer + fanout; relatively
 
 Source: `01-analysis/19-pipx-distribution-architecture-implementation.md` (referenced in shard plan summary).
 
-1. **`envoy/cli.py` 11 subcommands** — `init` / `up` / `boundaries` / `ledger` / `shamir` / `digest` / `grant` / `posture` / `connection` / `model` / `version`. Phase 02 stubs: `mobile-pair`, `enterprise-deploy`.
+1. **`envoy/cli.py` 11 subcommands** — `init` / `up` / `boundaries` / `ledger` / `shamir` / `digest` / `grant` / `posture` / `connection` / `model` / `version`. Phase 02 stubs: `mobile-pair`, `enterprise-deploy`. **[SUPERSEDED 2026-06-01: `up`/`boundaries` were never canonical — this draft predates the Round-4 R1-M-01 reconciliation. The onboarding command is `chat` (start/resume Boundary Conversation, shard 8). Canonical CLI surface is `specs/mvp-build-sequence.md` line 128 / shard 19 § 3.4: `init / chat / ledger / shamir / digest / grant / posture / connection / model / version`.]**
 2. **`pyproject.toml`** — `kailash[shamir,nexus,kaizen]>=2.13.4`, `keyring>=24.0`, `python-dotenv>=1.0`, `python-telegram-bot` (LGPL-3.0+), `slack-sdk`, `discord.py`, `apscheduler`.
 3. **`NOTICES`** — LGPL-3.0+ python-telegram-bot disclosure; MIT keyring; Apache 2.0 kailash family.
 4. **Cross-OS packaging tests** — macOS full / Linux desktop-env-required / Windows x86_64; ARM64 Phase 02.
