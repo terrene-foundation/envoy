@@ -379,14 +379,23 @@ class WebChannelAdapter(ChannelAdapter):
         )
 
     async def render_grant_moment(
-        self, request: GrantMomentRequest, *, visible_secret: object = None
+        self, request: GrantMomentRequest, *, visible_secret: VisibleSecret | None = None
     ) -> None:
         """M1 render-only — satisfies `ChannelAdapterProtocol`.
 
-        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
-        yet rendered on this channel — tracked as F15-b.2 (only the primary
-        CLI channel renders the secret in F15-b.1; high-stakes Grant Moments
-        render ONLY on the primary per `specs/grant-moment.md` § Rendering).
+        `visible_secret` (F15-b) is accepted (Protocol conformance) and is the
+        runtime-resolved `VisibleSecret`. Unlike the prose channels
+        (CLI/Slack/Telegram/Discord, which render `icon + phrase` inline per
+        F15-b.2), web has NO server-side render surface: the Grant Moment
+        dialog is a CLIENT-SIDE modal pushed over WS/SSE, and that push is
+        deferred to the Wave-4 Nexus InboundRouter shard (the same deferral
+        `send_message` declares via `PhaseDeferredError`). When that shard
+        lands, the modal payload MUST include the visible secret (icon +
+        phrase) FIRST per `specs/grant-moment.md` § Rendering — the T-018
+        anti-spoofing surface. Rendering the secret here now would be either
+        a fake render (`rules/zero-tolerance.md` Rule 2) or orphan state with
+        no consumer until the WS shard (`rules/orphan-detection.md` Rule 1),
+        so web's secret render lands WITH the WS modal-push, not before it.
 
         Foundation shard: registers a pending-decision Future and returns;
         the WS handler resolves the future via `_resolve_pending_decision`
