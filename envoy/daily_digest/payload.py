@@ -16,7 +16,7 @@ forward-compatibility envelope.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 # Cross-channel byte-identity (open question 5):
 # receipt_hash = sha256(canonical_dumps(payload_minus_receipt_hash)).
@@ -54,11 +54,11 @@ class DigestSummary:
     `LedgerAggregator`).
     """
 
-    actions: tuple  # tuple[dict]: ledger_id, summary, outbox_items
-    refusals: tuple  # tuple[dict]: ledger_id, reason_code
-    spend: dict  # current_microdollars + monthly_ceiling_microdollars
-    pending_grants: tuple  # tuple[dict]: grant_id, summary
-    planned_today: tuple  # tuple[dict]: intent_id, summary
+    actions: tuple[dict[str, Any], ...]  # ledger_id, summary, outbox_items
+    refusals: tuple[dict[str, Any], ...]  # ledger_id, reason_code
+    spend: dict[str, int]  # current_microdollars + monthly_ceiling_microdollars
+    pending_grants: tuple[dict[str, Any], ...]  # grant_id, summary
+    planned_today: tuple[dict[str, Any], ...]  # intent_id, summary
 
 
 @dataclass(frozen=True, slots=True)

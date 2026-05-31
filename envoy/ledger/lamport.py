@@ -21,6 +21,7 @@ into an `EntryEnvelope` it cannot be silently re-numbered.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +52,7 @@ class LamportClock:
         if not isinstance(self.local_seq, int) or self.local_seq < 0:
             raise ValueError(f"local_seq must be non-negative int (got {self.local_seq!r})")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Wire shape per specs/ledger.md § Entry envelope schema."""
         return {
             "lamport_time": self.lamport_time,
@@ -60,7 +61,7 @@ class LamportClock:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "LamportClock":
+    def from_dict(cls, data: dict[str, Any]) -> "LamportClock":
         return cls(
             lamport_time=data["lamport_time"],
             device_id=data["device_id"],

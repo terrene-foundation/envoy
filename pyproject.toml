@@ -131,6 +131,19 @@ ignore = ["E501"]
 # 3.10 hid 3.11-only stdlib surface (e.g. `asyncio.timeout`) as false
 # `[attr-defined]` errors across every channel adapter.
 python_version = "3.11"
-warn_return_any = true
-warn_unused_ignores = true
+strict = true
+# kailash ships without type stubs; resolve its imports as Any rather than
+# erroring. `strict` still enforces envoy's own surface (untyped defs, generic
+# parameterization, no-implicit-reexport, etc.).
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Declarations-only module: every class subclasses kaizen's `Signature`, which
+# ships untyped (resolves to Any), and the bare `list` / `dict` field
+# annotations are RUNTIME metadata that kaizen's SignatureMeta records verbatim
+# (this module deliberately omits `from __future__ import annotations`, so
+# `list[str]` would change the stored field type and break the spec contract).
+# Relax subclassing-Any + generic-parameterization for this module only.
+module = "envoy.boundary_conversation.signatures"
+disallow_subclassing_any = false
+disallow_any_generics = false

@@ -26,6 +26,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from kailash.trust import TrustLineageChain, TrustOperations
 from kailash.trust.authority import (
@@ -273,7 +274,7 @@ class TrustStoreAdapter:
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
         self._posture_store = SQLitePostureStore(db_path=posture_db)
-        self._key_manager = InMemoryKeyManager()
+        self._key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
         self._authority_registry: AuthorityRegistryProtocol = _InMemoryAuthorityRegistry()
         # InMemoryKeyManager extends KeyManagerInterface (ABC) rather than
         # TrustKeyManager (a Protocol); kailash-py uses duck-typing here, so
@@ -625,7 +626,7 @@ class TrustStoreAdapter:
         # Rebuilt each revoke from the SAME persisted-chain adjacency as the
         # snapshot, so it survives adapter restarts (the chains persist; the
         # in-memory registry does not need to).
-        delegation_registry = InMemoryDelegationRegistry()
+        delegation_registry = InMemoryDelegationRegistry()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
         for delegator_id, delegatees in adjacency.items():
             for delegatee_id in delegatees:
                 delegation_registry.register_delegation(delegator_id, delegatee_id)
@@ -933,8 +934,8 @@ class TrustStoreAdapter:
         self,
         ritual_id: str,
         *,
-        plan_dict: dict,
-        assembler_dict: dict,
+        plan_dict: dict[str, Any],
+        assembler_dict: dict[str, Any],
         principal_id: str,
         current_state: str,
     ) -> None:
@@ -1560,7 +1561,7 @@ class TrustStoreAdapter:
         finally:
             conn.close()
 
-    async def shadow_segment_unread_duress_events(self, principal_id: str) -> list:
+    async def shadow_segment_unread_duress_events(self, principal_id: str) -> list[Any]:
         """Return unread duress events for the post-duress banner gate.
 
         **Phase 01: returns `[]`.** This is COMPLETE Phase-01 behavior, NOT a
@@ -1593,7 +1594,7 @@ class TrustStoreAdapter:
     # R2-H-01 algorithm_id wire-form translator (T-01-15, LOAD-BEARING)
     # ------------------------------------------------------------------
 
-    def _to_spec_wire_form(self, algorithm_dict: dict) -> dict:
+    def _to_spec_wire_form(self, algorithm_dict: dict[str, Any]) -> dict[str, Any]:
         """Translate upstream's 1-key form into the spec-mandated 3-key wire form.
 
         Upstream `kailash.trust.signing.algorithm_id.AlgorithmIdentifier.to_dict()`
@@ -1624,7 +1625,7 @@ class TrustStoreAdapter:
             "shamir": "slip39",
         }
 
-    def _with_algorithm_id(self, record_dict: dict) -> dict:
+    def _with_algorithm_id(self, record_dict: dict[str, Any]) -> dict[str, Any]:
         """Embed canonical 3-key algorithm_identifier on a signed-record dict.
 
         Returns a NEW dict — never mutates the caller's input. A Ledger producer

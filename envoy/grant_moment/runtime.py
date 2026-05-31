@@ -155,6 +155,9 @@ from envoy.grant_moment.state_machine import (
 __all__ = [
     "EnvoyGrantMomentRuntime",
     "GrantMomentOutcome",
+    # Re-exported from envoy.grant_moment.signed_consent as the runtime's
+    # public request type; channel adapters import it from here.
+    "GrantMomentRequest",
     "FRICTION_TOKEN_READ_DELAY_COMPLETE",
     "FRICTION_TOKEN_DOUBLE_TAP",
     "FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM",
