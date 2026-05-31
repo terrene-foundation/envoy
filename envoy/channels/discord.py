@@ -616,12 +616,16 @@ class DiscordChannelAdapter(ChannelAdapter):
         )
 
     async def render_grant_moment(
-        self, request: GrantMomentRequest, *, visible_secret: object = None
+        self, request: GrantMomentRequest, *, visible_secret: VisibleSecret | None = None
     ) -> None:
         """M1 render-only dispatch per `ChannelAdapterProtocol`.
 
-        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
-        yet rendered on this channel — tracked as F15-b.2.
+        `visible_secret` (F15-b) is the runtime-resolved `VisibleSecret`,
+        passed separately so the phrase never enters the signed request /
+        Phase-A ledger row. It is rendered FIRST per `specs/grant-moment.md`
+        § Rendering ("Every dialog shows: Visible secret") — the T-018
+        anti-spoofing surface (F15-b.2 low-stakes parity with the CLI
+        channel). `None` when no secret is set; render without it.
 
         Renders the ``GrantMomentRequest`` to Discord as an embed-style text
         block WITHOUT awaiting a user decision; the decision arrives async
@@ -653,7 +657,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 "primary_only": primary_only,
             },
         )
-        rendered = self._render_grant_moment_request_prose(request)
+        rendered = self._render_grant_moment_request_prose(request, visible_secret)
         await self._deliver_message(rendered)
 
     async def send_digest(
@@ -800,13 +804,19 @@ class DiscordChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_prose(request: GrantMomentRequest) -> str:
+    def _render_grant_moment_request_prose(
+        request: GrantMomentRequest, visible_secret: VisibleSecret | None = None
+    ) -> str:
         """M1 render-only: render a ``GrantMomentRequest`` to Discord text.
 
         Reads the canonical 5 elements available on ``GrantMomentRequest``:
         ``request_id``, ``tool_name``, ``why_asking``,
-        ``consequence_preview`` (4 sub-fields), ``novelty_class``.
-        The visible-secret render happens in the full-ritual path only.
+        ``consequence_preview`` (4 sub-fields), ``novelty_class``. The
+        ``visible_secret`` (F15-b) is NOT a field on the signed request (it
+        MUST NOT enter the Phase-A ledger row); it is resolved by the runtime
+        at dispatch and rendered FIRST per `specs/grant-moment.md` § Rendering
+        ("Every dialog shows: Visible secret") — the T-018 anti-spoofing
+        surface. `None` → no secret set; render without it.
         """
         request_id = getattr(request, "request_id", None)
         if not request_id:
@@ -815,6 +825,10 @@ class DiscordChannelAdapter(ChannelAdapter):
         why = getattr(request, "why_asking", "")
         consequence = getattr(request, "consequence_preview", None)
         lines = [f"\n**Grant Moment** (`{request_id}`)"]
+        # Visible secret FIRST per spec § Rendering — the T-018 anti-spoofing
+        # surface the user checks before trusting the prompt.
+        if visible_secret is not None:
+            lines.append(f"Safety phrase: {visible_secret.icon} **{visible_secret.phrase}**")
         if tool_name:
             lines.append(f"**Proposed action:** `{tool_name}`")
         if why:

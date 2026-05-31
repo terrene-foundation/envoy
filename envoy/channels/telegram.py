@@ -637,11 +637,17 @@ class TelegramChannelAdapter(ChannelAdapter):
             channel_signature="",
         )
 
-    async def render_grant_moment(self, request: Any, *, visible_secret: object = None) -> None:
+    async def render_grant_moment(
+        self, request: Any, *, visible_secret: VisibleSecret | None = None
+    ) -> None:
         """M1 dispatch render — renders WITHOUT awaiting the user's decision.
 
-        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
-        yet rendered on this channel — tracked as F15-b.2.
+        `visible_secret` (F15-b) is the runtime-resolved `VisibleSecret`,
+        passed separately so the phrase never enters the signed request /
+        Phase-A ledger row. It is rendered FIRST per `specs/grant-moment.md`
+        § Rendering ("Every dialog shows: Visible secret") — the T-018
+        anti-spoofing surface (F15-b.2 low-stakes parity with the CLI
+        channel). `None` when no secret is set; render without it.
 
         INV-1 (request side): reads ``novelty_class == "high_stakes"`` via
         ``getattr`` on ``GrantMomentRequest`` — NOT ``grant.high_stakes``.
@@ -676,6 +682,12 @@ class TelegramChannelAdapter(ChannelAdapter):
         if must_be_primary:
             lines.append("HIGH-STAKES GRANT MOMENT")
         lines.append(f"Request ID: {request_id}")
+        # Visible secret FIRST per spec § Rendering — the T-018 anti-spoofing
+        # surface the user checks before trusting the prompt. Rendered
+        # separately from the signed request so the phrase never enters the
+        # Phase-A ledger row. `None` → no secret set; render without it.
+        if visible_secret is not None:
+            lines.append(f"Safety phrase: {visible_secret.icon} {visible_secret.phrase}")
         if principal_id:
             lines.append(f"Principal: {_hash_pii(principal_id)}...")  # INV-5
         lines.append("")

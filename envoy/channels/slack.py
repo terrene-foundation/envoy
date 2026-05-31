@@ -463,12 +463,17 @@ class SlackChannelAdapter(ChannelAdapter):
             fut.set_result(decision)  # type: ignore[arg-type]
 
     async def render_grant_moment(
-        self, request: GrantMomentRequest, *, visible_secret: object = None
+        self, request: GrantMomentRequest, *, visible_secret: VisibleSecret | None = None
     ) -> None:
         """M1 dispatch render — no decision await.
 
-        `visible_secret` (F15-b) is accepted for Protocol conformance but NOT
-        yet rendered on this channel — tracked as F15-b.2.
+        `visible_secret` (F15-b) is the runtime-resolved `VisibleSecret`,
+        passed separately so the phrase never enters the signed request /
+        Phase-A ledger row. It is rendered FIRST per `specs/grant-moment.md`
+        § Rendering ("Every dialog shows: Visible secret") — the T-018
+        anti-spoofing surface (F15-b.2 low-stakes parity with the CLI
+        channel). `None` when no secret is set (Boundary Conversation S7
+        not yet completed); render without it.
 
         Per /redteam R3 HIGH-R3-1 closure: reads canonical `GrantMomentRequest`
         discriminators (`novelty_class == "high_stakes"` and `primary_only`)
@@ -493,7 +498,7 @@ class SlackChannelAdapter(ChannelAdapter):
                 "primary_only": primary_only,
             },
         )
-        rendered = self._render_grant_moment_request_text(request)
+        rendered = self._render_grant_moment_request_text(request, visible_secret)
         self._outbound_log.append(("__render__", rendered))
 
     async def send_digest(
@@ -589,11 +594,18 @@ class SlackChannelAdapter(ChannelAdapter):
         return "\n".join(lines)
 
     @staticmethod
-    def _render_grant_moment_request_text(request: GrantMomentRequest) -> str:
-        """M1 render-only text from a `GrantMomentRequest` (no VisibleSecret).
+    def _render_grant_moment_request_text(
+        request: GrantMomentRequest, visible_secret: VisibleSecret | None = None
+    ) -> str:
+        """M1 render-only text from a `GrantMomentRequest`.
 
         Reads the 5 canonical `GrantMomentRequest` fields: request_id,
-        tool_name, why_asking, consequence_preview, novelty_class.
+        tool_name, why_asking, consequence_preview, novelty_class. The
+        `visible_secret` (F15-b) is NOT a field on the signed request (it MUST
+        NOT enter the Phase-A ledger row); it is resolved by the runtime at
+        dispatch and rendered FIRST per `specs/grant-moment.md` § Rendering
+        ("Every dialog shows: Visible secret") — the T-018 anti-spoofing
+        surface. `None` → no secret set; render without it.
         """
         request_id = getattr(request, "request_id", None)
         if not request_id:
@@ -602,6 +614,10 @@ class SlackChannelAdapter(ChannelAdapter):
         why = getattr(request, "why_asking", "")
         consequence = getattr(request, "consequence_preview", None)
         lines = [f"\n--- Grant Moment ({request_id}) ---"]
+        # Visible secret FIRST per spec § Rendering — the T-018 anti-spoofing
+        # surface the user checks before trusting the prompt.
+        if visible_secret is not None:
+            lines.append(f"Safety phrase: {visible_secret.icon} {visible_secret.phrase}")
         if tool_name:
             lines.append(f"Proposed action: {tool_name}")
         if why:
