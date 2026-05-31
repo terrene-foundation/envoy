@@ -40,7 +40,10 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 
-from dataflow.classification.event_payload import format_record_id_for_event
+from dataflow.classification.event_payload import (
+    ClassificationPolicy,
+    format_record_id_for_event,
+)
 
 from envoy.daily_digest.payload import (
     DIGEST_SCHEMA_VERSION,
@@ -76,7 +79,7 @@ class DigestRenderer:
         *,
         model_router: EnvoyModelRouter,
         ledger: EnvoyLedger,
-        classification_policy: object | None = None,
+        classification_policy: ClassificationPolicy | None = None,
     ) -> None:
         self._model_router = model_router
         self._ledger = ledger

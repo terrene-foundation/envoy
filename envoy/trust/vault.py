@@ -67,7 +67,7 @@ import struct
 import time
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -621,7 +621,7 @@ class TrustVault:
                 "vault file truncated reading salt (header < expected size)"
             )
         _, _, _, salt, _, _, _, _ = struct.unpack(_HEADER_FMT, header_bytes)
-        return salt
+        return cast(bytes, salt)
 
     def _open_no_follow_symlinks(self):
         """Open the vault file with O_NOFOLLOW so a symlink redirect — e.g. a

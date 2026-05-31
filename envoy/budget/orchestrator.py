@@ -583,6 +583,10 @@ class EnvoyBudgetOrchestrator:
         """
         if self._threshold_sink is None or window == "per_call":
             return
+        # Capture the post-guard non-None sink in a local so the closure's
+        # default-arg annotation below narrows cleanly (mypy does not narrow
+        # the `self._threshold_sink` attribute across the nested def boundary).
+        sink = self._threshold_sink
         for pct in self._default_threshold_pcts:
             arm_key = (window, period_key, pct)
             if arm_key in self._armed_thresholds:
@@ -595,7 +599,7 @@ class EnvoyBudgetOrchestrator:
                 event: BudgetEvent,
                 _w: WindowName = window,
                 _pk: str = period_key,
-                _sink: _ThresholdSink = self._threshold_sink,
+                _sink: _ThresholdSink = sink,
             ) -> None:
                 _sink.enqueue(self._to_envoy_event(_w, _pk, event, now=self._clock()))
 
@@ -651,6 +655,6 @@ class EnvoyBudgetOrchestrator:
     @staticmethod
     def _validate_microdollars(value: int, field_name: str) -> None:
         if not isinstance(value, int) or isinstance(value, bool):
-            raise MicrodollarOverflowError(value=value, field_name=field_name)  # type: ignore[arg-type]
+            raise MicrodollarOverflowError(value=value, field_name=field_name)
         if value < 0 or value > INT64_MAX:
             raise MicrodollarOverflowError(value=value, field_name=field_name)

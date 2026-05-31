@@ -25,7 +25,7 @@ import json
 import logging
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from uuid import UUID, uuid4
 
 import keyring
@@ -258,7 +258,12 @@ class ConnectionVault:
     def _get_password(self, entry_id: UUID) -> Optional[str]:
         try:
             if self._keyring_backend is not None:
-                return self._keyring_backend.get_password(KEYRING_SERVICE_NAMESPACE, str(entry_id))
+                # Injected backend is duck-typed (tests use keyrings.alt);
+                # its get_password contractually returns Optional[str].
+                return cast(
+                    Optional[str],
+                    self._keyring_backend.get_password(KEYRING_SERVICE_NAMESPACE, str(entry_id)),
+                )
             return keyring.get_password(KEYRING_SERVICE_NAMESPACE, str(entry_id))
         except keyring.errors.KeyringError as exc:
             raise KeychainUnavailableError(

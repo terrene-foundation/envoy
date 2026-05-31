@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
+
+from envoy.daily_digest.payload import DigestForm
 
 if TYPE_CHECKING:
     from envoy.trust.store import TrustStoreAdapter
@@ -53,7 +55,7 @@ class LowEngagementTracker:
         """
         await self._trust_store.digest_form_preference_set(principal_id, form=form)
 
-    async def select_form(self, principal_id: str, *, now: datetime) -> str:
+    async def select_form(self, principal_id: str, *, now: datetime) -> DigestForm:
         """Return the digest form: explicit preference wins, else engagement-auto.
 
         1. **Explicit user preference** (`compact` / `event_only` / `rich`) set
@@ -68,7 +70,9 @@ class LowEngagementTracker:
         """
         preference = await self._trust_store.digest_form_preference_get(principal_id)
         if preference is not None:
-            return preference
+            # Stored preference is written only via set_form_preference, which
+            # validates against the DigestForm vocabulary; narrow accordingly.
+            return cast(DigestForm, preference)
 
         window_days = self.LOW_ENGAGEMENT_WEEKS * 7
         since = now - timedelta(days=window_days)

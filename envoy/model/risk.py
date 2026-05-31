@@ -395,8 +395,8 @@ def _envelope_allows_provider_bound(envelope: EnvelopeConfig) -> bool:
     for constraint in operational.authored_constraints:
         if _constraint_is_provider_bound_opt_in(constraint):
             return True
-    for constraint in operational.imported_constraints:
-        if _constraint_is_provider_bound_opt_in(constraint):
+    for imported_constraint in operational.imported_constraints:
+        if _constraint_is_provider_bound_opt_in(imported_constraint):
             return True
     return False
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from envoy.channels.envelope import DailyDigestPayload
@@ -87,7 +88,7 @@ class PerChannelFanout:
     def __init__(
         self,
         *,
-        channel_adapters: dict[str, ChannelAdapter],
+        channel_adapters: Mapping[str, ChannelAdapter],
         ledger: EnvoyLedger,
     ) -> None:
         self._channel_adapters = channel_adapters

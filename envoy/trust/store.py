@@ -1237,7 +1237,8 @@ class TrustStoreAdapter:
                 "WHERE principal_id = ?",
                 (principal_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
@@ -1288,7 +1289,8 @@ class TrustStoreAdapter:
                 "SELECT hour_utc, timezone FROM digest_schedule WHERE principal_id = ?",
                 (principal_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
@@ -1378,7 +1380,8 @@ class TrustStoreAdapter:
                 "WHERE principal_id = ? AND channel_id = ?",
                 (principal_id, channel_id),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
@@ -1499,7 +1502,8 @@ class TrustStoreAdapter:
                 "WHERE principal_id = ?",
                 (principal_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 
@@ -1551,7 +1555,8 @@ class TrustStoreAdapter:
                 "SELECT form FROM digest_form_preference WHERE principal_id = ?",
                 (principal_id,),
             )
-            return cur.fetchone()
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
         finally:
             conn.close()
 

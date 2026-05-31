@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from envoy.daily_digest.errors import (
@@ -31,7 +32,7 @@ from envoy.daily_digest.errors import (
     DigestSkippedTooLongWarning,
     LowEngagementFallbackTriggered,
 )
-from envoy.daily_digest.payload import DigestPayload
+from envoy.daily_digest.payload import DigestForm, DigestPayload
 from envoy.daily_digest.scheduler import DigestScheduler
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class _RendererProtocol(Protocol):
         channel_id: str,
         summary: Any,
         duress_banner: Any,
-        form: str,
+        form: DigestForm,
         scheduled_for: datetime,
         back_fill_days: int,
     ) -> DigestPayload: ...
@@ -139,7 +140,7 @@ class _LowEngagementProtocol(Protocol):
         principal_id: str,
         *,
         now: datetime,
-    ) -> str: ...
+    ) -> DigestForm: ...
 
     async def record_open(self, principal_id: str, *, opened_at: datetime) -> None: ...
 
@@ -513,7 +514,7 @@ class _ScheduleRow(Protocol):
 class _ScheduleRegistryProtocol(Protocol):
     """Trust-store-backed per-principal digest schedule + channel binding."""
 
-    async def list_all(self) -> list[tuple[str, _ScheduleRow]]: ...
+    async def list_all(self) -> Sequence[tuple[str, _ScheduleRow]]: ...
 
     async def get(self, principal_id: str) -> _ScheduleRow | None: ...
 
@@ -561,7 +562,7 @@ def _has_event(summary: Any) -> bool:
     spend = getattr(summary, "spend", {}) or {}
     ceiling = spend.get("monthly_ceiling_microdollars", 0)
     current = spend.get("current_microdollars", 0)
-    return ceiling > 0 and current / ceiling > _EVENT_ONLY_BUDGET_RATIO
+    return bool(ceiling > 0 and current / ceiling > _EVENT_ONLY_BUDGET_RATIO)
 
 
 __all__ = [
