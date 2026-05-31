@@ -67,7 +67,8 @@ import struct
 import time
 import warnings
 from pathlib import Path
-from typing import Any, cast
+from types import ModuleType, TracebackType
+from typing import Any, BinaryIO, cast
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.exceptions import InvalidTag
@@ -327,7 +328,12 @@ class TrustVault:
             raise VaultLockedError("__aenter__ on a locked vault — call unlock() first")
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self.lock()
 
     def unlocked(self, passphrase: str) -> "_UnlockedVaultCM":
@@ -623,7 +629,7 @@ class TrustVault:
         _, _, _, salt, _, _, _, _ = struct.unpack(_HEADER_FMT, header_bytes)
         return cast(bytes, salt)
 
-    def _open_no_follow_symlinks(self):
+    def _open_no_follow_symlinks(self) -> BinaryIO:
         """Open the vault file with O_NOFOLLOW so a symlink redirect — e.g. a
         parent-directory writer pointing the vault path at /etc/shadow — is
         rejected at open time rather than silently followed.
@@ -889,7 +895,7 @@ class TrustVault:
     # GC hygiene
     # ------------------------------------------------------------------
 
-    def __del__(self, _warnings=warnings) -> None:  # noqa: D401
+    def __del__(self, _warnings: ModuleType = warnings) -> None:  # noqa: D401
         # Only emit a warning. Calling lock() here would touch the asyncio
         # event loop from a finalizer thread → deadlock per
         # rules/patterns.md § Async Resource Cleanup.
@@ -938,7 +944,12 @@ class _UnlockedVaultCM:
         await self._vault.unlock(self._passphrase)
         return self._vault
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         await self._vault.lock()
 
 

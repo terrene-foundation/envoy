@@ -27,7 +27,7 @@ from typing import Any, Literal
 # rather than redefining closes the spec H-1 finding (shape divergence) and
 # satisfies `rules/specs-authority.md` Rule 5b (full-sibling re-derivation
 # requires one canonical shape across the trust + channels boundary).
-from envoy.trust.types import VisibleSecret
+from envoy.trust.types import VisibleSecret as VisibleSecret
 
 # Closed vocabulary for `GrantMomentReceipt.decision` per
 # `specs/grant-moment.md` § Resolution shape — adapter MUST NOT silently coin

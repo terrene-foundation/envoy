@@ -18,6 +18,7 @@ head cannot be silently mutated mid-audit.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from envoy.ledger.canonical import is_canonical_timestamp
 
@@ -59,11 +60,11 @@ class HeadCommitment:
         if not isinstance(self.signature_hex, str) or not self.signature_hex:
             raise ValueError("signature_hex must be non-empty hex str")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "HeadCommitment":
+    def from_dict(cls, data: dict[str, Any]) -> "HeadCommitment":
         return cls(
             head_sequence=data["head_sequence"],
             head_entry_id=data["head_entry_id"],
@@ -108,7 +109,7 @@ class RuntimeIdentity:
         if list(self.algorithm_identifier) != sorted(self.algorithm_identifier):
             raise ValueError("algorithm_identifier must be sorted by key for canonical dumps")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "device_id": self.device_id,
             "signing_key_id": self.signing_key_id,
@@ -121,7 +122,7 @@ class RuntimeIdentity:
         *,
         device_id: str,
         signing_key_id: str,
-        algorithm_identifier: dict,
+        algorithm_identifier: dict[str, Any],
     ) -> "RuntimeIdentity":
         """Construct from the runtime's live state. Sorts algorithm_identifier
         items by key so the canonical-dump is stable across runs."""
@@ -215,7 +216,7 @@ class HaltedByRollbackRecord:
                 f"(got {type(self.runtime_identity).__name__})"
             )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         # Order matches spec JSON shape (specs/ledger.md:537-548) so
         # canonical_dumps produces bytes external verifiers can re-derive.
         return {

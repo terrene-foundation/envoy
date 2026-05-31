@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from envoy.channels.envelope import DailyDigestPayload
 from envoy.daily_digest.errors import DigestDeliveryFailedError, RedactedFieldRenderError
@@ -56,8 +56,11 @@ def _supports_redaction_markers(adapter: object) -> bool:
 
 
 def _partition_classified(
-    actions: tuple, refusals: tuple, *, drop: bool
-) -> tuple[tuple, tuple, int]:
+    actions: tuple[dict[str, Any], ...],
+    refusals: tuple[dict[str, Any], ...],
+    *,
+    drop: bool,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...], int]:
     """Split classified rows from action/refusal tuples.
 
     A row is classified iff its id field is a `sha256:`-prefixed redaction
@@ -68,7 +71,7 @@ def _partition_classified(
     if not drop:
         return actions, refusals, 0
 
-    def _is_classified(row: dict) -> bool:
+    def _is_classified(row: dict[str, Any]) -> bool:
         return str(row.get("ledger_id", "")).startswith("sha256:")
 
     kept_actions = tuple(a for a in actions if not _is_classified(a))

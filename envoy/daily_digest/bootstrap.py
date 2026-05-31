@@ -72,7 +72,7 @@ async def build_digest_service(
     trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
     await trust_store.initialize()
 
-    key_manager = InMemoryKeyManager()
+    key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
     await key_manager.generate_keypair(_DIGEST_SIGNING_KEY)
     ledger = EnvoyLedger(
         audit_store=InMemoryAuditStore(),

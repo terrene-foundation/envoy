@@ -393,7 +393,10 @@ class ShamirRitualCoordinator:
             # an additional immutable copy that survives in the kailash
             # frame locals beyond envoy's reach (C-1 fix).
             shards = self._shamir_generator(
-                master_key_buf,
+                # Deliberate mutable bytearray (C-1: avoid an immutable bytes
+                # copy surviving in kailash frame locals); ShamirGenerator
+                # accepts the buffer protocol at runtime.
+                master_key_buf,  # type: ignore[arg-type]
                 ritual_spec,
                 passphrase=passphrase,
             )

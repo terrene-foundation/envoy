@@ -65,7 +65,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 # Module-scope import (security-reviewer F-5): the prior local-import inside
 # the divergence branch was unnecessary defensive — `score.py` does NOT import
@@ -561,7 +561,7 @@ class _LedgerProtocol(Protocol):
         self,
         *,
         entry_type: str,
-        content: dict,
+        content: dict[str, Any],
         intent_id: Optional[str] = None,
         content_trust_level: str = "system",
     ) -> str: ...
@@ -1001,7 +1001,7 @@ class PostureGate:
         # mid-pair) are a different bug class and require Ledger-level
         # transactional support; tracked at the F-001 follow-up issue.
         mutation = None
-        envelope_edit_content: Optional[dict] = None
+        envelope_edit_content: Optional[dict[str, Any]] = None
         if target > current:
             # MyPy narrows `envelope` to non-None via the Step 3e raise.
             assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces
@@ -1059,7 +1059,7 @@ class PostureGate:
         # APPLICATION-level identifying the authorizing key class (`"genesis_key"`);
         # the Ledger envelope itself adds the runtime device signature
         # at `EnvoyLedger.append` via `EntryEnvelope`.
-        content: dict = {
+        content: dict[str, Any] = {
             "schema_version": _POSTURE_CHANGE_SCHEMA_VERSION,
             "from_posture": current.name,
             "to_posture": target.name,
