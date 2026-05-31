@@ -21,7 +21,9 @@ import uuid
 import click
 
 from envoy.cli.digest import digest as digest_group
+from envoy.cli.posture import posture as posture_command
 from envoy.cli.shamir import shamir as shamir_group
+from envoy.cli.version import version as version_command
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +40,10 @@ logger = logging.getLogger(__name__)
 def cli(ctx: click.Context, log_level: str) -> None:
     """envoy — Autonomous AI where you set the boundaries.
 
-    Phase 01 ships `envoy shamir recover` (T-02-36); upcoming shards add
-    `envoy init`, `envoy up`, and `envoy boundaries` (T-02-50+).
+    Phase 01 ships `envoy shamir`, `envoy digest`, `envoy posture`, and
+    `envoy version`; upcoming shards add `envoy init`, `envoy up`,
+    `envoy boundaries`, `envoy ledger`, `envoy grant`, `envoy connection`,
+    and `envoy model` to complete the 11-subcommand surface.
     """
     cli_session_id = os.environ.get("ENVOY_CLI_SESSION_ID") or uuid.uuid4().hex
     logging.basicConfig(
@@ -56,6 +60,8 @@ def cli(ctx: click.Context, log_level: str) -> None:
 
 cli.add_command(shamir_group)
 cli.add_command(digest_group)
+cli.add_command(posture_command)
+cli.add_command(version_command)
 
 
 __all__ = ["cli"]

@@ -96,7 +96,7 @@ ELEVEN_SUBCOMMANDS: tuple[str, ...] = (
 # wires a subcommand, append it here — the xfail in the parametrized
 # test flips to PASSED on the next run, surfacing the Milestone-5
 # progress signal.
-REGISTERED_AS_OF_F5: frozenset[str] = frozenset({"shamir", "digest"})
+REGISTERED_AS_OF_F5: frozenset[str] = frozenset({"shamir", "digest", "posture", "version"})
 
 
 def _repo_root() -> Path:

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # Working package name; final legal mark pending Phase 00 trademark sweep (see DECISIONS §ADR-0002).
 name = "envoy-agent"
-version = "0.0.0"
+version = "0.1.0"
 description = "Autonomous AI where you set the boundaries. Terrene Foundation."
 authors = [
     {name = "Terrene Foundation", email = "info@terrene.foundation"}

@@ -22,6 +22,7 @@ would crash inside any pytest-asyncio / Kaizen agent / Nexus handler).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from kailash.trust.exceptions import TrustChainNotFoundError as _UpstreamTrustCh
 from kailash.trust.key_manager import InMemoryKeyManager
 from kailash.trust.operations import CapabilityRequest
 from kailash.trust.posture.posture_store import SQLitePostureStore
+from kailash.trust.posture.postures import TrustPosture
 from kailash.trust.revocation.broadcaster import InMemoryDelegationRegistry
 from kailash.trust.revocation.cascade import RevocationResult, cascade_revoke
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
@@ -93,6 +95,28 @@ def _validate_id_safety(identifier: str, *, field: str) -> None:
         raise ValueError(f"{field} contains path separator")
     if ".." in identifier:
         raise ValueError(f"{field} contains '..' (path traversal)")
+
+
+def _posture_store_agent_id(principal_id: str) -> str:
+    """Map an envoy principal_id to a posture-store-safe `agent_id`.
+
+    kailash's `SQLitePostureStore.get_posture` validates `agent_id` against
+    `^[a-zA-Z0-9_-]+$` (`validate_agent_id`), which REJECTS the `@` / `.` / `+`
+    characters that envoy principal pseudonyms legitimately contain — per
+    `_validate_id_safety` above, `alice@example` and `agent.42+ci` are valid
+    principals. kailash's chain store imposes no such restriction, so the two
+    sub-stores disagree on the identifier namespace.
+
+    We bridge by keying posture on the SHA-256 hex digest of the principal_id:
+    a stable, collision-free function whose output (`[0-9a-f]{64}`) always
+    satisfies the posture-store charset. This also aligns with envoy's H-06
+    persistence discipline (opaque labels in stored state, never raw identity
+    pseudonyms — see the TrustVault metadata note + `specs/shamir-recovery.md`
+    line 29). The READ half (`current_posture`) and the future signed
+    ratchet-down write half (`envoy posture --set`) MUST both route through
+    this helper so a principal's read and write target the SAME posture row.
+    """
+    return hashlib.sha256(principal_id.encode("utf-8")).hexdigest()
 
 
 from envoy.trust.errors import (
@@ -353,6 +377,24 @@ class TrustStoreAdapter:
     @property
     def vault_path(self) -> Path:
         return self._vault_path
+
+    async def current_posture(self) -> TrustPosture:
+        """Return this principal's current autonomy-ladder posture.
+
+        Reads the SQLite-backed `SQLitePostureStore` (a 0o600 sibling file
+        alongside the chain store) for `self._principal_id`. A principal with
+        no recorded transition yet resolves to the store's safe default
+        (`TrustPosture.SUPERVISED`) — the read NEVER raises on a fresh store,
+        so `envoy posture` works on first run before any Genesis seeding.
+
+        Per `specs/posture-ladder.md` the ladder is
+        PSEUDO → TOOL → SUPERVISED → DELEGATING → AUTONOMOUS. This is the
+        read half of that surface; the signed ratchet-down
+        (`envoy posture --set`) lands with the Genesis-signing CLI shard.
+        """
+        if not self._initialized:
+            await self.initialize()
+        return self._posture_store.get_posture(_posture_store_agent_id(self._principal_id))
 
     async def seed_genesis(self, seed: GenesisSeed) -> SeedResult:
         """Seed the Genesis Record for `seed.principal_id`.
