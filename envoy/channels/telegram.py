@@ -117,12 +117,12 @@ def _coerce_decision(
     if isinstance(raw, int):
         options = sorted(_ALLOWED_DECISIONS)
         if 1 <= raw <= len(options):
-            return options[raw - 1]  # type: ignore[return-value]
+            return typing.cast(GrantMomentDecision, options[raw - 1])
     if not isinstance(raw, str):
         raw = str(raw)
     normalised = raw.strip().lower()
     if normalised in _ALLOWED_DECISIONS:
-        return normalised  # type: ignore[return-value]
+        return typing.cast(GrantMomentDecision, normalised)
     # Prefix match for friendly input (e.g. "approve" → "approve_once").
     matches = [d for d in _ALLOWED_DECISIONS if d.startswith(normalised)]
     if len(matches) == 1:

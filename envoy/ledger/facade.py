@@ -50,9 +50,15 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from kailash.trust.audit_store import AuditEvent, AuditStoreProtocol
+
+if TYPE_CHECKING:
+    # Imported lazily inside export() at runtime to avoid a circular import
+    # (envoy.ledger.export imports from this module); the TYPE_CHECKING entry
+    # gives the return annotation on export() a resolvable name for mypy.
+    from envoy.ledger.export import ExportBundle
 
 from envoy.ledger.canonical import canonical_dumps
 from envoy.ledger.errors import (
@@ -665,7 +671,11 @@ class EnvoyLedger:
         import dataclasses
 
         envelope_dict = envelope.to_dict()
-        event = self._audit_store.create_event(
+        # kailash's AuditStoreProtocol stub declares only append/close/query/
+        # verify_chain; create_event() is the concrete store's factory (see
+        # docstring above). Annotate the result so dataclasses.replace() below
+        # round-trips the AuditEvent type instead of leaking Any.
+        event: AuditEvent = self._audit_store.create_event(  # type: ignore[attr-defined]
             actor=envelope.signed_by,
             action=envelope.type,
             resource="ledger.entry",

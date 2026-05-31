@@ -371,7 +371,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._pending_decisions.clear()
         logger.info("channel.shutdown", extra={"channel_id": _DISCORD_CHANNEL_ID})
 
-    def receive_message(self) -> AsyncIterator[InboundMessage]:  # type: ignore[override]
+    def receive_message(self) -> AsyncIterator[InboundMessage]:
         """Return an async generator yielding inbound messages.
 
         The generator runs until the adapter is shut down.  Production

@@ -406,7 +406,7 @@ class BoundaryConversationRuntime:
         deployment = client.deployment
         preset = getattr(deployment, "preset_name", None)
         model = getattr(deployment, "default_model", None)
-        if preset not in _PRESET_PROVIDER:
+        if preset is None or preset not in _PRESET_PROVIDER:
             raise InvalidStateTransitionError(
                 "chat",
                 f"no legacy chat provider mapped for preset {preset!r}",

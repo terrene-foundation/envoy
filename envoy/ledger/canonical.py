@@ -219,7 +219,7 @@ class CanonicalJsonEncoder(json.JSONEncoder):
         kwargs.setdefault("allow_nan", False)
         super().__init__(**kwargs)
 
-    def default(self, o: Any) -> Any:  # type: ignore[override]
+    def default(self, o: Any) -> Any:
         # Symmetric with canonical_dumps: float is rejected loudly per
         # Phase 01 int-only contract.
         if isinstance(o, float):
@@ -235,7 +235,7 @@ class CanonicalJsonEncoder(json.JSONEncoder):
             return o.hex()
         return super().default(o)
 
-    def encode(self, o: Any) -> str:  # type: ignore[override]
+    def encode(self, o: Any) -> str:
         # Pre-normalize so NFC + datetime + bytes get the same treatment
         # as canonical_dumps (json.JSONEncoder.encode bypasses default()
         # for natively-encodable types like str).

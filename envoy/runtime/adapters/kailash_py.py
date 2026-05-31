@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any
+from typing import Any, cast
 
 from envoy.envelope.canonical_bytes import canonical_bytes
 from envoy.runtime.errors import Phase02SubstrateNotWiredError
@@ -357,7 +357,7 @@ class KailashPyRuntime:
         # Phase 01: thin pass-through. apply_read_classification surfaces in
         # Wave 3 — see Phase02 substrate hint above for the classification path.
         audit_filter = filter if isinstance(filter, AuditFilter) else AuditFilter(limit=1_000_000)
-        return await self._envoy_ledger._audit_store.query(audit_filter)
+        return cast("list[Any]", await self._envoy_ledger._audit_store.query(audit_filter))
 
     async def ledger_verify_chain(self, from_: int, to: int) -> Any:
         """Forward to `EnvoyLedger.verify_chain`.
@@ -485,8 +485,10 @@ class KailashPyRuntime:
         at the boundary (the kailash API expects hex strings)."""
         from kailash.trust.signing import verify_signature  # noqa: PLC0415
 
-        sig_hex = sig.decode("ascii") if isinstance(sig, bytes) else sig
-        pubkey_hex = pubkey.decode("ascii") if isinstance(pubkey, bytes) else pubkey
+        # `sig` / `pubkey` are bytes per the signature; decode to the hex
+        # strings the kailash API expects.
+        sig_hex = sig.decode("ascii")
+        pubkey_hex = pubkey.decode("ascii")
         return verify_signature(payload, sig_hex, pubkey_hex)
 
     # ------------------------------------------------------------------

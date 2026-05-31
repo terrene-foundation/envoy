@@ -33,7 +33,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from envoy.shamir.errors import EnvoyLabelOnCardError
 
@@ -93,7 +93,7 @@ class PaperShardCard:
     def from_dict(cls, data: dict[str, Any]) -> PaperShardCard:
         return cls(
             slot_label=data["slot_label"],
-            sequence=tuple(data["sequence"]),  # type: ignore[arg-type]
+            sequence=cast("tuple[int, int]", tuple(data["sequence"])),
             threshold_reminder=data["threshold_reminder"],
             mnemonic_words=tuple(data["mnemonic_words"]),
             transcription_layout=data["transcription_layout"],

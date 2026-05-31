@@ -36,9 +36,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
-from dataflow.classification.event_payload import format_record_id_for_event
+from dataflow.classification.event_payload import (
+    ClassificationPolicy,
+    format_record_id_for_event,
+)
 
 from envoy.daily_digest.payload import DigestSummary
 from envoy.ledger.facade import EnvoyLedger
@@ -72,7 +75,7 @@ class LedgerAggregator:
         self,
         *,
         ledger: EnvoyLedger,
-        classification_policy: object | None = None,
+        classification_policy: ClassificationPolicy | None = None,
     ) -> None:
         self._ledger = ledger
         self._policy = classification_policy
@@ -156,7 +159,7 @@ class LedgerAggregator:
         Spec L66: classified record_ids become `sha256:<8hex>`; unclassified
         pass through as strings. The aggregator is the single-point filter.
         """
-        return format_record_id_for_event(self._policy, _DIGEST_MODEL_NAME, record_id)
+        return cast(str, format_record_id_for_event(self._policy, _DIGEST_MODEL_NAME, record_id))
 
     def _action_row(self, entry: EntryEnvelope) -> dict[str, Any]:
         content = entry.content or {}

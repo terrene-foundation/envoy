@@ -862,7 +862,10 @@ class EnvoyGrantMomentRuntime:
 
         # H-03 — high-stakes resolution decided on a non-primary channel.
         if pending.high_stakes and decided_on_channel_id != self._primary_channel_id:
-            err = NotPrimaryChannelError(
+            # Annotate to the outcome's `error: Exception | None` field type so
+            # the sibling branches below may assign other GrantMomentError
+            # subclasses (e.g. CrossChannelConfirmFailedError) to the same name.
+            err: Exception = NotPrimaryChannelError(
                 channel_id=decided_on_channel_id,
                 primary_channel_id=self._primary_channel_id,
             )

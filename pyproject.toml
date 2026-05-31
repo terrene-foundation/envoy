@@ -127,7 +127,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+# Match the project's minimum supported runtime (`requires-python = ">=3.11"`).
+# 3.10 hid 3.11-only stdlib surface (e.g. `asyncio.timeout`) as false
+# `[attr-defined]` errors across every channel adapter.
+python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
