@@ -92,17 +92,20 @@ CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
     "version",
 )
 
-# Subcommands wired in ``envoy/cli/main.py`` as of this test's land time:
+# Subcommands wired in ``envoy/cli/main.py``:
 #   - ``shamir`` — T-02-36 (Wave-2 trust vault recovery)
 #   - ``digest`` — Wave-4 daily-digest shard
 #   - ``posture`` / ``version`` — F5.2 Shard 1 (PR #63)
-#   - ``connection`` — F5.2 Shard 2 (Connection Vault CLI)
-# The rest are scheduled for shard 19 per ``specs/mvp-build-sequence.md``
-# line 128. When a shard wires a subcommand, append it here — the xfail in
-# the parametrized test flips to PASSED on the next run, surfacing the
-# Milestone-5 progress signal.
+#   - ``connection`` — F5.2 Shard 2 (Connection Vault CLI, PR #65)
+#   - ``model`` — F5.2 Shard 3 (BYOM picker, PR #66)
+#   - ``ledger`` — EC-4/EC-9 durable-export shard C (`envoy ledger export`)
+# ``init`` / ``chat`` / ``grant`` remain Phase 02 per ``specs/mvp-build-sequence.md``
+# line 128 + Phase-02 hooks item 9. When a shard wires a subcommand, append it
+# here — the xfail in the parametrized test flips to PASSED on the next run,
+# surfacing the Milestone-5 progress signal (strict xfail forces this update in
+# the SAME PR that wires the subcommand).
 REGISTERED_AS_OF_F5: frozenset[str] = frozenset(
-    {"shamir", "digest", "posture", "version", "connection"}
+    {"shamir", "digest", "posture", "version", "connection", "model", "ledger"}
 )
 
 
