@@ -1,23 +1,26 @@
 """`envoy digest` click subcommand group — T-04-83.
 
-Per `specs/daily-digest.md` § Interaction + § Schedule. Four subcommands:
+Per `specs/daily-digest.md` § Interaction + § Schedule. Five subcommands:
 
 - `envoy digest today`   — run the aggregate → render → fan-out pipeline now
                             and print the rendered digest (CLI delivery).
 - `envoy digest pause`   — temporarily disable the digest (`--days N`).
 - `envoy digest resume`  — re-enable a paused digest.
 - `envoy digest schedule --hour H [--tz IANA]` — set the daily delivery hour.
+- `envoy digest form --set rich|compact|event_only` — pick the digest form.
 
 Per `rules/framework-first.md`: click is the project CLI framework (argparse
 BLOCKED). Per `rules/observability.md` MUST Rule 1+2: every invocation logs via
 the framework logger bound to the root group's `cli_session_id`.
 
-All four commands wire a real `DailyDigestService` via
+All five commands wire a real `DailyDigestService` via
 `envoy.daily_digest.bootstrap.build_digest_service` — the orphan-detection
-Rule 1 production call site. `pause`/`resume`/`schedule` persist to the
+Rule 1 production call site. `pause`/`resume`/`schedule`/`form` persist to the
 Trust-store-backed digest state (survives restart). `today` runs the real
-pipeline; cross-process ledger aggregation arrives with the T-01-21 file-backed
-audit store (the project-wide Phase-01 in-memory-ledger boundary).
+pipeline. The ledger backing is durable (file-backed `SqliteAuditStore` +
+OS-keychain signing key): digest writes survive process exit so a later
+`envoy ledger export` reader (EC-4) sees them. Each command owns ledger
+teardown — `await durable.aclose()` in its `finally`.
 
 The principal is resolved from `ENVOY_PRINCIPAL_ID`; the vault path from
 `ENVOY_VAULT_PATH` (default `~/.envoy/trust_vault.db`). Both are also
@@ -76,7 +79,7 @@ def digest_today(principal: str | None, vault: str | None) -> None:
     async def _run() -> None:
         from envoy.daily_digest.bootstrap import build_digest_service
 
-        service, trust_store, channel_adapters = await build_digest_service(
+        service, trust_store, channel_adapters, durable = await build_digest_service(
             vault_path=vault_path, principal_id=pid
         )
         cli_adapter = channel_adapters["cli"]
@@ -99,6 +102,7 @@ def digest_today(principal: str | None, vault: str | None) -> None:
         finally:
             await service.stop()
             await cli_adapter.shutdown()
+            await durable.aclose()
             await trust_store.close()
 
     logger.info("envoy.digest.today.start", extra={"principal_id_prefix": pid[:8]})
@@ -117,13 +121,14 @@ def digest_pause(days: int, principal: str | None, vault: str | None) -> None:
     async def _run() -> None:
         from envoy.daily_digest.bootstrap import build_digest_service
 
-        service, trust_store, _channels = await build_digest_service(
+        service, trust_store, _channels, durable = await build_digest_service(
             vault_path=vault_path, principal_id=pid
         )
         try:
             await service.pause(pid, duration_days=days)
             click.echo(f"Digest paused for {days} day(s).")
         finally:
+            await durable.aclose()
             await trust_store.close()
 
     logger.info(
@@ -144,13 +149,14 @@ def digest_resume(principal: str | None, vault: str | None) -> None:
     async def _run() -> None:
         from envoy.daily_digest.bootstrap import build_digest_service
 
-        service, trust_store, _channels = await build_digest_service(
+        service, trust_store, _channels, durable = await build_digest_service(
             vault_path=vault_path, principal_id=pid
         )
         try:
             await service.resume(pid)
             click.echo("Digest resumed.")
         finally:
+            await durable.aclose()
             await trust_store.close()
 
     logger.info("envoy.digest.resume.start", extra={"principal_id_prefix": pid[:8]})
@@ -174,13 +180,14 @@ def digest_schedule(hour: int, timezone: str, principal: str | None, vault: str 
     async def _run() -> None:
         from envoy.daily_digest.bootstrap import build_digest_service
 
-        service, trust_store, _channels = await build_digest_service(
+        service, trust_store, _channels, durable = await build_digest_service(
             vault_path=vault_path, principal_id=pid
         )
         try:
             await service.schedule(pid, hour=hour, timezone=timezone)
             click.echo(f"Digest scheduled for {hour:02d}:00 {timezone}.")
         finally:
+            await durable.aclose()
             await trust_store.close()
 
     logger.info(
@@ -219,13 +226,14 @@ def digest_form(form: str, principal: str | None, vault: str | None) -> None:
     async def _run() -> None:
         from envoy.daily_digest.bootstrap import build_digest_service
 
-        service, trust_store, _channels = await build_digest_service(
+        service, trust_store, _channels, durable = await build_digest_service(
             vault_path=vault_path, principal_id=pid
         )
         try:
             await service.set_form_preference(pid, form=form)
             click.echo(f"Digest form preference set to {form!r}.")
         finally:
+            await durable.aclose()
             await trust_store.close()
 
     logger.info(

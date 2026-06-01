@@ -10,23 +10,27 @@ both construct the service through this single entry point.
 Per `rules/facade-manager-detection.md` Rule 3, every collaborator is
 injected explicitly; this function is the one place that assembles them.
 
-Phase-01 ledger backing: `InMemoryAuditStore` + `InMemoryKeyManager`,
-matching the project-wide Phase-01 pattern (every Tier-2 test uses
-`InMemoryAuditStore` — file-backed `SqliteAuditStore` persistence is the
-T-01-21 follow-up per `tests/tier2/test_envoy_ledger_wiring.py:19`). The
-aggregator reads via `EnvoyLedger.query()` (not `verify_chain()`), so the
-process-local signing key does not affect digest aggregation. Cross-process
-ledger persistence arrives with T-01-21; the digest wiring is unchanged when
-it does (only the audit-store backend swaps).
+Durable ledger backing (EC-4/EC-9): the ledger is opened through
+`envoy.ledger.bootstrap.open_durable_ledger` — the file-backed
+`SqliteAuditStore`, chain-rehydrated from the persisted tail — over a signing
+key persisted in the OS keychain via
+`envoy.ledger.keystore.load_or_create_ledger_key_manager`. A fresh process
+therefore reopens the SAME on-disk ledger signed by the SAME key, which is the
+cross-process property `envoy ledger export` (EC-4) and the independent
+verifier (EC-9) require. The aggregator reads via `EnvoyLedger.query()`; the
+durable backing additionally makes those writes survive process exit so a
+later `envoy ledger export` reader sees them.
+
+This is also the production call site that keeps `open_durable_ledger` +
+`load_or_create_ledger_key_manager` out of the orphan set — shards A + B1
+landed those primitives standalone (no production caller by design); B3 wires
+them here.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
-from kailash.trust.audit_store import InMemoryAuditStore
-from kailash.trust.key_manager import InMemoryKeyManager
+from typing import TYPE_CHECKING, Any
 
 from envoy.channels.cli import CLIChannelAdapter
 from envoy.daily_digest.aggregator import LedgerAggregator
@@ -39,7 +43,8 @@ from envoy.daily_digest.renderer import DigestRenderer
 from envoy.daily_digest.schedule_registry import ScheduleRegistry
 from envoy.daily_digest.scheduler import DigestScheduler
 from envoy.daily_digest.service import DailyDigestService
-from envoy.ledger.facade import EnvoyLedger
+from envoy.ledger.bootstrap import DurableLedger, open_durable_ledger
+from envoy.ledger.keystore import load_or_create_ledger_key_manager
 from envoy.model.router import EnvoyModelRouter
 from envoy.trust.store import TrustStoreAdapter
 
@@ -59,28 +64,47 @@ async def build_digest_service(
     *,
     vault_path: Path | str,
     principal_id: str,
-) -> tuple[DailyDigestService, TrustStoreAdapter, dict[str, CLIChannelAdapter]]:
-    """Assemble a fully-wired `DailyDigestService` plus its Trust store.
+    keyring_backend: Any = None,
+) -> tuple[DailyDigestService, TrustStoreAdapter, dict[str, CLIChannelAdapter], DurableLedger]:
+    """Assemble a fully-wired `DailyDigestService`, its Trust store, the channel
+    adapters, and the durable ledger whose lifetime the caller owns.
 
-    Returns `(service, trust_store, channel_adapters)`. The caller owns
-    lifecycle: channel adapters are returned UN-started (the delivery path —
-    `today` — starts the adapter it needs around `trigger_now`; the lighter
-    state subcommands — pause/resume/schedule — never touch the terminal).
-    On shutdown: `await service.stop()`, close any started adapters, then
+    Returns `(service, trust_store, channel_adapters, durable_ledger)`. The
+    caller owns lifecycle: channel adapters are returned UN-started (the
+    delivery path — `today` — starts the adapter it needs around `trigger_now`;
+    the lighter state subcommands — pause/resume/schedule/form — never touch the
+    terminal). On shutdown: `await service.stop()`, close any started adapters,
+    then `await durable_ledger.aclose()` (releases the ledger SQLite pool), then
     `await trust_store.close()`.
+
+    `keyring_backend` is dependency-injectable for tests — a pure-dict backend
+    satisfying `envoy.ledger.keystore`'s contract, so coverage exercises the
+    real durable-key persistence path without touching the host OS keychain.
+    Production passes `None` (the OS-selected backend).
     """
     trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
     await trust_store.initialize()
 
-    key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
-    await key_manager.generate_keypair(_DIGEST_SIGNING_KEY)
-    ledger = EnvoyLedger(
-        audit_store=InMemoryAuditStore(),
+    # Durable signing key (OS keychain) — the SAME key across process restarts,
+    # so a fresh `envoy ledger export` reader verifies the persisted entries +
+    # re-minted head against it (EC-4 invariant). Fail-loud: never an ephemeral
+    # fallback (which would make cross-process verification silently unverifiable).
+    key_manager = await load_or_create_ledger_key_manager(
+        principal_id=principal_id,
+        signing_key_id=_DIGEST_SIGNING_KEY,
+        keyring_backend=keyring_backend,
+    )
+    # File-backed, chain-rehydrated ledger over the vault-sibling `.audit.db`.
+    # The returned `DurableLedger` owns the SQLite pool — the caller MUST
+    # `await durable.aclose()` (threaded through every teardown below).
+    durable = await open_durable_ledger(
+        vault_path=vault_path,
         key_manager=key_manager,
         signing_key_id=_DIGEST_SIGNING_KEY,
         device_id=_DIGEST_DEVICE_ID,
         algorithm_identifier=_PHASE01_ALGO,
     )
+    ledger = durable.ledger
 
     model_router = EnvoyModelRouter()
     cli_adapter = CLIChannelAdapter()
@@ -122,7 +146,7 @@ async def build_digest_service(
             "channels": sorted(channel_adapters.keys()),
         },
     )
-    return service, trust_store, channel_adapters
+    return service, trust_store, channel_adapters, durable
 
 
 __all__ = ["build_digest_service"]
