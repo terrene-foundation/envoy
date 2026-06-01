@@ -97,28 +97,39 @@ async def open_durable_ledger(
 
     pool = AsyncSQLitePool(SQLitePoolConfig(db_path=str(db_path)))
     await pool.initialize()
-    store = SqliteAuditStore(pool)
-    await store.initialize()
+    # Once the pool is live, any failure in the steps below (schema init, chmod,
+    # the EnvoyLedger constructor's key/algorithm validation, or `rehydrate()`
+    # past the scan cap) MUST release the pool here: on failure we never return a
+    # `DurableLedger`, so the caller has no handle to `aclose()` and the SQLite
+    # pool + its aiosqlite background thread would leak. Re-raise the original
+    # error (fail-loud — cleanup never swallows it).
+    try:
+        store = SqliteAuditStore(pool)
+        await store.initialize()
 
-    # 0o600 on the audit DB *family* per rules/trust-plane-security.md MUST
-    # Rule 6 — the ledger holds signed governance records; world-readable would
-    # expose them to any local user. `store.initialize()` above ran the first
-    # write (CREATE TABLE) which, in WAL mode, materializes `<db>.audit.db-wal`
-    # + `-shm`; the pool keeps them for the process lifetime, so committed rows
-    # live in `-wal` until checkpoint. `chmod_sqlite_family` tightens the main
-    # file AND the WAL/SHM siblings (chmod-the-main-file-only would leave a
-    # world-readable `-wal`). FS-without-chmod (Windows) logs, does not fail.
-    chmod_sqlite_family(db_path, log_event="ledger.durable.chmod_failed")
+        # 0o600 on the audit DB *family* per rules/trust-plane-security.md MUST
+        # Rule 6 — the ledger holds signed governance records; world-readable
+        # would expose them to any local user. `store.initialize()` above ran
+        # the first write (CREATE TABLE) which, in WAL mode, materializes
+        # `<db>.audit.db-wal` + `-shm`; the pool keeps them for the process
+        # lifetime, so committed rows live in `-wal` until checkpoint.
+        # `chmod_sqlite_family` tightens the main file AND the WAL/SHM siblings
+        # (chmod-the-main-file-only would leave a world-readable `-wal`).
+        # FS-without-chmod (Windows) logs, does not fail.
+        chmod_sqlite_family(db_path, log_event="ledger.durable.chmod_failed")
 
-    ledger = EnvoyLedger(
-        audit_store=store,
-        key_manager=key_manager,
-        signing_key_id=signing_key_id,
-        device_id=device_id,
-        algorithm_identifier=algorithm_identifier,
-        tenant_id=tenant_id,
-    )
-    await ledger.rehydrate()
+        ledger = EnvoyLedger(
+            audit_store=store,
+            key_manager=key_manager,
+            signing_key_id=signing_key_id,
+            device_id=device_id,
+            algorithm_identifier=algorithm_identifier,
+            tenant_id=tenant_id,
+        )
+        await ledger.rehydrate()
+    except Exception:
+        await pool.close()
+        raise
 
     logger.info(
         "ledger.durable.opened",

@@ -209,3 +209,35 @@ class TestDurableLedgerPersistence:
         await dl.ledger.append(entry_type="action", content={"i": 0})
         assert dl.ledger.current_sequence == 1
         await dl.aclose()
+
+    async def test_open_durable_ledger_closes_pool_on_failure(
+        self, tmp_path: Path, shared_keymgr: InMemoryKeyManager, monkeypatch
+    ) -> None:
+        """If any step after the pool opens (here: `rehydrate`) raises,
+        `open_durable_ledger` MUST close the SQLite pool before propagating —
+        on failure no `DurableLedger` reaches the caller to `aclose()`, so an
+        unguarded pool (plus its aiosqlite background thread) would leak. B3
+        gate finding; shard-A blast radius (B3 is the first caller whose real
+        rehydrate-over-a-populated-store can raise)."""
+        from kailash.core.pool.sqlite_pool import AsyncSQLitePool
+
+        from envoy.ledger.facade import EnvoyLedger
+
+        closes: dict[str, int] = {"pool": 0}
+        real_pool_close = AsyncSQLitePool.close
+
+        async def _spy_pool_close(self: AsyncSQLitePool) -> None:
+            closes["pool"] += 1
+            await real_pool_close(self)
+
+        async def _boom(self: EnvoyLedger) -> None:
+            raise RuntimeError("rehydrate failed after pool opened")
+
+        monkeypatch.setattr(AsyncSQLitePool, "close", _spy_pool_close)
+        monkeypatch.setattr(EnvoyLedger, "rehydrate", _boom)
+
+        with pytest.raises(RuntimeError, match="rehydrate failed"):
+            await _open(tmp_path / "fail_vault.dat", shared_keymgr)
+
+        # The internal guard closed the pool exactly once on the failure path.
+        assert closes["pool"] == 1
