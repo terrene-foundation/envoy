@@ -47,6 +47,7 @@ so a future verifier can reconstruct the canonical bytes byte-identically.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,6 +82,27 @@ _GENESIS_PARENT_HASH = "sha256:" + hashlib.sha256(b"").hexdigest()
 # Sentinel key inside AuditEvent.metadata that carries the full envoy envelope.
 # Verifiers find it via `metadata["_envoy_envelope_v1"]`.
 _ENVELOPE_METADATA_KEY = "_envoy_envelope_v1"
+
+# Genesis sentinel for the *kailash* audit-store hash chain (raw 64-hex, no
+# `sha256:` prefix — distinct from `_GENESIS_PARENT_HASH`, which is the envoy
+# envelope chain's genesis). Mirrors kailash's private
+# `kailash.trust.audit_store._GENESIS_HASH`; defined locally so we do not import
+# an underscore-private upstream symbol. Used to seed the kailash-chain
+# `prev_hash` a prev_hash-requiring store (`SqliteAuditStore`) needs at the
+# first append over an empty store.
+_KAILASH_AUDIT_GENESIS_HASH = "0" * 64
+
+# Phase-01 upper bound on the number of events `rehydrate()` will scan to
+# reconstruct chain state. kailash's `AuditFilter` exposes only oldest-first
+# `ORDER BY rowid ASC LIMIT` — no descending / tail / offset — so the chain
+# *tail* cannot be fetched without materializing the scan set through the
+# public store protocol. At Phase-01 (single-principal, single-device) scale
+# this set is small (a few MB). A high-volume / multi-tenant ledger (Phase 02+)
+# needs a bounded tail query, which depends on an upstream kailash AuditFilter
+# descending/tail capability (tracked as a Phase-02 hardening). The guard in
+# `rehydrate()` refuses fail-LOUD if the scan hits this cap rather than
+# silently restoring chain state from a truncated (wrong) tail.
+_REHYDRATE_SCAN_LIMIT = 1_000_000
 
 
 class _KeyManagerProtocol(Protocol):
@@ -192,6 +214,23 @@ class EnvoyLedger:
         self._head: HeadCommitment | None = None
         self._halted: bool = False
 
+        # The kailash audit store keeps its OWN hash chain (raw 64-hex
+        # prev_hash/hash, defense-in-depth alongside the envoy envelope chain).
+        # The two concrete stores expose that chain differently:
+        #   - InMemoryAuditStore.create_event() reads its own `self.last_hash`;
+        #     it has NO `prev_hash` parameter.
+        #   - SqliteAuditStore.create_event(prev_hash=...) REQUIRES the caller
+        #     to supply the chain-tail hash (file-backed: no sync last_hash).
+        # Detect which contract this store uses ONCE (also matches test wrapper
+        # stores that forward via `**kwargs`), then thread the kailash-chain
+        # prev_hash through `_envelope_to_audit_event` only when required.
+        # `rehydrate()` restores `_kailash_prev_hash` from a populated store.
+        self._store_needs_prev_hash: bool = (
+            "prev_hash"
+            in inspect.signature(audit_store.create_event).parameters  # type: ignore[attr-defined]
+        )
+        self._kailash_prev_hash: str = _KAILASH_AUDIT_GENESIS_HASH
+
     # ------------------------------------------------------------------
     # Public surface
     # ------------------------------------------------------------------
@@ -203,6 +242,119 @@ class EnvoyLedger:
     @property
     def is_halted(self) -> bool:
         return self._halted
+
+    @property
+    def current_sequence(self) -> int:
+        """Highest sequence number this ledger has issued or observed.
+
+        `0` before any append on a fresh chain; after `rehydrate()` it reflects
+        the persisted tail. Public read accessor so callers / tests do not have
+        to reach into chain-internal state (`head_commitment()` is `None` after
+        rehydrate until the first post-rehydrate append, so it cannot serve
+        this role).
+        """
+        return self._sequence
+
+    async def rehydrate(self) -> None:
+        """Reconstruct in-memory chain counters from the backing audit store.
+
+        A fresh process that constructs an `EnvoyLedger` over a *populated*
+        durable store (e.g. `SqliteAuditStore`) starts with `_sequence = 0`,
+        `_last_entry_id = <genesis>`, `_lamport_time = 0`. Appending in that
+        state would re-issue sequence 1 with a genesis parent — *forking* the
+        chain. `rehydrate()` reads the persisted envelopes and restores the
+        counters so the next `append()` continues the existing chain.
+
+        Phase 01 narrow scope — counters only:
+
+        - `_head` is deliberately NOT restored here. Re-minting the head
+          re-signs it (`_mint_head_commitment` calls `key_manager.sign_with_key`),
+          which requires a *durable* signing key: a fresh process's
+          `InMemoryKeyManager` would sign with a different key than the
+          persisted entries, so a re-minted head + the persisted entries would
+          carry mismatched signatures. Head rehydration + durable-key
+          persistence land together at T-01-13. Until then `_head` stays
+          `None` after rehydrate, which is correct for the two surfaces that
+          run before T-01-13: `append()` handles `None` (the monotonic guard
+          in `_mint_head_commitment` is simply skipped on the first
+          post-rehydrate append — the new entry still chains onto the
+          persisted tail via `_last_entry_id`), and `export()` correctly
+          refuses (it needs the signed head).
+
+        Idempotent; a no-op on an empty store. Safe to call after every
+        construction — the durable writers and the `envoy ledger export`
+        reader all open through `envoy.ledger.bootstrap.open_durable_ledger`,
+        which calls this.
+
+        Scale bound: reconstructs from a scan capped at `_REHYDRATE_SCAN_LIMIT`
+        (see that constant — kailash's `AuditFilter` is oldest-first only, so
+        the tail needs a full scan). Acceptable at Phase-01 scale; a high-volume
+        ledger raises `LedgerError` at the cap (fail-loud) and needs the
+        Phase-02 bounded tail query.
+
+        Raises:
+            LedgerError: if the persisted ledger exceeds `_REHYDRATE_SCAN_LIMIT`.
+        """
+        from kailash.trust.audit_store import AuditFilter
+
+        events = await self._audit_store.query(AuditFilter(limit=_REHYDRATE_SCAN_LIMIT))
+        if len(events) >= _REHYDRATE_SCAN_LIMIT:
+            # The scan hit the Phase-01 cap. kailash's AuditFilter returns
+            # oldest-first, so the returned set is NOT the chain tail — restoring
+            # from it would silently rebuild chain state from the wrong entry.
+            # Refuse fail-LOUD instead. The real fix (a bounded tail query) needs
+            # an upstream kailash AuditFilter descending capability; see
+            # `_REHYDRATE_SCAN_LIMIT` (tracked Phase-02 hardening).
+            from envoy.ledger.errors import LedgerError
+
+            raise LedgerError(
+                f"ledger exceeds the Phase-01 rehydrate scan bound "
+                f"({_REHYDRATE_SCAN_LIMIT} events); chain-tail reconstruction needs "
+                f"the Phase-02 bounded tail query (upstream kailash AuditFilter "
+                f"descending support)"
+            )
+        if events:
+            # `query()` returns events in append (rowid) order, so the last
+            # element is the kailash-chain tail; its raw 64-hex `hash` is the
+            # `prev_hash` the next append must chain onto for a
+            # prev_hash-requiring store. Restored regardless of envoy-envelope
+            # presence (the kailash chain spans every event type).
+            self._kailash_prev_hash = events[-1].hash
+        envelopes = [
+            e.metadata[_ENVELOPE_METADATA_KEY]
+            for e in events
+            if _ENVELOPE_METADATA_KEY in (e.metadata or {})
+        ]
+        if not envelopes:
+            return
+
+        envelopes.sort(key=lambda env: env["sequence"])
+        tail = envelopes[-1]
+        self._sequence = tail["sequence"]
+        self._last_entry_id = tail["entry_id"]
+        # The Lamport clock advances past every observed event (the next
+        # append does max-then-+1), so restore from the global maximum.
+        self._lamport_time = max(env["lamport_clock"]["lamport_time"] for env in envelopes)
+        # local_seq is a PER-DEVICE monotonic counter — restore it only from
+        # THIS device's entries (Phase 01 is single-device; this stays correct
+        # when Phase 02 admits multiple devices into one chain).
+        this_device = f"device:{self._device_id}"
+        local_seqs = [
+            env["lamport_clock"]["local_seq"]
+            for env in envelopes
+            if env.get("signed_by") == this_device
+        ]
+        self._local_seq = max(local_seqs) if local_seqs else 0
+
+        logger.info(
+            "ledger.rehydrate.ok",
+            extra={
+                "restored_sequence": self._sequence,
+                "restored_lamport_time": self._lamport_time,
+                "restored_local_seq": self._local_seq,
+                "entry_count": len(envelopes),
+            },
+        )
 
     async def append(
         self,
@@ -359,6 +511,11 @@ class EnvoyLedger:
         self._sequence = tentative_sequence
         self._last_entry_id = entry_id
         self._head = new_head
+        # Advance the kailash-chain tail so the NEXT prev_hash-requiring
+        # create_event() chains onto this event. Harmless for in-memory stores
+        # (which ignore `_kailash_prev_hash`); only advanced after a successful
+        # persist, mirroring the H-1 atomicity invariant above.
+        self._kailash_prev_hash = audit_event.hash
 
         return entry_id
 
@@ -675,14 +832,23 @@ class EnvoyLedger:
         # verify_chain; create_event() is the concrete store's factory (see
         # docstring above). Annotate the result so dataclasses.replace() below
         # round-trips the AuditEvent type instead of leaking Any.
+        create_kwargs: dict[str, Any] = {
+            "actor": envelope.signed_by,
+            "action": envelope.type,
+            "resource": "ledger.entry",
+            "outcome": "success",
+            "metadata": {_ENVELOPE_METADATA_KEY: envelope_dict},
+            "event_id": envelope.entry_id,
+            "timestamp": envelope.timestamp,
+        }
+        # A file-backed store (`SqliteAuditStore`) cannot read a sync
+        # `last_hash`, so it requires the kailash-chain `prev_hash` explicitly;
+        # the in-memory store reads its own `last_hash` and rejects the kwarg.
+        # `_store_needs_prev_hash` (resolved at construction) selects the path.
+        if self._store_needs_prev_hash:
+            create_kwargs["prev_hash"] = self._kailash_prev_hash
         event: AuditEvent = self._audit_store.create_event(  # type: ignore[attr-defined]
-            actor=envelope.signed_by,
-            action=envelope.type,
-            resource="ledger.entry",
-            outcome="success",
-            metadata={_ENVELOPE_METADATA_KEY: envelope_dict},
-            event_id=envelope.entry_id,
-            timestamp=envelope.timestamp,
+            **create_kwargs,
         )
         # Per security review L-1: propagate tenant_id to AuditEvent so a
         # multi-tenant query (Phase 03) can filter by it. Phase 01 single-
@@ -794,6 +960,7 @@ class EnvoyLedger:
         self._local_seq += 1
         self._sequence = halt_sequence
         self._last_entry_id = halt_entry_id
+        self._kailash_prev_hash = halt_audit_event.hash
 
         logger.warning(
             "ledger.halted_by_rollback",
