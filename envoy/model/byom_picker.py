@@ -68,14 +68,21 @@ _CHOICE_API_KEY_ENV: Final[dict[str, str]] = {
     "openai_compatible": "ENVOY_CUSTOM_API_KEY",
 }
 
-#: Per-choice env-var name carrying the user-supplied model name.
-_CHOICE_MODEL_ENV: Final[dict[str, str]] = {
+#: Per-choice env-var name carrying the user-supplied model name. Public
+#: (re-exported in ``__all__``) so read-only surfaces — e.g. ``envoy model
+#: show`` — can map the active selector back to the model env-key without
+#: re-stating the mapping (drift per `rules/specs-authority.md` MUST Rule 9).
+CHOICE_MODEL_ENV: Final[dict[str, str]] = {
     "ollama": "OLLAMA_DEFAULT_MODEL",
     "anthropic": "ANTHROPIC_MODEL",
     "openai": "OPENAI_PROD_MODEL",
     "deepseek": "DEEPSEEK_MODEL",
     "openai_compatible": "ENVOY_CUSTOM_MODEL",
 }
+
+#: Backward-compatible private alias retained for the in-module call sites
+#: below; new readers SHOULD import the public :data:`CHOICE_MODEL_ENV`.
+_CHOICE_MODEL_ENV: Final[dict[str, str]] = CHOICE_MODEL_ENV
 
 #: Per-choice service-identifier under which the vault key is stored.
 _CHOICE_SERVICE_IDENTIFIER: Final[dict[str, str]] = {
@@ -354,4 +361,4 @@ def _write_env(*, env_path: str, entries: dict[str, str]) -> tuple[str, ...]:
     return tuple(entries.keys())
 
 
-__all__ = ["PickResult", "SUPPORTED_CHOICES", "byom_pick"]
+__all__ = ["CHOICE_MODEL_ENV", "PickResult", "SUPPORTED_CHOICES", "byom_pick"]
