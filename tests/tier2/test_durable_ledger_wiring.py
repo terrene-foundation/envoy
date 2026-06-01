@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 from kailash.trust.key_manager import InMemoryKeyManager
 
+from envoy.ledger import ExportBundle, canonical_dumps, compute_receipt_hash
 from envoy.ledger.bootstrap import DurableLedger, audit_db_path, open_durable_ledger
 
 
@@ -114,6 +115,89 @@ class TestDurableLedgerPersistence:
         assert head.head_entry_id == e5
 
         await dl2.aclose()
+
+    async def test_export_succeeds_and_verifies_after_rehydrate(
+        self, tmp_path: Path, shared_keymgr: InMemoryKeyManager
+    ) -> None:
+        """A FRESH process can `export()` a populated durable ledger — the EC-4
+        cross-process proof. `rehydrate()` re-mints the signed head (without it,
+        `export()` refuses because `self._head` is None even over a populated
+        store), and the bundle's head + entry signatures verify under the same
+        (durable, here shared) key."""
+        vault_path = tmp_path / "trust_vault.dat"
+
+        # Writer process: append 3 entries, then close.
+        dl1 = await _open(vault_path, shared_keymgr)
+        for i in range(3):
+            await dl1.ledger.append(entry_type="action", content={"i": i})
+        await dl1.aclose()
+
+        # Reader process: a FRESH ledger that did NOT append anything — only
+        # rehydrate() ran. Before B2 this raised LedgerError (head was None).
+        dl2 = await _open(vault_path, shared_keymgr)
+        bundle = await dl2.ledger.export()
+        assert isinstance(bundle, ExportBundle)
+        assert len(bundle.entries) == 3
+
+        # Head matches the persisted tail (verifier invariant 6).
+        head = bundle.head_commitment
+        assert head.head_sequence == 3
+        assert head.head_entry_id == bundle.entries[-1]["entry_id"]
+
+        # The re-minted head signature verifies under the durable key — the
+        # EC-4 invariant 7 the head rehydration exists to satisfy.
+        pub = shared_keymgr.get_public_key(SIGNING_KEY_ID)
+        assert pub is not None
+        head_payload = canonical_dumps(
+            {
+                "head_sequence": head.head_sequence,
+                "head_entry_id": head.head_entry_id,
+                "signed_at": head.signed_at,
+            }
+        )
+        assert await shared_keymgr.verify(head_payload, head.signature_hex, pub) is True
+
+        # Bundle self-integrity (invariant 8) + every entry signature
+        # (verify_chain) hold over the cross-process bundle.
+        assert compute_receipt_hash(bundle.to_dict_minus_receipt()) == bundle.receipt_hash
+        report = await dl2.ledger.verify_chain()
+        assert report.success is True
+        assert report.entries_verified == 3
+
+        await dl2.aclose()
+
+    async def test_verify_fails_when_rehydrate_key_differs_from_entry_key(
+        self, tmp_path: Path, shared_keymgr: InMemoryKeyManager
+    ) -> None:
+        """The security boundary this shard establishes: a fresh process whose
+        signing key DIFFERS from the key that signed the persisted entries
+        (the pre-B3 ephemeral-key state) MUST fail verification LOUD — never
+        silently 'verify' a head it re-minted under the wrong key. This is the
+        fail-loud property the durable keychain key (B1+B3) later closes by
+        making the two keys identical across processes."""
+        vault_path = tmp_path / "trust_vault.dat"
+
+        # Writer: 3 entries signed by key A.
+        dl1 = await _open(vault_path, shared_keymgr)
+        for i in range(3):
+            await dl1.ledger.append(entry_type="action", content={"i": i})
+        await dl1.aclose()
+
+        # Reader: a FRESH, DIFFERENT keypair (same key_id, different key bytes).
+        keymgr_b = InMemoryKeyManager()
+        await keymgr_b.generate_keypair(SIGNING_KEY_ID)
+        dl2 = await _open(vault_path, keymgr_b)
+
+        # rehydrate re-minted the head under key B, but the entries carry key A
+        # signatures → verify_chain checks them against key B's pubkey and MUST
+        # report failure (no spoof, no silent pass).
+        report = await dl2.ledger.verify_chain()
+        assert report.success is False
+
+        await dl2.aclose()
+        keys = getattr(keymgr_b, "_keys", None)
+        if isinstance(keys, dict):
+            keys.clear()
 
     async def test_rehydrate_is_noop_on_empty_store(
         self, tmp_path: Path, shared_keymgr: InMemoryKeyManager

@@ -265,21 +265,27 @@ class EnvoyLedger:
         chain. `rehydrate()` reads the persisted envelopes and restores the
         counters so the next `append()` continues the existing chain.
 
-        Phase 01 narrow scope — counters only:
+        Restores the chain counters AND re-mints the signed head commitment:
 
-        - `_head` is deliberately NOT restored here. Re-minting the head
-          re-signs it (`_mint_head_commitment` calls `key_manager.sign_with_key`),
-          which requires a *durable* signing key: a fresh process's
-          `InMemoryKeyManager` would sign with a different key than the
-          persisted entries, so a re-minted head + the persisted entries would
-          carry mismatched signatures. Head rehydration + durable-key
-          persistence land together at T-01-13. Until then `_head` stays
-          `None` after rehydrate, which is correct for the two surfaces that
-          run before T-01-13: `append()` handles `None` (the monotonic guard
-          in `_mint_head_commitment` is simply skipped on the first
-          post-rehydrate append — the new entry still chains onto the
-          persisted tail via `_last_entry_id`), and `export()` correctly
-          refuses (it needs the signed head).
+        - Counters (`_sequence` / `_last_entry_id` / `_lamport_time` /
+          `_local_seq` / the kailash-chain `_kailash_prev_hash`) so the next
+          `append()` continues the existing chain instead of forking it.
+        - `_head` is re-minted from the persisted tail
+          (`_mint_head_commitment(entry_id=<tail>, sequence=<tail>)`),
+          re-signing it with the injected signing key. This is what lets
+          `export()` run on a fresh process: `export()` reads `self._head` and
+          without this would refuse (head `None`) even over a populated store.
+          The re-minted head carries a fresh `signed_at` each process — that is
+          correct: the head is internally consistent (its signature covers its
+          own `signed_at`) and the verifier checks it against the trust-anchor
+          public key, not against a fixed timestamp.
+
+        Cross-process *verifiability* of the re-minted head + the persisted
+        entries requires a DURABLE signing key (the same key signed both) —
+        provided by `envoy.ledger.keystore` and wired in at the digest/export
+        bootstrap. With an ephemeral key the re-mint is still well-formed but
+        the head and entry signatures would not share a key; that path has no
+        cross-process export in production.
 
         Idempotent; a no-op on an empty store. Safe to call after every
         construction — the durable writers and the `envoy ledger export`
@@ -346,12 +352,22 @@ class EnvoyLedger:
         ]
         self._local_seq = max(local_seqs) if local_seqs else 0
 
+        # Re-mint the signed head from the restored tail so `export()` (which
+        # reads `self._head`) works on a fresh process. `_head` is None here
+        # (rehydrate runs before any append), so the monotonic guard in
+        # `_mint_head_commitment` is skipped — it just signs a head over the
+        # tail entry with the injected key.
+        self._head = self._mint_head_commitment(
+            entry_id=self._last_entry_id, sequence=self._sequence
+        )
+
         logger.info(
             "ledger.rehydrate.ok",
             extra={
                 "restored_sequence": self._sequence,
                 "restored_lamport_time": self._lamport_time,
                 "restored_local_seq": self._local_seq,
+                "restored_head": True,
                 "entry_count": len(envelopes),
             },
         )
