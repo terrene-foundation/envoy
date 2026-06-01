@@ -43,7 +43,13 @@ from envoy.daily_digest.renderer import DigestRenderer
 from envoy.daily_digest.schedule_registry import ScheduleRegistry
 from envoy.daily_digest.scheduler import DigestScheduler
 from envoy.daily_digest.service import DailyDigestService
-from envoy.ledger.bootstrap import DurableLedger, open_durable_ledger
+from envoy.ledger.bootstrap import (
+    LEDGER_ALGORITHM_IDENTIFIER,
+    LEDGER_DEVICE_ID,
+    LEDGER_SIGNING_KEY_ID,
+    DurableLedger,
+    open_durable_ledger,
+)
 from envoy.ledger.keystore import load_or_create_ledger_key_manager
 from envoy.model.router import EnvoyModelRouter
 from envoy.trust.store import TrustStoreAdapter
@@ -53,11 +59,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Phase-01 3-key algorithm identifier (sig + hash + shamir) per
-# specs/trust-lineage.md L24 — the wire form every EnvoyLedger entry carries.
-_PHASE01_ALGO = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
-_DIGEST_DEVICE_ID = "envoy-digest-device"
-_DIGEST_SIGNING_KEY = "envoy-digest-signing-key"
+# The durable-ledger identity (signing key / device / algorithm) is shared with
+# the `envoy ledger export` reader — single source of truth in
+# `envoy.ledger.bootstrap` (LEDGER_SIGNING_KEY_ID / LEDGER_DEVICE_ID /
+# LEDGER_ALGORITHM_IDENTIFIER) so writer and reader open the SAME ledger.
 
 
 async def build_digest_service(
@@ -102,7 +107,7 @@ async def build_digest_service(
         # verification silently unverifiable).
         key_manager = await load_or_create_ledger_key_manager(
             principal_id=principal_id,
-            signing_key_id=_DIGEST_SIGNING_KEY,
+            signing_key_id=LEDGER_SIGNING_KEY_ID,
             keyring_backend=keyring_backend,
         )
         # File-backed, chain-rehydrated ledger over the vault-sibling `.audit.db`.
@@ -111,9 +116,9 @@ async def build_digest_service(
         durable = await open_durable_ledger(
             vault_path=vault_path,
             key_manager=key_manager,
-            signing_key_id=_DIGEST_SIGNING_KEY,
-            device_id=_DIGEST_DEVICE_ID,
-            algorithm_identifier=_PHASE01_ALGO,
+            signing_key_id=LEDGER_SIGNING_KEY_ID,
+            device_id=LEDGER_DEVICE_ID,
+            algorithm_identifier=LEDGER_ALGORITHM_IDENTIFIER,
         )
         ledger = durable.ledger
 

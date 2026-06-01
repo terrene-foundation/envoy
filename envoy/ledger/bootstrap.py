@@ -42,6 +42,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── Production durable-ledger identity ───────────────────────────────────────
+# The (signing-key id, device id, algorithm identifier) triple every WRITER
+# (the daily digest today; grant / boundary-conversation later) AND the
+# `envoy ledger export` READER resolve through, so they all open the SAME
+# per-principal durable ledger. A drift between writer and reader would
+# silently open a different — or empty — ledger and break cross-process export
+# (EC-4) with no error, which is exactly why these live in ONE place.
+#
+# The string VALUES are retained verbatim from the digest's original wiring so
+# existing on-disk ledgers + their keychain key entries stay readable; only the
+# home and the names are promoted here. Do NOT change the values — that would
+# orphan every ledger already signed under the old key id.
+LEDGER_SIGNING_KEY_ID = "envoy-digest-signing-key"
+LEDGER_DEVICE_ID = "envoy-digest-device"
+# Phase-01 3-key algorithm identifier (sig + hash + shamir) per
+# specs/trust-lineage.md — the wire form every EnvoyLedger entry carries.
+LEDGER_ALGORITHM_IDENTIFIER: dict[str, str] = {
+    "sig": "ed25519",
+    "hash": "sha256",
+    "shamir": "slip39",
+}
+
 
 def audit_db_path(vault_path: Path | str) -> Path:
     """Resolve the durable ledger's SQLite file for a given vault path.
@@ -138,4 +160,11 @@ async def open_durable_ledger(
     return DurableLedger(ledger=ledger, _pool=pool, _audit_store=store)
 
 
-__all__ = ["DurableLedger", "audit_db_path", "open_durable_ledger"]
+__all__ = [
+    "LEDGER_ALGORITHM_IDENTIFIER",
+    "LEDGER_DEVICE_ID",
+    "LEDGER_SIGNING_KEY_ID",
+    "DurableLedger",
+    "audit_db_path",
+    "open_durable_ledger",
+]

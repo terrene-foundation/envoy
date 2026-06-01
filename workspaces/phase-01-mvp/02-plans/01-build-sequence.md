@@ -331,7 +331,7 @@ Convergence: EC-3 + EC-7 + EC-8 met = Wave 5 may launch.
 Trigger: shard 19 packaging green.
 
 - `pipx install envoy-agent` works on macOS / Linux desktop-env / Windows x86_64.
-- All 11 CLI subcommands functional.
+- 7 of 10 canonical CLI subcommands functional in Phase 01: `version`, `posture`, `connection`, `model`, `shamir`, `digest`, and `ledger {export}` — the 6 whose backing state is process-independent, plus `ledger export`, which the durable-ledger workstream (file-backed `SqliteAuditStore` + OS-keychain signing key) made buildable as a one-shot CLI. The remaining 3 (`init`, `chat`, `grant`) stay in Phase 02; they share one blocker class (no durable pending-grant / long-running-session substrate in Phase 01) — see `specs/mvp-build-sequence.md` Phase 02 hooks item 9. **[RE-SCOPED 2026-06-01 per `workspaces/phase-01-mvp/journal/0048-DECISION-f5.2-closed-6of10-phase01-cli-ceiling.md` (6/10 ceiling) → re-scoped again to 7/10 per `workspaces/phase-01-mvp/journal/0049-DECISION-c-ledger-export-delivered-7of10.md` (ledger export delivered); both user-gated; supersede the prior "All 11 CLI subcommands functional" criterion.]**
 - `NOTICES` correct; LGPL-3.0+ python-telegram-bot disclosure present.
 - All 9 ECs met.
 - 2 consecutive `/redteam` rounds at 0 CRIT + 0 HIGH (EC-6 acceptance).
