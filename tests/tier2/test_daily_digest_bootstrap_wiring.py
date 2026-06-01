@@ -27,6 +27,7 @@ import pytest
 
 from envoy.daily_digest import DailyDigestService
 from envoy.daily_digest.bootstrap import build_digest_service
+from envoy.ledger.keystore import LedgerKeyUnavailableError
 from envoy.trust.store import TrustStoreAdapter
 
 _PID = "principal-bootstrap-01"
@@ -49,6 +50,16 @@ class _MemBackend:
         if key not in self._d:
             raise keyring.errors.PasswordDeleteError("not found")
         del self._d[key]
+
+
+class _FailingBackend(_MemBackend):
+    """Simulates a locked/unavailable OS keychain — read+write both raise."""
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise keyring.errors.KeyringError("keychain locked")
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise keyring.errors.KeyringError("keychain locked")
 
 
 @pytest.fixture
@@ -181,3 +192,31 @@ class TestBootstrapWiring:
         finally:
             await durable2.aclose()
             await store2.close()
+
+    @pytest.mark.asyncio
+    async def test_build_failure_closes_trust_store_no_leak(self, vault_path, monkeypatch) -> None:
+        """Partial-construction guard (B3 gate finding): if the keychain load
+        fails AFTER `trust_store.initialize()`, `build_digest_service` MUST close
+        the trust store before re-raising. The caller never receives the 4-tuple,
+        so its `finally` cannot run — without the guard the trust-store SQLite
+        handles leak with no owner (per failed tick on the EC-3 cron daemon)."""
+        closed: dict[str, int] = {"trust_store": 0}
+        real_close = TrustStoreAdapter.close
+
+        async def _spy_close(self: TrustStoreAdapter) -> None:
+            closed["trust_store"] += 1
+            await real_close(self)
+
+        monkeypatch.setattr(TrustStoreAdapter, "close", _spy_close)
+
+        # A locked keychain → fail-loud LedgerKeyUnavailableError, raised in the
+        # window AFTER trust_store.initialize() — the exact leak path.
+        with pytest.raises(LedgerKeyUnavailableError):
+            await build_digest_service(
+                vault_path=vault_path,
+                principal_id=_PID,
+                keyring_backend=_FailingBackend(),
+            )
+
+        # The guard ran trust_store.close() exactly once on the failure path.
+        assert closed["trust_store"] == 1

@@ -85,68 +85,91 @@ async def build_digest_service(
     trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
     await trust_store.initialize()
 
-    # Durable signing key (OS keychain) — the SAME key across process restarts,
-    # so a fresh `envoy ledger export` reader verifies the persisted entries +
-    # re-minted head against it (EC-4 invariant). Fail-loud: never an ephemeral
-    # fallback (which would make cross-process verification silently unverifiable).
-    key_manager = await load_or_create_ledger_key_manager(
-        principal_id=principal_id,
-        signing_key_id=_DIGEST_SIGNING_KEY,
-        keyring_backend=keyring_backend,
-    )
-    # File-backed, chain-rehydrated ledger over the vault-sibling `.audit.db`.
-    # The returned `DurableLedger` owns the SQLite pool — the caller MUST
-    # `await durable.aclose()` (threaded through every teardown below).
-    durable = await open_durable_ledger(
-        vault_path=vault_path,
-        key_manager=key_manager,
-        signing_key_id=_DIGEST_SIGNING_KEY,
-        device_id=_DIGEST_DEVICE_ID,
-        algorithm_identifier=_PHASE01_ALGO,
-    )
-    ledger = durable.ledger
-
-    model_router = EnvoyModelRouter()
-    cli_adapter = CLIChannelAdapter()
-    channel_adapters = {"cli": cli_adapter}
-
-    schedule_registry = ScheduleRegistry(trust_store=trust_store)
-    # Ensure the CLI channel is bound as active+primary when no binding exists
-    # yet — the CLI delivers to the terminal, so "cli" is the principal's
-    # default channel. Idempotent: an existing binding (e.g. a Tier-3 test
-    # that bound bot channels) is left untouched.
-    if await schedule_registry.active_channels(principal_id) == ():
-        await schedule_registry.set_active_channels(
-            principal_id, channel_ids=["cli"], primary="cli"
+    # Partial-construction safety: until the 4-tuple is returned the caller holds
+    # no handle, so its `finally` cannot run. Any failure in this window — the
+    # fail-loud keychain errors, a durable-open / rehydrate error, or a
+    # trust-store write while binding the default channel — MUST release the
+    # already-acquired resources here, or the trust-store SQLite handles and
+    # (once opened) the durable ledger pool leak with no owner. On the EC-3
+    # in-process cron daemon that would accumulate per failed tick. Cleanup
+    # re-raises the original error (fail-loud — never swallowed).
+    durable: DurableLedger | None = None
+    try:
+        # Durable signing key (OS keychain) — the SAME key across process
+        # restarts, so a fresh `envoy ledger export` reader verifies the
+        # persisted entries + re-minted head against it (EC-4 invariant).
+        # Fail-loud: never an ephemeral fallback (which would make cross-process
+        # verification silently unverifiable).
+        key_manager = await load_or_create_ledger_key_manager(
+            principal_id=principal_id,
+            signing_key_id=_DIGEST_SIGNING_KEY,
+            keyring_backend=keyring_backend,
         )
-    pause_state = PauseDisableState(trust_store=trust_store)
-    backfill = BackfillTracker(trust_store=trust_store)
-    low_engagement = LowEngagementTracker(trust_store=trust_store)
-    duress_reader = DuressBannerReader(trust_store=trust_store, schedule_registry=schedule_registry)
-    aggregator = LedgerAggregator(ledger=ledger)
-    renderer = DigestRenderer(model_router=model_router, ledger=ledger)
-    fanout = PerChannelFanout(channel_adapters=channel_adapters, ledger=ledger)
+        # File-backed, chain-rehydrated ledger over the vault-sibling `.audit.db`.
+        # The returned `DurableLedger` owns the SQLite pool — the caller MUST
+        # `await durable.aclose()` (threaded through every teardown below).
+        durable = await open_durable_ledger(
+            vault_path=vault_path,
+            key_manager=key_manager,
+            signing_key_id=_DIGEST_SIGNING_KEY,
+            device_id=_DIGEST_DEVICE_ID,
+            algorithm_identifier=_PHASE01_ALGO,
+        )
+        ledger = durable.ledger
 
-    service = DailyDigestService(
-        scheduler=DigestScheduler(),
-        aggregator=aggregator,
-        renderer=renderer,
-        fanout=fanout,
-        backfill=backfill,
-        pause_state=pause_state,
-        low_engagement=low_engagement,
-        duress_reader=duress_reader,
-        schedule_registry=schedule_registry,
-    )
+        model_router = EnvoyModelRouter()
+        cli_adapter = CLIChannelAdapter()
+        channel_adapters = {"cli": cli_adapter}
 
-    logger.info(
-        "daily_digest.bootstrap.built",
-        extra={
-            "principal_id_prefix": principal_id[:8],
-            "channels": sorted(channel_adapters.keys()),
-        },
-    )
-    return service, trust_store, channel_adapters, durable
+        schedule_registry = ScheduleRegistry(trust_store=trust_store)
+        # Ensure the CLI channel is bound as active+primary when no binding
+        # exists yet — the CLI delivers to the terminal, so "cli" is the
+        # principal's default channel. Idempotent: an existing binding (e.g. a
+        # Tier-3 test that bound bot channels) is left untouched.
+        if await schedule_registry.active_channels(principal_id) == ():
+            await schedule_registry.set_active_channels(
+                principal_id, channel_ids=["cli"], primary="cli"
+            )
+        pause_state = PauseDisableState(trust_store=trust_store)
+        backfill = BackfillTracker(trust_store=trust_store)
+        low_engagement = LowEngagementTracker(trust_store=trust_store)
+        duress_reader = DuressBannerReader(
+            trust_store=trust_store, schedule_registry=schedule_registry
+        )
+        aggregator = LedgerAggregator(ledger=ledger)
+        renderer = DigestRenderer(model_router=model_router, ledger=ledger)
+        fanout = PerChannelFanout(channel_adapters=channel_adapters, ledger=ledger)
+
+        service = DailyDigestService(
+            scheduler=DigestScheduler(),
+            aggregator=aggregator,
+            renderer=renderer,
+            fanout=fanout,
+            backfill=backfill,
+            pause_state=pause_state,
+            low_engagement=low_engagement,
+            duress_reader=duress_reader,
+            schedule_registry=schedule_registry,
+        )
+
+        logger.info(
+            "daily_digest.bootstrap.built",
+            extra={
+                "principal_id_prefix": principal_id[:8],
+                "channels": sorted(channel_adapters.keys()),
+            },
+        )
+        return service, trust_store, channel_adapters, durable
+    except Exception:
+        # Release in reverse acquisition order. `trust_store.close()` runs even
+        # if `durable.aclose()` raises, so a secondary cleanup error never
+        # strands the trust store; then re-raise the original failure.
+        try:
+            if durable is not None:
+                await durable.aclose()
+        finally:
+            await trust_store.close()
+        raise
 
 
 __all__ = ["build_digest_service"]
