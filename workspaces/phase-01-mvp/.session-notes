@@ -72,17 +72,30 @@ Note: shard 19 § 3.4's own table lists `budget`/`channel` instead of
 later spec-layer reconciliation) is authoritative and drops budget/channel in
 favor of grant/connection/model/version. If that ever bites, re-reconcile.
 
-## Next F5.2 shards (for human direction)
+## F5.2 progress (2026-06-01)
 
-Remaining 6 canonical subcommands to wire: `init`, `chat`, `ledger` (blocked
-on T-01-21), `grant`, `connection`, `model`.
-- **HIGH value, HEAVY**: `init` (vault create + Genesis seed + .env + BC entry;
-  4–5 invariants) and `chat` (the S0→S10 `BoundaryConversationRuntime` dialogue
-  + resume). The EC-1/EC-7 onboarding spine. Each is its own shard.
-- **MID value, posture-comparable**: `connection`, `model`, `grant` — route
-  already-persistent primitives. Each needs a posture-style investigation
-  (which primitive, read/write API, integration boundaries) before building.
-- IN PROGRESS: `chat` — building next per user direction (2026-06-01).
+Registered: `shamir`, `digest`, `posture`, `version`, `connection` (5).
+- `connection` (list/add/remove) shipped this session — OS-keychain Connection
+  Vault, keyed by `principal_genesis_id = sha256(principal_id)` (same hash
+  convention as the posture bridge + `_hex_principal`). Secret is hidden-prompt
+  / `--secret-stdin`, NEVER a CLI arg. Real keychain round-trip walked.
+
+Remaining canonical subcommands: `init`, `chat`, `ledger`, `grant`, `model`.
+- **`chat`/`init` (onboarding arc) — BLOCKED on deferred infrastructure**,
+  needs a dedicated architecture-first effort. `chat` requires a 6-dep
+  production `build_boundary_conversation_runtime()` bootstrap (none exists)
+  + a live LLM. The Shamir leg needs a production `CommitmentBinder` that was
+  deferred to "T-02-35" and never built — AND there's no Genesis-schema slot
+  for `shard_public_commitments` (GenesisSeed lacks it). Decide WHERE Shamir
+  commitments persist (Genesis-schema change vs vault metadata — a spec
+  decision) before building the binder. `init` then = vault-create + Genesis +
+  the same bootstrap; logically precedes `chat` (chat-resume needs an
+  initialized vault).
+- `ledger` — BLOCKED on T-01-21 file-backed audit store (in-memory → empty
+  export).
+- **`model` / `grant` — MID value, posture-comparable**, route already-
+  persistent primitives. Each needs a posture-style investigation before
+  building. Good candidates for the next runnable subcommand.
 
 ## Traps
 

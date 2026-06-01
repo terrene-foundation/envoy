@@ -96,11 +96,14 @@ CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
 #   - ``shamir`` — T-02-36 (Wave-2 trust vault recovery)
 #   - ``digest`` — Wave-4 daily-digest shard
 #   - ``posture`` / ``version`` — F5.2 Shard 1 (PR #63)
+#   - ``connection`` — F5.2 Shard 2 (Connection Vault CLI)
 # The rest are scheduled for shard 19 per ``specs/mvp-build-sequence.md``
 # line 128. When a shard wires a subcommand, append it here — the xfail in
 # the parametrized test flips to PASSED on the next run, surfacing the
 # Milestone-5 progress signal.
-REGISTERED_AS_OF_F5: frozenset[str] = frozenset({"shamir", "digest", "posture", "version"})
+REGISTERED_AS_OF_F5: frozenset[str] = frozenset(
+    {"shamir", "digest", "posture", "version", "connection"}
+)
 
 
 def _repo_root() -> Path:
