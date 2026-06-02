@@ -1,43 +1,29 @@
 name: Tests
 
 # The Python correctness gate: type-checks + the full test suite (all tiers
-# incl. e2e) on every code PR and every push to main. Mirrors the local gate
-# (`mypy envoy/` + `pyright envoy/` + `pytest tests/`) so "CI green" means the
-# same thing a developer's pre-push run means. This is the backstop that makes
-# the strict-xfail acceptance tripwire (and every other test) automatically
-# load-bearing — without it, main can go red undetected for a whole PR cycle.
+# incl. e2e) + a coverage floor, on every code PR and every push to main.
+# Mirrors the local gate (`mypy envoy/` + `pyright envoy/` + `pytest tests/`)
+# so "CI green" means the same thing a developer's pre-push run means. This is
+# the backstop that makes the strict-xfail acceptance tripwire (and every other
+# test) automatically load-bearing — without it, main can go red undetected.
 #
-# Doc-only surfaces (.claude/, specs/, workspaces/, docs/, *.md) are excluded:
-# they cannot affect compiled behavior, and `validate.yml` already covers
-# .claude/ structure. A mixed PR (any code file + docs) still runs.
+# Required-check design (skip-sentinel): the trigger has NO paths-ignore, so the
+# `tests-gate` job ALWAYS runs and reports — making it a safe branch-ruleset
+# required check. The expensive `test` matrix runs ONLY when code paths changed
+# (the `changes` filter); on a doc-only PR `tests-gate` short-circuits to pass.
+# `tests-gate` (not the matrix legs) is the stable name wired into the main
+# ruleset, which has an empty bypass list so even `gh pr merge --admin` cannot
+# merge over red CI (the classic review requirement stays admin-bypassable, so
+# solo-merge is preserved — only CI is hard).
 #
-# NOTE: `gh pr merge --admin` bypasses required status checks, so this gate
-# SURFACES red before merge but does not hard-block an admin-merge. To make it
-# blocking, add it to branch-protection required checks (and, if pairing with
-# paths-ignore, a skip-sentinel job so doc-only PRs don't stall on a never-
-# reported required check).
+# Third-party actions are SHA-pinned (supply-chain hardening); the trailing
+# comment records the human-readable tag.
 
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".claude/**"
-      - "docs/**"
-      - "specs/**"
-      - "workspaces/**"
-      - "memory/**"
-      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".claude/**"
-      - "docs/**"
-      - "specs/**"
-      - "workspaces/**"
-      - "memory/**"
-      - ".github/ISSUE_TEMPLATE/**"
 
 permissions:
   contents: read
@@ -47,7 +33,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'envoy/**'
+              - 'tests/**'
+              - 'conftest.py'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/tests.yml'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -57,10 +63,10 @@ jobs:
         python-version: ["3.11", "3.13"]
     name: test (py${{ matrix.python-version }})
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -76,5 +82,27 @@ jobs:
       - name: Collection gate (orphan-detection Rule 5 — collect must exit 0)
         run: uv run pytest tests/ --collect-only -q
 
-      - name: Test suite (all tiers incl. e2e)
-        run: uv run pytest tests/
+      - name: Test suite + coverage floor (all tiers incl. e2e)
+        run: >-
+          uv run pytest tests/
+          --cov=envoy --cov-report=term-missing --cov-fail-under=90
+
+  tests-gate:
+    # The single REQUIRED status check (stable name). Always runs + reports so a
+    # doc-only PR (where `test` is skipped) never stalls on a never-reported
+    # required check.
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify test outcome
+        run: |
+          if [ "${{ needs.changes.outputs.code }}" != "true" ]; then
+            echo "Doc-only change — no code paths touched; test matrix not required."
+            exit 0
+          fi
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "::error::test matrix result = ${{ needs.test.result }} (expected success)"
+            exit 1
+          fi
+          echo "All test-matrix jobs passed."
