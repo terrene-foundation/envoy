@@ -2,121 +2,45 @@
 
 ## Where we are
 
-Phase-01-mvp. This session shipped **F5.2 Shard 1** — the two lowest-invariant
-Wave-5 CLI subcommands, `envoy version` + `envoy posture` (PR #63 merged to
-`main`, `da8c3f1`). CLI surface is now **4 of 11** registered
-(`shamir`, `digest`, `posture`, `version`). Main clean except the pre-existing
-`.session-notes` drift (this file — uncommitted, rides the next PR).
-
-The ship-gate critical path (F2 verifier) was NOT touched — off-limits to any
-session that has read producer journals (EC-9 "different agent").
-
-## This session's discoveries (important)
-
-1. **`ledger` subcommand is BLOCKED**, not buildable yet. Phase-01 ledger is
-   `InMemoryAuditStore`-backed (`envoy/daily_digest/bootstrap.py:13-19`);
-   file-backed `SqliteAuditStore` is the un-built **T-01-21** follow-up. A fresh
-   `envoy ledger export` process would always export an empty bundle → orphan.
-   Same blocked-class as F20 (web render → un-built Wave-4 Nexus InboundRouter).
-2. **Version drift reconciled**: `pyproject.toml` was the `0.0.0` placeholder;
-   `envoy.__version__`, heartbeat payload, and R2-H-02 regression tests already
-   relied on `0.1.0`. Aligned pyproject up to `0.1.0`; new tier-1 test
-   `test_version_cli.py::test_version_consistency_pyproject_vs_dunder` pins them.
-3. **Cross-store identifier bridge** (`envoy/trust/store.py::_posture_store_agent_id`):
-   kailash's `SQLitePostureStore` validates `agent_id` against `^[a-zA-Z0-9_-]+$`
-   and rejects the `@`/`.`/`+` chars envoy principals carry (chain store does
-   not). `current_posture()` keys posture on `sha256(principal_id)`. **The future
-   `envoy posture --set` write path MUST route through the SAME helper** or read
-   and write target different rows.
+The durable-ledger-export workstream (EC-4/EC-9) is COMPLETE: A→B1→B2→B3→C all
+merged to main. `envoy ledger export` ships; canonical CLI surface is now 7/10.
+Phase: implement. Next: the F2 independent verifier (separate repo) consumes the
+bundle, then F4 (EC-6 redteam) → Phase-01 ship.
 
 ## Read first
 
-1. `journal/0047` then `0042`–`0046` — prior redteam findings (cascade, F16, F15-c).
-2. `01-analysis/02-mvp-objectives.md` — EC gates (EC-6 ship gate L92, EC-9 verifier L128).
-3. `02-plans/01-build-sequence.md:264` — the 11-subcommand CLI list (F5.2 anchor).
-4. `specs/posture-ladder.md` — posture ladder (the `--set` ratchet-down spec for next shard).
+1. `journal/0049-DECISION-c-ledger-export-delivered-7of10.md` — C delivery + 6/10→7/10 re-scope + 3 open "For Discussion".
+2. `specs/mvp-build-sequence.md` Milestone-5 (~:190) + Phase-02 hooks item 9 — ship gate + remaining 3 deferred (`init`/`chat`/`grant`).
+3. `envoy/cli/ledger.py` — the `envoy ledger export` producer (F2 consumes its bundle).
+4. `envoy/ledger/bootstrap.py` — shared ledger identity (`LEDGER_*` consts) + `open_durable_ledger`.
+5. `specs/independent-verifier.md` — the F2 bundle wire-format contract.
 
 ## In-flight state
 
-- Uncommitted (pre-existing, NOT this session's feature): `workspaces/phase-01-mvp/.session-notes`
-  (this file). The 2 auto-gen `journal/.pending/*RISK.md` dupes were discarded
-  this session (content already in commit 5cf312b).
-- F2 (independent verifier) being produced in a parallel fresh session.
+- `uv.lock` has an uncommitted benign `envoy-agent` 0.0.0→0.1.0 sync (not committed this session).
 
 ## Outstanding ledger (forest)
 
-| ID | Item | Value-anchor (MUST-1 source) | Status |
-| -- | ---- | ---------------------------- | ------ |
-| F2 | Independent ledger verifier (`terrene-foundation/envoy-ledger-verifier`) | `02-mvp-objectives.md` EC-9 L128 + `07-independent-verifier-design.md` §3.1 | in-flight (fresh session); REQUIRED to ship |
-| F4 | EC-6 full-Phase-01 redteam sweep (2 clean rounds) | `02-mvp-objectives.md` EC-6 L92 ship gate | BLOCKED on F2 |
-| F5.2 | Wave-5 CLI 11 subcommands | `02-plans/01-build-sequence.md:264` | **2 of 11 shipped** (PR #63: version, posture). Next: see below. |
-| F5.2-ledger | `envoy ledger export` | `02-plans/01-build-sequence.md:102` | BLOCKED on T-01-21 file-backed audit store (value: signed-bundle export for the EC-4/EC-9 verifier) |
-| F20 | Web visible-secret render (client-side WS modal payload) | `specs/grant-moment.md` §Rendering L82 + T-018 | BLOCKED on Wave-4 Nexus InboundRouter shard (`envoy/channels/web.py:381-396`) |
-| F5.3 | pipx Windows smoke | `02-plans/01-build-sequence.md` §M5 L333 | queued |
-| F6/F8/F9/F11/F19 | Redteam follow-up tests + schema migration | EC-4/EC-5(d)/EC-7/EC-8 + Thesis §2.3 | queued — F6 still lacks user-anchored source |
-| F7/F12-b/F12-c/F15-c/F17/F18 | Phase-02/Wave-2/3 deferred bucket | EC-2/EC-8(c)/EC-4 + `grant-moment.md` | VERIFIED-deferred (journal/0043,0046,0047) |
+| ID | Item | Value-anchor (MUST-1) | Status |
+| -- | ---- | --------------------- | ------ |
+| F2 | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight (separate repo); producer now DELIVERED — can consume a real `envoy ledger export` bundle |
+| F4 | EC-6 full-Phase-01 redteam (2 clean rounds) | 02-mvp-objectives EC-6 | BLOCKED on F2 |
+| F5.2-grant | `envoy grant` | specs/mvp-build-sequence:128 | BLOCKED — needs pending-grant TrustVault sub-store + SessionRouter (durable-store first-unblock landed; grant substrate unbuilt — journal/0049) |
+| F21 | Onboarding arc (`init`/`chat`) | EC-1/EC-7 + specs:128 | BLOCKED — BC bootstrap + prod CommitmentBinder |
+| F20 | Web visible-secret render (client WS modal) | grant-moment §Rendering | BLOCKED on Wave-4 Nexus InboundRouter |
+| F5.3 | pipx Windows smoke | build-sequence §M5 | queued |
+| F6 | Redteam follow-up tests (F6/F8/F9/F11/F19) | EC-4/5(d)/7/8 | queued |
+| F7 | Phase-02/Wave-2/3 deferred bucket | journal/0043,0046,0047 | VERIFIED-deferred |
 
-## CLI canonical-surface correction (this session)
-
-`up`/`boundaries` are NOT canonical — they were in the pre-Round-4 draft
-(`02-plans/01-build-sequence.md:264`) and the e2e test copied them verbatim.
-The canonical CLI surface per `specs/mvp-build-sequence.md:128` (shard 19 § 3.4,
-Round-4 R1-M-01 reconciliation) is:
-`init / chat / ledger / shamir / digest / grant / posture / connection / model / version`.
-The onboarding command is **`chat`** (start/resume Boundary Conversation), NOT
-`up`/`boundaries`. Fixed the e2e test (`ELEVEN_SUBCOMMANDS` →
-`CANONICAL_SUBCOMMANDS`, 10 entries) + annotated the stale plan line.
-
-Note: shard 19 § 3.4's own table lists `budget`/`channel` instead of
-`grant`/`connection`/`model`/`version` — a THIRD variant. `specs:128` (the
-later spec-layer reconciliation) is authoritative and drops budget/channel in
-favor of grant/connection/model/version. If that ever bites, re-reconcile.
-
-## F5.2 progress (2026-06-01)
-
-Registered: `shamir`, `digest`, `posture`, `version`, `connection` (5).
-- `connection` (list/add/remove) shipped this session — OS-keychain Connection
-  Vault, keyed by `principal_genesis_id = sha256(principal_id)` (same hash
-  convention as the posture bridge + `_hex_principal`). Secret is hidden-prompt
-  / `--secret-stdin`, NEVER a CLI arg. Real keychain round-trip walked.
-
-Remaining canonical subcommands: `init`, `chat`, `ledger`, `grant`, `model`.
-- **`chat`/`init` (onboarding arc) — BLOCKED on deferred infrastructure**,
-  needs a dedicated architecture-first effort. `chat` requires a 6-dep
-  production `build_boundary_conversation_runtime()` bootstrap (none exists)
-  + a live LLM. The Shamir leg needs a production `CommitmentBinder` that was
-  deferred to "T-02-35" and never built — AND there's no Genesis-schema slot
-  for `shard_public_commitments` (GenesisSeed lacks it). Decide WHERE Shamir
-  commitments persist (Genesis-schema change vs vault metadata — a spec
-  decision) before building the binder. `init` then = vault-create + Genesis +
-  the same bootstrap; logically precedes `chat` (chat-resume needs an
-  initialized vault).
-- `ledger` — BLOCKED on T-01-21 file-backed audit store (in-memory → empty
-  export).
-- **`model` / `grant` — MID value, posture-comparable**, route already-
-  persistent primitives. Each needs a posture-style investigation before
-  building. Good candidates for the next runnable subcommand.
+Closed this session: `F5.2-ledger` → receipts PR #70 (B3) + PR #71 (C); journal 0049 (A #67, B1 #68, B2 #69 also merged this session).
 
 ## Traps
 
-- F2 MUST run from a FRESH, producer-uncontaminated session (EC-9). THIS notes-author
-  is contaminated for F2.
-- **Posture-store agent_id charset**: kailash `SQLitePostureStore` rejects `@`/`.`/`+`;
-  route ALL posture reads/writes through `_posture_store_agent_id()` (sha256). The
-  `--set` write shard MUST reuse it.
-- **Ledger is in-memory in Phase-01**: any CLI subcommand that reads cross-process
-  ledger state (`ledger`, possibly `grant` history) is an orphan until T-01-21.
-  Check the backing store before building.
-- `boundary_conversation/signatures.py` OMITS `from __future__ import annotations` on
-  purpose (runtime kaizen metadata); strict generic check scoped off in `pyproject.toml`.
-- mypy is `strict = true`; pyright via `pyrightconfig.json` (`include: ["envoy"]` only).
-  Run `.venv/bin/python -m mypy envoy/` + `pyright envoy/` before push. (ruff/black are
-  dev tools, NOT CI-gated — CI is `validate.yml` = COC-structure only.)
-- Channels: web renders NOTHING server-side (modal client-side, deferred to F20).
+- `LEDGER_SIGNING_KEY_ID` / `LEDGER_DEVICE_ID` string VALUES are load-bearing — existing on-disk ledgers + keychain entries are keyed by them; changing a value orphans them (`envoy/ledger/bootstrap.py`).
+- Wiring a new CLI subcommand MUST add it to `REGISTERED_AS_OF_F5` in `tests/e2e/test_envoy_cli_packaging_acceptance.py` in the SAME PR (strict-xfail tripwire) — and run `tests/e2e/`, not just tier1+tier2+regression.
+- CI gate (`.github/workflows/tests.yml`): mypy + pyright + full `pytest tests/` + `--cov-fail-under=90` on py3.11+3.13. `tests-gate` is HARD-REQUIRED on main via ruleset "Require tests-gate on main" (id 17145354, empty bypass) — `--admin` does NOT bypass CI now; code PRs need tests-gate green to merge (doc-only PRs pass the sentinel instantly). Classic review req still admin-bypassable (solo-merge preserved). Local parity: `uv run mypy/pyright envoy/` (pyright now a pinned dev dep). IDE/LS "could not resolve envoy.ledger.*" is FALSE — trust CLI/CI.
+- CLI tests are SYNC (`CliRunner`); hermetic keychain via `keyring.set_keyring(in-mem)`. Bootstrap tests inject `keyring_backend=`.
 
 ## Open questions for the human
 
-- F2: confirm the fresh Rust verifier session status (unblocks F4 → EC-6 ship gate).
-- F6 still lacks a primary user-anchored source — surface a spec § or close-with-gate.
-- Next F5.2 pick: `init`/`up` onboarding spine (high-value, heavy) vs a mid-tier
-  subcommand (`connection`/`model`/`grant`/`boundaries`)?
+- journal/0049 "For Discussion": (1) does Phase-01 ship at 7/10 with the producer done but F2 (separate repo) not yet consuming a real bundle? (2) commit a producer-side conformance fixture before F2 builds against `envoy-ledger-export/1.0`?
