@@ -1,0 +1,80 @@
+name: Tests
+
+# The Python correctness gate: type-checks + the full test suite (all tiers
+# incl. e2e) on every code PR and every push to main. Mirrors the local gate
+# (`mypy envoy/` + `pyright envoy/` + `pytest tests/`) so "CI green" means the
+# same thing a developer's pre-push run means. This is the backstop that makes
+# the strict-xfail acceptance tripwire (and every other test) automatically
+# load-bearing — without it, main can go red undetected for a whole PR cycle.
+#
+# Doc-only surfaces (.claude/, specs/, workspaces/, docs/, *.md) are excluded:
+# they cannot affect compiled behavior, and `validate.yml` already covers
+# .claude/ structure. A mixed PR (any code file + docs) still runs.
+#
+# NOTE: `gh pr merge --admin` bypasses required status checks, so this gate
+# SURFACES red before merge but does not hard-block an admin-merge. To make it
+# blocking, add it to branch-protection required checks (and, if pairing with
+# paths-ignore, a skip-sentinel job so doc-only PRs don't stall on a never-
+# reported required check).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - ".claude/**"
+      - "docs/**"
+      - "specs/**"
+      - "workspaces/**"
+      - "memory/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - ".claude/**"
+      - "docs/**"
+      - "specs/**"
+      - "workspaces/**"
+      - "memory/**"
+      - ".github/ISSUE_TEMPLATE/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor (3.11 — catches 3.11-only gotchas, e.g. the Lock-factory
+        # isinstance trap) + latest the project develops against.
+        python-version: ["3.11", "3.13"]
+    name: test (py${{ matrix.python-version }})
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (project editable + dev extra)
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Type-check (mypy)
+        run: uv run mypy envoy/
+
+      - name: Type-check (pyright)
+        run: uv run pyright envoy/
+
+      - name: Collection gate (orphan-detection Rule 5 — collect must exit 0)
+        run: uv run pytest tests/ --collect-only -q
+
+      - name: Test suite (all tiers incl. e2e)
+        run: uv run pytest tests/
