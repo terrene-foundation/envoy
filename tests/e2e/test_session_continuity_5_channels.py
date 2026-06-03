@@ -147,7 +147,7 @@ class _InMemoryGenesisBinder:
 
 async def _build_runtime_for_session(
     tmp_path: Path, principal_id: str
-) -> tuple[BoundaryConversationRuntime, EnvoyLedger, TrustStoreAdapter]:
+) -> tuple[BoundaryConversationRuntime, EnvoyLedger, TrustStoreAdapter, TrustVault]:
     """Wire one full runtime for a single first-time-user session.
 
     Per ``rules/orphan-detection.md`` Rule 1 + ``rules/facade-manager-detection.md``
@@ -215,7 +215,7 @@ async def _build_runtime_for_session(
         shamir_coordinator=shamir,
         novelty_checker=NoveltyChecker(),
     )
-    return runtime, ledger, trust_adapter
+    return runtime, ledger, trust_adapter, vault
 
 
 async def _drive_session_to_completion(
@@ -306,32 +306,38 @@ class TestEC7FiveChannelOnboardingBattery:
         # independent identity in TrustStore + Vault — matching the spec's
         # "N=3 first-time-user sessions" framing (each one is a fresh user).
         principal_id = f"ec7-{channel_id}-session-{session_index}@example"
-        runtime, ledger, trust_adapter = await _build_runtime_for_session(tmp_path, principal_id)
-
-        outcome = await _drive_session_to_completion(runtime, principal_id)
-
-        # Acceptance gate per `01-analysis/02-mvp-objectives.md` EC-7 line 104:
-        # "completes Boundary Conversation, produces parseable EnvelopeConfig".
-        assert outcome.state == "COMPLETE", (
-            f"EC-7 onboarding via {channel_id} session {session_index} did "
-            f"not COMPLETE: outcome={outcome!r}"
+        runtime, ledger, trust_adapter, vault = await _build_runtime_for_session(
+            tmp_path, principal_id
         )
-        assert outcome.envelope_id, (
-            f"EC-7 onboarding via {channel_id} session {session_index} "
-            f"completed without setting envelope_id (the EnvelopeConfig "
-            f"was not minted): outcome={outcome!r}"
-        )
+        try:
+            outcome = await _drive_session_to_completion(runtime, principal_id)
 
-        # Externally-observable: the Ledger chain hash-verifies after the
-        # full S0→S10 flow.  A torn entry would surface here as the
-        # production verifier would catch in deployment.
-        report = await ledger.verify_chain()
-        assert report.success is True, (
-            f"Ledger chain failed verification after {channel_id} session "
-            f"{session_index}: {report!r}"
-        )
-        # Hygiene: close the trust adapter to flush state to disk.
-        await trust_adapter.close()
+            # Acceptance gate per `01-analysis/02-mvp-objectives.md` EC-7 line 104:
+            # "completes Boundary Conversation, produces parseable EnvelopeConfig".
+            assert outcome.state == "COMPLETE", (
+                f"EC-7 onboarding via {channel_id} session {session_index} did "
+                f"not COMPLETE: outcome={outcome!r}"
+            )
+            assert outcome.envelope_id, (
+                f"EC-7 onboarding via {channel_id} session {session_index} "
+                f"completed without setting envelope_id (the EnvelopeConfig "
+                f"was not minted): outcome={outcome!r}"
+            )
+
+            # Externally-observable: the Ledger chain hash-verifies after the
+            # full S0→S10 flow.  A torn entry would surface here as the
+            # production verifier would catch in deployment.
+            report = await ledger.verify_chain()
+            assert report.success is True, (
+                f"Ledger chain failed verification after {channel_id} session "
+                f"{session_index}: {report!r}"
+            )
+        finally:
+            # Hygiene: lock the unlocked vault (else GC'd-while-unlocked
+            # ResourceWarning) + close the trust adapter (flush + release the
+            # SQLite sub-stores). Always runs, even if an assertion fails.
+            await vault.lock()
+            await trust_adapter.close()
 
 
 # ---------------------------------------------------------------------------

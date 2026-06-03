@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,21 @@ PASSPHRASE = "regression-r2-observability-passphrase-with-entropy"
 @pytest.fixture
 def vault_path(tmp_path: Path) -> Path:
     return tmp_path / "vault.dat"
+
+
+@pytest.fixture
+async def unlocked_vault(vault_path: Path) -> AsyncGenerator[TrustVault, None]:
+    """Created + unlocked TrustVault, locked on teardown so it is not GC'd
+    while unlocked (rules/testing.md "Fixtures Yield + Cleanup"; mirrors the
+    tier2/3 conftest `unlocked_vault`). Without the teardown lock, the vault's
+    `__del__` emits a ResourceWarning at GC."""
+    v = TrustVault(vault_path, idle_ttl_seconds=10)
+    await v.create(b"phase-01-init", PASSPHRASE)
+    await v.unlock(PASSPHRASE)
+    try:
+        yield v
+    finally:
+        await v.lock()
 
 
 @pytest.fixture
@@ -94,11 +110,9 @@ class TestRound1TrustVaultReadMetadataParseFailedWarn:
     operator MUST see the WARN to investigate corruption-vs-legacy."""
 
     async def test_read_metadata_logs_parse_failed_on_non_json_payload(
-        self, vault_path: Path, caplog: pytest.LogCaptureFixture
+        self, unlocked_vault: TrustVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        vault = TrustVault(vault_path, idle_ttl_seconds=10)
-        await vault.create(b"phase-01-init", PASSPHRASE)
-        await vault.unlock(PASSPHRASE)
+        vault = unlocked_vault
         # Write OPAQUE bytes the metadata envelope cannot parse — this is the
         # legacy-passthrough scenario the WARN is designed to surface.
         await vault.write(b"opaque-non-json-payload-from-legacy-callsite")
@@ -131,15 +145,14 @@ class TestRound1TrustVaultWriteChmodFailedWarn:
 
     async def test_write_logs_chmod_failed_when_chmod_raises(
         self,
+        unlocked_vault: TrustVault,
         vault_path: Path,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         if os.name != "posix":
             pytest.skip("chmod path is POSIX-only per vault.py guard")
-        vault = TrustVault(vault_path, idle_ttl_seconds=10)
-        await vault.create(b"phase-01-init", PASSPHRASE)
-        await vault.unlock(PASSPHRASE)
+        vault = unlocked_vault
 
         # Patch os.chmod ONLY for the upcoming write — the vault.create()
         # already finished, so we don't disturb the existing file's perms.
@@ -177,11 +190,9 @@ class TestRound1MetadataEnvelopeRoundTripDoesNotLog:
     happy path as "parse failed" would silently flood operator logs."""
 
     async def test_round_trip_emits_no_parse_failed_warn(
-        self, vault_path: Path, caplog: pytest.LogCaptureFixture
+        self, unlocked_vault: TrustVault, caplog: pytest.LogCaptureFixture
     ) -> None:
-        vault = TrustVault(vault_path, idle_ttl_seconds=10)
-        await vault.create(b"phase-01-init", PASSPHRASE)
-        await vault.unlock(PASSPHRASE)
+        vault = unlocked_vault
 
         await vault.write_metadata({"hello": "world", "n": 42})
 
