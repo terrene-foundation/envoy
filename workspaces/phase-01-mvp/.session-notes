@@ -33,7 +33,7 @@ Phase: implement.
 | F5.3 | pipx Windows smoke | build-sequence §M5 | queued |
 | F6 | Redteam follow-up tests (F6/F8/F9/F11/F19) | EC-4/5(d)/7/8 | queued |
 | F7 | Phase-02/Wave-2/3 deferred bucket | journal/0043,0046,0047 | VERIFIED-deferred |
-| F22 | ResourceWarning cleanup → enable CI `-W error::ResourceWarning` | journal/0050+0051 + observability Rule 5 | BLOCKED-UPSTREAM: vault class DONE (#76); residual is THIRD-PARTY (journal/0051) — sqlite = kailash `SQLitePostureStore.close()` is thread-scoped, leaks across `asyncio.to_thread` (NOT an envoy bug; needs upstream kailash fix or a single-thread-executor envoy mitigation); Ollama sockets CI-invisible. `-W error` blocked until upstream. Next: human-gated kailash issue (draft ready) |
+| F22 | ResourceWarning cleanup → enable CI `-W error::ResourceWarning` | journal/0050+0051 + observability Rule 5 | BLOCKED-UPSTREAM: vault class DONE (#76); residual is THIRD-PARTY (journal/0051) — sqlite = kailash `SQLitePostureStore.close()` is thread-scoped, leaks across `asyncio.to_thread` (NOT an envoy bug; needs upstream kailash fix or a single-thread-executor envoy mitigation); Ollama sockets CI-invisible. `-W error` blocked until upstream kailash-py#1245 (filed; journal/0052) lands + version pin |
 
 Closed this session: none from the ledger — the CI test-gate landed as a within-session workstream (journal/0050 + PRs #72/#73/#74 + ruleset 17145354), not a prior ledger row.
 
