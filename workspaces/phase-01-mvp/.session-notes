@@ -2,48 +2,70 @@
 
 ## Where we are
 
-Phase-01 durable-ledger-export is COMPLETE (7/10 CLI). This session added a
-hard-blocking CI test-gate (mypy+pyright+pytest+coverage) + a main ruleset
-(journal/0050), and STARTED the ResourceWarning suite cleanup: the
-vault-unlocked class is fixed (PR #76); sqlite/socket/loop residual is open.
-Phase: implement.
+Phase-01 is largely COMPLETE: durable-ledger-export (7/10 CLI) shipped; CI
+test-gate + ruleset is hard-blocking; ResourceWarning vault class fixed, residual
+root-caused as third-party (kailash) with upstream kailash-py#1245 filed.
+
+**This session (2026-06-03): fresh full-surface /redteam CONVERGED at 0 CRIT/0
+HIGH** (first full-Phase-01 sweep since R4/R5's subscope-only convergence).
+Fixed 3 HIGH + 1 MED + 2 LOW via PR #80 (merged 563a74a): TEST-01 (untested
+sqlite_perms security fn → tests/tier1/test_sqlite_perms.py), SCA-01/SCA-02
+(boundary-conversation + trust-lineage stale Test-location citations), ZT-1/ZT-2
+(stale code anchors), SCA-04 (bare TBD). 2 consecutive clean rounds (mechanical
++ invariants; 2 adversarial agents 0/0). Receipt: journal/0053 + round report
+`04-validate/round-1-fresh-fullsurface-convergence-2026-06-03.md`. Settings
+drift (effortLevel xhigh) reverted to committed `high`; PR #79 closed.
+
+NEARLY THE WHOLE FOREST REMAINS EXTERNALLY BLOCKED — next high-value move is a
+human unblock decision, not more autonomous build. ONE new item needs a co-owner
+call: TEST-02 (threat-coverage meta-gate) — see Open questions.
 
 ## Read first
 
-1. `journal/0050-DECISION-ci-test-gate-and-ruleset.md` — CI gate + ruleset; `--admin` can NOT bypass CI now.
-2. PR #76 (`gh pr view 76`) — the ResourceWarning diagnosis + residual breakdown.
-3. `journal/0049-DECISION-c-ledger-export-delivered-7of10.md` — ledger export + 7/10 re-scope.
-4. `specs/mvp-build-sequence.md` Milestone-5 (~:190) + Phase-02 hooks item 9 — ship gate + remaining 3.
-5. `tests/tier2/conftest.py::unlocked_vault` — canonical yield+lock teardown pattern to replicate.
+1. `journal/0050` (CI gate + ruleset; `--admin` can't bypass CI) + `journal/0049` (ledger export → 7/10).
+2. `journal/0051` + `journal/0052` — ResourceWarning third-party root cause + the filed kailash-py#1245.
+3. `specs/mvp-build-sequence.md` Milestone-5 (~:190) + Phase-02 hooks item 9 — ship gate + remaining 3 deferred.
+4. `envoy/cli/ledger.py` + `envoy/ledger/bootstrap.py` — export CLI + shared `LEDGER_*` identity constants.
+5. `specs/independent-verifier.md` — the F2 bundle wire-format contract (EC-9 consumer; separate repo).
 
 ## In-flight state
 
-- Open decision (you invoked /wrapup without choosing): ResourceWarning residual — option 1 (scope+defer) / 2 (grind sqlite now) / 3 (stop). I recommended 1.
-- Working tree clean; everything merged to main.
+- Working tree: only this `.session-notes` (uncommitted). Everything else merged to main.
+- ResourceWarning `-W error::ResourceWarning` deliberately NOT enabled (blocked on kailash-py#1245).
 
 ## Outstanding ledger (forest)
 
 | ID | Item | Value-anchor (MUST-1) | Status |
 | -- | ---- | --------------------- | ------ |
-| F2 | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight (SEPARATE repo, out of this repo's scope); producer DELIVERED |
+| F2 | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight, SEPARATE repo (out of this repo's scope); producer DELIVERED |
 | F4 | EC-6 full-Phase-01 redteam (2 clean rounds) | 02-mvp-objectives EC-6 | BLOCKED on F2 |
 | F5.2-grant | `envoy grant` | specs/mvp-build-sequence:128 | BLOCKED — pending-grant TrustVault sub-store + SessionRouter (journal/0049) |
 | F21 | Onboarding arc (`init`/`chat`) | EC-1/EC-7 + specs:128 | BLOCKED — BC bootstrap + prod CommitmentBinder |
 | F20 | Web visible-secret render (client WS modal) | grant-moment §Rendering | BLOCKED on Wave-4 Nexus InboundRouter |
-| F5.3 | pipx Windows smoke | build-sequence §M5 | queued |
-| F6 | Redteam follow-up tests (F6/F8/F9/F11/F19) | EC-4/5(d)/7/8 | queued |
+| F5.3 | pipx Windows smoke | build-sequence §M5 | queued (needs Windows host) |
+| F6 | Redteam follow-up tests (F6/F8/F9/F11/F19) | EC-4/5(d)/7/8 | queued — UNBLOCKED, in-repo (the main actionable item) |
 | F7 | Phase-02/Wave-2/3 deferred bucket | journal/0043,0046,0047 | VERIFIED-deferred |
-| F22 | ResourceWarning cleanup → enable CI `-W error::ResourceWarning` | journal/0050+0051 + observability Rule 5 | BLOCKED-UPSTREAM: vault class DONE (#76); residual is THIRD-PARTY (journal/0051) — sqlite = kailash `SQLitePostureStore.close()` is thread-scoped, leaks across `asyncio.to_thread` (NOT an envoy bug; needs upstream kailash fix or a single-thread-executor envoy mitigation); Ollama sockets CI-invisible. `-W error` blocked until upstream kailash-py#1245 (filed; journal/0052) lands + version pin |
+| F22 | ResourceWarning cleanup → enable CI `-W error` | journal/0050+0051+0052 + observability Rule 5 | BLOCKED-UPSTREAM: vault DONE (#76); sqlite=kailash threading (kailash-py#1245 filed); Ollama sockets CI-invisible |
 
-Closed this session: none from the ledger — the CI test-gate landed as a within-session workstream (journal/0050 + PRs #72/#73/#74 + ruleset 17145354), not a prior ledger row.
+Closed this session (2026-06-03): fresh full-surface /redteam → 0 CRIT/0 HIGH
+(PR #80, journal/0053). New deferred items, all value-anchored (re-validate
+anchor at re-pickup per value-prioritization MUST-3), none CRIT/HIGH:
+- TEST-02 (MED): threat-coverage meta-gate `tests/coverage/` missing — Phase-01
+  threats ARE covered; meta-gate spans full 50-threat matrix (Phase-02+ infra).
+  Anchor: threat-model.md:51 / EC-6. **Needs co-owner call (Open questions).**
+- TEST-03 (LOW): 28 future-phase specs cite future test paths — frozen-spec
+  by-design; not a Phase-01 blocker.
+- F11 (LOW): 11 CREATE-TABLE-IF-NOT-EXISTS outside migrations — re-confirmed the
+  known R4 value-anchored deferral (EC-5(d)); embedded-sqlite bootstrap is fine.
+F22 stays OPEN (blocked on upstream kailash fix + version pin).
 
 ## Traps
 
-- ResourceWarning attribution is GC-TIMED, NOT allocation-site — the file that "shows" warnings is usually innocent (l03/t019/bc-min were spillover). Fix the ALLOCATION site: grep `TrustVault(` / `TrustStoreAdapter(` built without a teardown `lock()`/`close()`.
 - CI `tests-gate` is HARD-required (ruleset 17145354, empty bypass): `--admin` can NOT merge over red CI. Code PRs need green; doc-only PRs pass the skip-sentinel instantly.
-- Do NOT add `-W error::ResourceWarning` until the CI-relevant residual (sqlite + loop) is 0 — GC-timing makes it flaky otherwise. Ollama-socket leaks never fire in CI.
-- Canonical leak fix: fixture `yield` + `await v.lock()` (vault) / `await store.close()` (store) — see `tests/tier2/conftest.py::unlocked_vault`.
+- ResourceWarning attribution is GC-TIMED, not allocation-site (journal/0051) — don't chase the file that "shows" the warning.
+- `LEDGER_SIGNING_KEY_ID` / `LEDGER_DEVICE_ID` string VALUES are load-bearing (on-disk ledgers + keychain keyed by them) — never change the values (`envoy/ledger/bootstrap.py`).
+- Local parity: `uv run mypy/pyright/pytest` (pyright is a pinned dev dep). Run `tests/e2e/` too — not just tier1/2/regression.
 
 ## Open questions for the human
 
-- ResourceWarning residual disposition: 1 (scope sqlite cleanup as a shard + defer) / 2 (grind it now) / 3 (stop here). Recommended: 1.
+- Most of the forest is externally blocked. Highest-value unblock: ship Phase-01 at 7/10 now, OR authorize the Phase-02 substrate (unblocks F5.2-grant + F21), OR prioritize the F2 verifier (separate repo)? F6 is the only unblocked in-repo work.
