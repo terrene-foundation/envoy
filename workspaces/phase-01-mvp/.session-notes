@@ -52,7 +52,8 @@ Closed this session (2026-06-03): fresh full-surface /redteam → 0 CRIT/0 HIGH
 anchor at re-pickup per value-prioritization MUST-3), none CRIT/HIGH:
 - TEST-02 (MED): threat-coverage meta-gate `tests/coverage/` missing — Phase-01
   threats ARE covered; meta-gate spans full 50-threat matrix (Phase-02+ infra).
-  Anchor: threat-model.md:51 / EC-6. **Needs co-owner call (Open questions).**
+  Anchor: threat-model.md:51 / EC-6. **DEFERRED to Phase-02 (co-owner approved
+  2026-06-03); lands with the threat-test corpus.** Re-validate at Phase-02 entry.
 - TEST-03 (LOW): 28 future-phase specs cite future test paths — frozen-spec
   by-design; not a Phase-01 blocker.
 - F11 (LOW): 11 CREATE-TABLE-IF-NOT-EXISTS outside migrations — re-confirmed the
