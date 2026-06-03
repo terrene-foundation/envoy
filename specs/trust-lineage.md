@@ -181,32 +181,36 @@ Canonical Ledger entry type: `KeyRotationRecord` with `key_scope: "runtime_devic
 
 ## Test location
 
-- `tests/integration/test_genesis_record_lifecycle.py` — Genesis self-sig, device-attestation enforcement at Phase 01, public_key_hex round-trip (Tier 2).
-- `tests/integration/test_genesis_device_transfer_record.py` — old + new device dual-attestation; cross-device activation flow.
-- `tests/integration/test_delegation_record_per_dimension_verifier.py` — 10-step chain verification across delegation_id hash, signature, algorithm_identifier, time window, chain_parent_id non-revoked, capability-superset, nonce uniqueness, cycle-free, depth ≤ 16, transitive authority.
-- `tests/integration/test_cascade_revoke_bfs_dfs_parity.py` — BFS (kailash-py) + DFS (kailash-rs) return identical SETs; Ledger ordering may differ.
-- `tests/integration/test_nonce_per_principal_partitioning.py` — sliding 90-day FIFO, 10^6 entries per principal; cross-principal isolation.
-- `tests/integration/test_key_rotation_record_dual_signed.py` — old + new key signatures + Genesis cosignature; `key_scope` in {runtime_device, genesis, per_entry, master}.
-- `tests/integration/test_algorithm_migration_announcement.py` — `MigrationAnnouncement` + `to_algorithm_identifier` in Foundation migration-allowlist; legacy records verifiable under original algorithm.
-- `tests/integration/test_duress_honeypot_distinct_genesis.py` — duress unlock writes to local-only shadow segment; synced Ledger sees only generic `unlock_event`.
-- `tests/integration/test_key_destruction_event_irreversible.py` — Secure Enclave / TPM eviction + `KeyDestructionEvent` final-act signing; Trust Vault overwrite.
-- `tests/integration/test_two_head_commitments.py` — Trust Lineage chain-head (Genesis-signed) + Ledger head (runtime-device-key-signed); both monotonic at sync.
-- `tests/integration/test_subset_proof_nested_canonicalization.py` — H-01 nested-signature rule: outer `signature_by_delegator_hex` excludes SubsetProof's own inner signatures.
-- `tests/regression/test_t002_household_adversarial.py` — T-002 household-adversarial vault read defense.
-- `tests/regression/test_t024_enterprise_attestation.py` — T-024 verifier (consumer of specs/enterprise-deployment.md).
-- `tests/regression/test_t030_compromised_model_provider.py` — T-030 model-provider compromise propagation defense.
-- `tests/regression/test_t030_response_key_rotation_migration.py` — key-rotation + algorithm-migration response under T-030 compromised-model-provider scenarios (cross-spec with specs/model-adapter.md).
-- `tests/regression/test_t041_duress_honeypot.py` — T-041 distinct-Genesis honeypot indistinguishability at Ledger level.
-- `tests/regression/test_t042_key_destruction_hidden_envelope.py` — T-042 key destruction + hidden-envelope-bucket padding.
-- `tests/regression/test_t100_chain_level_rollback.py` — T-100 chain-head monotonic non-decreasing.
-- `tests/regression/test_t102_replay_defense.py` — T-102 nonce-uniqueness across CRDT merge.
-- `tests/regression/test_t103_cycle_construction.py` — T-103 15-vector cycle-construction corpus.
-- `tests/regression/test_t104_envelope_version_binding.py` — T-104 `envelope_version` + `effective_envelope_hash` binding.
-- `tests/regression/test_t105_sub_agent_subset_proof.py` — T-105 SubsetProof verifier (consumer of specs/sub-agent-delegation.md).
+Trust Lineage primitives are implemented UPSTREAM (per § Provenance: kailash-py
+`src/kailash/trust/{chain,operations,signing,revocation}/` + kailash-rs
+`crates/eatp/src/{delegation,keys,canonical}.rs`); their unit + integration
+coverage lives in the upstream SDK test suites. This Phase-01 consumer repo
+exercises the trust-lineage CONSUMER surface (genesis seeding, cascade revoke,
+two-head commitments) via:
+
+- `tests/tier1/test_trust_store_principal_id.py` — `TrustStoreAdapter` genesis seeding + principal-id lifecycle (Tier 1).
+- `tests/tier1/test_trust_cascade_and_shamir.py` — cascade-revocation wrapper + Shamir export/import hooks (T-01-14, Tier 1).
+- `tests/tier2/test_trust_cascade_revoke_facade_wiring.py` — cascade-revoke facade wiring through the production runtime (Tier 2).
+- `tests/tier2/test_cascade_revocation_orchestrator_wiring.py` + `tests/tier2/test_cascade_revocation_ec8c_real_infra.py` — cascade-revoke orchestration (EC-8c real-infra, Tier 2).
+- `tests/tier2/test_shamir_commitments_bound_to_genesis.py` — Shamir commitments bound to Genesis (two-head commitment consumer surface, Tier 2).
+
+## Out of scope (this phase)
+
+The following exercise UPSTREAM EATP trust-lineage primitives (kailash-py
+`src/kailash/trust/` + kailash-rs `crates/eatp/`) or Phase-02+/deferred threat
+surfaces. Per `rules/spec-accuracy.md` Rule 4, the workstream lives in the
+upstream SDK test suites and the algorithm-identifier exit gate
+(kailash-py#604 + kailash-rs#519 + mint#6), NOT this Phase-01 consumer repo;
+each threat regression is additionally cross-referenced in its OWNING consumer
+spec's `## Test location` per `specs/threat-model.md`. Citations move into
+`## Test location` above if/as this consumer repo grows its own coverage.
+
+- Upstream lineage-record lifecycle: Genesis self-sig + device-attestation, device-transfer dual-attestation, 10-step per-dimension delegation verifier, BFS/DFS cascade-revoke parity, nonce-per-principal partitioning, key-rotation dual-signed records, algorithm-migration announcement, subset-proof nested canonicalization, two-head commitment monotonicity, key-destruction irreversibility, duress-honeypot distinct-Genesis.
+- Upstream threat regressions (owned by the upstream primitive + cross-referenced in the owning consumer spec): T-002, T-024, T-030, T-041, T-042, T-100, T-102, T-103, T-104, T-105.
 
 ## Open questions
 
-1. Honeypot chain design — distinct Genesis confirmed (H-08 resolved in source v2); cross-Ledger visibility TBD.
+1. Honeypot chain design — distinct Genesis confirmed (H-08 resolved in source v2); cross-Ledger visibility remains an open design question (deferred past Phase 01).
 2. Key rotation frequency — on-demand default; no scheduled rotation.
 3. Phase B signed by runtime device key, not delegation key — correct separation per doc 05 F-04.
 4. Cross-principal dual-signed Grant Moment window — 24h default.

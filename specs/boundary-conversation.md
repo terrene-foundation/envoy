@@ -65,12 +65,12 @@ After first-run real unlock, if shadow segment contains unread duress event, a b
 
 ## Test location
 
-- `tests/e2e/test_boundary_conversation_full_path.py` — S0→S10 happy-path (Tier 3, ~15min budget).
-- `tests/e2e/test_boundary_conversation_minimum_path.py` — 8-minute template+visible-secret+Shamir path.
-- `tests/integration/test_resume_from_each_state.py` — `envoy init --resume` from S1..S9 (Tier 2).
-- `tests/regression/test_t018_visible_secret_setup.py` — visible secret rendered correctly post-S7.
-- `tests/regression/test_t023_novelty_feedback_at_authoring.py` — duplicate AST surfaces feedback before S9.
-- `tests/integration/test_post_duress_banner.py` — §3.5a banner gates state advance.
+- `tests/tier3/test_boundary_conversation_full_path.py` — S0→S10 happy-path (Tier 3, ~15min budget).
+- `tests/tier3/test_boundary_conversation_minimum_path.py` — 8-minute template+visible-secret+Shamir path.
+- `tests/tier2/test_resume_from_each_state.py` — `envoy init --resume` from S1..S9 (Tier 2).
+- `tests/tier2/test_visible_secret_render_check.py` — visible secret rendered correctly post-S7 (T-018; spoofing-defense counterpart `tests/regression/test_t018_dialog_spoofing_visible_secret.py`).
+- `tests/tier2/test_envoy_novelty_checker.py` — duplicate AST surfaces novelty feedback before S9 (T-023).
+- `tests/tier2/test_post_duress_banner.py` — §3.5a banner gates state advance.
 
 ## Open questions
 

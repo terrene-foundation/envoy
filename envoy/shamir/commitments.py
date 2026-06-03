@@ -12,7 +12,7 @@ presented, its commitment will NOT match — the recovery refuses.
 
 **Trust-boundary note (L-2 review):** the coordinator computes commitments
 LOCALLY before passing them to the binder. Per
-`workspaces/phase-01-mvp/journal/.pending/...-RISK-T-02-35-binder-trust.md`,
+`workspaces/phase-01-mvp/journal/0018-RISK-t-02-35-binder-storage-only-protocol-rearch.md`,
 the prior shape (`bind_to_genesis(principal_id, shards) -> list[str]`) let a
 malicious binder substitute commitments for a different secret without
 coordinator detection. The current shape (`bind_to_genesis(principal_id,

@@ -57,9 +57,14 @@ logger = logging.getLogger(__name__)
 # Substrate-todo anchors. The Phase02SubstrateNotWiredError messages cite
 # these so a future `grep "Phase02SubstrateNotWiredError" workspaces/` enumerates
 # the unfinished surface. Per `rules/zero-tolerance.md` Rule 6 iterative-TODO
-# carve-out — actively tracked.
-_TODO_WAVE_2 = "workspaces/phase-01-mvp/todos/active/02-wave-2-grant-moment.md"
-_TODO_WAVE_3 = "workspaces/phase-01-mvp/todos/active/03-wave-3-classifier-ensemble.md"
+# carve-out — actively tracked. The carve-out is only valid while these anchors
+# RESOLVE: the todo files were reorganised after first authoring (grant-moment
+# moved into the wave-3 file; the authorship/classifier substrate lives in the
+# wave-2 file), so the anchors point at the current filenames, not the original
+# placeholder names. The `_TODO_WAVE_N` constant names are retained as internal
+# identifiers; the load-bearing string is the path.
+_TODO_WAVE_2 = "workspaces/phase-01-mvp/todos/active/03-wave-3-grant-moment-budget.md"
+_TODO_WAVE_3 = "workspaces/phase-01-mvp/todos/active/02-wave-2-authorship-shamir-boundary.md"
 # Wave-4 BudgetTracker is now WIRED (shard 12 — envoy.budget.BudgetRuntimeAdapter);
 # the former _TODO_WAVE_4 anchor was removed when the four budget_* methods began
 # delegating to the orchestrator instead of raising Phase02SubstrateNotWiredError.
