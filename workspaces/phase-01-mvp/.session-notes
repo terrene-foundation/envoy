@@ -1,46 +1,49 @@
-# Session Notes — 2026-06-01
+# Session Notes — 2026-06-03
 
 ## Where we are
 
-The durable-ledger-export workstream (EC-4/EC-9) is COMPLETE: A→B1→B2→B3→C all
-merged to main. `envoy ledger export` ships; canonical CLI surface is now 7/10.
-Phase: implement. Next: the F2 independent verifier (separate repo) consumes the
-bundle, then F4 (EC-6 redteam) → Phase-01 ship.
+Phase-01 durable-ledger-export is COMPLETE (7/10 CLI). This session added a
+hard-blocking CI test-gate (mypy+pyright+pytest+coverage) + a main ruleset
+(journal/0050), and STARTED the ResourceWarning suite cleanup: the
+vault-unlocked class is fixed (PR #76); sqlite/socket/loop residual is open.
+Phase: implement.
 
 ## Read first
 
-1. `journal/0049-DECISION-c-ledger-export-delivered-7of10.md` — C delivery + 6/10→7/10 re-scope + 3 open "For Discussion".
-2. `specs/mvp-build-sequence.md` Milestone-5 (~:190) + Phase-02 hooks item 9 — ship gate + remaining 3 deferred (`init`/`chat`/`grant`).
-3. `envoy/cli/ledger.py` — the `envoy ledger export` producer (F2 consumes its bundle).
-4. `envoy/ledger/bootstrap.py` — shared ledger identity (`LEDGER_*` consts) + `open_durable_ledger`.
-5. `specs/independent-verifier.md` — the F2 bundle wire-format contract.
+1. `journal/0050-DECISION-ci-test-gate-and-ruleset.md` — CI gate + ruleset; `--admin` can NOT bypass CI now.
+2. PR #76 (`gh pr view 76`) — the ResourceWarning diagnosis + residual breakdown.
+3. `journal/0049-DECISION-c-ledger-export-delivered-7of10.md` — ledger export + 7/10 re-scope.
+4. `specs/mvp-build-sequence.md` Milestone-5 (~:190) + Phase-02 hooks item 9 — ship gate + remaining 3.
+5. `tests/tier2/conftest.py::unlocked_vault` — canonical yield+lock teardown pattern to replicate.
 
 ## In-flight state
 
-- `uv.lock` has an uncommitted benign `envoy-agent` 0.0.0→0.1.0 sync (not committed this session).
+- Open decision (you invoked /wrapup without choosing): ResourceWarning residual — option 1 (scope+defer) / 2 (grind sqlite now) / 3 (stop). I recommended 1.
+- Working tree clean; everything merged to main.
 
 ## Outstanding ledger (forest)
 
 | ID | Item | Value-anchor (MUST-1) | Status |
 | -- | ---- | --------------------- | ------ |
-| F2 | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight (separate repo); producer now DELIVERED — can consume a real `envoy ledger export` bundle |
+| F2 | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight (SEPARATE repo, out of this repo's scope); producer DELIVERED |
 | F4 | EC-6 full-Phase-01 redteam (2 clean rounds) | 02-mvp-objectives EC-6 | BLOCKED on F2 |
-| F5.2-grant | `envoy grant` | specs/mvp-build-sequence:128 | BLOCKED — needs pending-grant TrustVault sub-store + SessionRouter (durable-store first-unblock landed; grant substrate unbuilt — journal/0049) |
+| F5.2-grant | `envoy grant` | specs/mvp-build-sequence:128 | BLOCKED — pending-grant TrustVault sub-store + SessionRouter (journal/0049) |
 | F21 | Onboarding arc (`init`/`chat`) | EC-1/EC-7 + specs:128 | BLOCKED — BC bootstrap + prod CommitmentBinder |
 | F20 | Web visible-secret render (client WS modal) | grant-moment §Rendering | BLOCKED on Wave-4 Nexus InboundRouter |
 | F5.3 | pipx Windows smoke | build-sequence §M5 | queued |
 | F6 | Redteam follow-up tests (F6/F8/F9/F11/F19) | EC-4/5(d)/7/8 | queued |
 | F7 | Phase-02/Wave-2/3 deferred bucket | journal/0043,0046,0047 | VERIFIED-deferred |
+| F22 | ResourceWarning cleanup → enable CI `-W error::ResourceWarning` | journal/0050+0051 + observability Rule 5 | BLOCKED-UPSTREAM: vault class DONE (#76); residual is THIRD-PARTY (journal/0051) — sqlite = kailash `SQLitePostureStore.close()` is thread-scoped, leaks across `asyncio.to_thread` (NOT an envoy bug; needs upstream kailash fix or a single-thread-executor envoy mitigation); Ollama sockets CI-invisible. `-W error` blocked until upstream. Next: human-gated kailash issue (draft ready) |
 
-Closed this session: `F5.2-ledger` → receipts PR #70 (B3) + PR #71 (C); journal 0049 (A #67, B1 #68, B2 #69 also merged this session).
+Closed this session: none from the ledger — the CI test-gate landed as a within-session workstream (journal/0050 + PRs #72/#73/#74 + ruleset 17145354), not a prior ledger row.
 
 ## Traps
 
-- `LEDGER_SIGNING_KEY_ID` / `LEDGER_DEVICE_ID` string VALUES are load-bearing — existing on-disk ledgers + keychain entries are keyed by them; changing a value orphans them (`envoy/ledger/bootstrap.py`).
-- Wiring a new CLI subcommand MUST add it to `REGISTERED_AS_OF_F5` in `tests/e2e/test_envoy_cli_packaging_acceptance.py` in the SAME PR (strict-xfail tripwire) — and run `tests/e2e/`, not just tier1+tier2+regression.
-- CI gate (`.github/workflows/tests.yml`): mypy + pyright + full `pytest tests/` + `--cov-fail-under=90` on py3.11+3.13. `tests-gate` is HARD-REQUIRED on main via ruleset "Require tests-gate on main" (id 17145354, empty bypass) — `--admin` does NOT bypass CI now; code PRs need tests-gate green to merge (doc-only PRs pass the sentinel instantly). Classic review req still admin-bypassable (solo-merge preserved). Local parity: `uv run mypy/pyright envoy/` (pyright now a pinned dev dep). IDE/LS "could not resolve envoy.ledger.*" is FALSE — trust CLI/CI.
-- CLI tests are SYNC (`CliRunner`); hermetic keychain via `keyring.set_keyring(in-mem)`. Bootstrap tests inject `keyring_backend=`.
+- ResourceWarning attribution is GC-TIMED, NOT allocation-site — the file that "shows" warnings is usually innocent (l03/t019/bc-min were spillover). Fix the ALLOCATION site: grep `TrustVault(` / `TrustStoreAdapter(` built without a teardown `lock()`/`close()`.
+- CI `tests-gate` is HARD-required (ruleset 17145354, empty bypass): `--admin` can NOT merge over red CI. Code PRs need green; doc-only PRs pass the skip-sentinel instantly.
+- Do NOT add `-W error::ResourceWarning` until the CI-relevant residual (sqlite + loop) is 0 — GC-timing makes it flaky otherwise. Ollama-socket leaks never fire in CI.
+- Canonical leak fix: fixture `yield` + `await v.lock()` (vault) / `await store.close()` (store) — see `tests/tier2/conftest.py::unlocked_vault`.
 
 ## Open questions for the human
 
-- journal/0049 "For Discussion": (1) does Phase-01 ship at 7/10 with the producer done but F2 (separate repo) not yet consuming a real bundle? (2) commit a producer-side conformance fixture before F2 builds against `envoy-ledger-export/1.0`?
+- ResourceWarning residual disposition: 1 (scope sqlite cleanup as a shard + defer) / 2 (grind it now) / 3 (stop here). Recommended: 1.
