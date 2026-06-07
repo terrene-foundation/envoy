@@ -217,28 +217,20 @@ All other specs. Runtime is the composition layer.
 
 ## Test location
 
-- `tests/conformance/test_n1_knowledge_filter_vectors.py` — N1 10 vectors green across kailash-py + kailash-rs-bindings.
-- `tests/conformance/test_n2_envelope_cache_invalidation.py` — N2 5-property invalidation (envelope_version, algorithm_identifier, classifier_ensemble_versions, posture_level, principal_genesis_id), 15 vectors.
-- `tests/conformance/test_n3_structural_vs_semantic_partition.py` — N3 partition byte-identity, 10 vectors. Corpus-fill cadence open question below.
-- `tests/conformance/test_n4_verdict_rendering.py` — N4 byte-identical structured payload + semantically-equivalent text, 10 vectors.
-- `tests/conformance/test_n5_posture_ceiling.py` — N5 `effective_posture ≤ min(envelope, principal)`, 15 vectors.
-- `tests/conformance/test_n6_session_scoped_cache.py` — N6 `tool_calls_made` fingerprint hash + `session_boundary_crossed` content_hash, 10 vectors.
-- `tests/conformance/test_e1_envelope_canonical_json.py` — E1 67 vectors (JCS + NFC).
-- `tests/conformance/test_e2_delegation_record_signing.py` — E2 20 vectors.
-- `tests/conformance/test_e3_cascade_revocation_set_equality.py` — E3 BFS/DFS set equality, 15 vectors.
-- `tests/conformance/test_e4_cycle_detection.py` — E4 15 vectors.
-- `tests/conformance/test_e5_subset_proof_verification.py` — E5 20 adversarial vectors (defers to specs/sub-agent-delegation.md).
-- `tests/conformance/test_e6_two_phase_orphan_resolution.py` — E6 orphan resolution at next session start.
-- `tests/conformance/test_e7_head_commitment_monotonicity.py` — E7 monotonic non-decreasing.
-- `tests/integration/test_byte_identity_cross_runtime.py` — every §Byte-identical method produces identical bytes from kailash-py vs kailash-rs-bindings (Tier 2 against both runtimes).
-- `tests/integration/test_semantic_equivalence_cross_runtime.py` — §Semantically-equivalent methods produce equivalent verdicts under BET-6 (Phase 03 harness).
-- `tests/integration/test_runtime_attestation_at_startup.py` — `RuntimeAttestation` Ledger entry on startup, runtime_switch, on-demand `envoy runtime attest`.
-- `tests/integration/test_runtime_picker_switch.py` — `envoy runtime switch` requires passphrase + Genesis-signed `runtime_switch` + target attestation.
-- `tests/regression/test_t015_envelope_re_read_checkpoint.py` — T-015 re-read cadence at composition-rule depth N.
-- `tests/regression/test_t050a_binary_mirror.py` — T-050a Foundation binary mirror compromise detected at attestation.
-- `tests/regression/test_t050b_signing_key.py` — T-050b signing-key revocation list.
-- `tests/regression/test_t060_runtime_binary_poisoning.py` — T-060 binary hash verification at startup.
-- `tests/regression/test_t105_subset_proof_verifier.py` — T-105 `trust_verify_subset_proof` independent re-derivation.
+Phase 01 wires only the `kailash-py` runtime (per brief constraint #1); it ships the abstract `KailashRuntime` Protocol, runtime attestation at startup, and the single-runtime byte-canonical path. Tested in-repo:
+
+- `tests/tier2/test_envoy_runtime_wiring.py` — `KailashRuntime` Protocol wiring + `RuntimeIdentity` / `RuntimeAttestation` surface against the Phase-01 `kailash-py` runtime.
+- `tests/tier1/test_envelope_canonical_bytes_pure.py` — single-runtime byte-canonical form (the byte-identity inputs the cross-runtime conformance vectors will compare in Phase 02).
+
+## Out of scope (this phase)
+
+The cross-runtime conformance harness and second-runtime defenses land in Phase 02, when `kailash-rs-bindings` is wired (per § Security gates per phase + brief constraint #2 "abstract interface MUST exist even though only one implementation is wired"):
+
+- N1–N6 + E1–E7 conformance vectors (run against BOTH `kailash-py` AND `kailash-rs-bindings`) — Phase 02.
+- Cross-runtime byte-identity + semantic-equivalence (BET-6 two-runtime harness) — Phase 02 / Phase 03.
+- `envoy runtime switch` picker + attestation-on-switch — Phase 02.
+- T-015 envelope re-read checkpoint, T-050a/b binary-mirror + signing-key revocation, T-060 runtime-binary-poisoning — Phase 02 (binary distribution).
+- T-105 sub-agent SubsetProof re-derivation — Phase 03 (specs/sub-agent-delegation.md).
 
 ## Open questions
 

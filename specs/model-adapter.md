@@ -85,14 +85,18 @@ For high-stakes prompts (above Financial / Communication / Data Access ceiling),
 
 ## Test location
 
-- `tests/integration/test_provider_risk_annotation_round_trip.py` — annotation persistence in Ledger across provider switches.
-- `tests/integration/test_response_token_budget_truncation.py` — sentinel truncation at `tool_output_budget_bytes`.
-- `tests/integration/test_multi_provider_consensus_high_stakes.py` — Phase 04 dual-provider intent-vector cosine ≥ 0.85 enforcement.
-- `tests/regression/test_t014_multi_turn_accumulated_injection.py` — T-014 N=10 turn overlap threshold.
-- `tests/regression/test_t016_goal_drift_across_provider_switch.py` — T-016 cosine drift > 0.4 detection.
-- `tests/regression/test_t017_training_data_leak_canary.py` — T-017 leak-canary corpus hit.
-- `tests/regression/test_t030_compromised_model_provider.py` — T-030 multi-provider consensus failure mode.
-- `tests/regression/test_t094_model_response_dos.py` — T-094 oversized-response + classifier-saturation defense.
+Phase 01 ships the model router, BYOM picker, provider-risk annotation, and the response token-budget filter. Tested in-repo:
+
+- `tests/tier2/test_envoy_provider_risk_annotation_in_ledger.py` + `tests/tier1/test_envoy_model_risk_annotator.py` — provider-risk annotation persistence in the Ledger across provider switches.
+- `tests/tier1/test_envoy_model_byom_picker.py` — BYOM provider/model pick + supported-choices surface.
+- `tests/tier1/test_envoy_model_token_budget_filter.py` + `tests/tier2/test_envoy_token_budget_filter_truncation.py` — response token-budget `TRUNCATION_SENTINEL` truncation at the configured budget.
+
+## Out of scope (this phase)
+
+The multi-provider consensus + injection / goal-drift defenses are Phase-04 surfaces; their first `raise` sites land then (typed-error stubs present in Phase 01 per `envoy/model/errors.py`):
+
+- Multi-provider consensus high-stakes (dual-provider intent-vector cosine ≥ 0.85) — Phase 04.
+- T-014 multi-turn accumulated injection, T-016 goal-drift across provider switch, T-017 training-data-leak canary, T-030 compromised-provider consensus, T-094 model-response DoS — Phase 04.
 
 ## Open questions
 

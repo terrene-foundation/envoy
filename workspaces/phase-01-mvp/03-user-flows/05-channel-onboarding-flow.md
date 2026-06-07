@@ -7,6 +7,8 @@
 **Exit criterion served:** **EC-7** (single user onboards via any of 8 channels) — this flow is the per-channel onboarding ritual replicated 8× in the Tier 3 acceptance test. Also gates **EC-8** (week across channels — cross-channel coherence test).
 **Communication discipline:** Plain language per `rules/communication.md`.
 
+**Phase-01 CLI-surface note (added 2026-06-07 — `/redteam` F1 disposition):** `envoy channel add/retry/remove/status` is NOT a Phase-01 CLI subcommand. In Phase 01 the channel adapters (CLI, Web, Telegram, Slack, Discord — the 5-channel set) are library-wired (`envoy/channels/`), not managed through an `envoy channel` CLI group; the `envoy channel` management surface lands in Phase 02 alongside the long-running gateway. This storyboard describes the intended channel-management UX.
+
 **Phase 01 de-scope #1 disposition (per shard 16 § 3.7 + `02-mvp-objectives.md` § 5):** if EC-7 fails on the full 6-messaging cohort, de-scope #1 is to reduce 6 messaging channels to 3. The 3 retained are typically Telegram + Slack + CLI (the easiest webhook + the easiest workplace + the no-creds default); the 3 dropped are typically WhatsApp (paid-tier complexity) + iMessage (BlueBubbles bridge complexity) + Signal (Path B legal-gate complexity). This flow assumes the full 6 are available; degraded behaviour is identical structurally.
 
 ---

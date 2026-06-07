@@ -87,16 +87,21 @@ All specs. data-model.md is the persistence layer for every primitive.
 
 ## Test location
 
-- `tests/integration/test_trust_vault_region_layout.py` — region encryption + HKDF info-string isolation (Tier 2).
-- `tests/integration/test_connection_vault_per_principal.py` — per-principal isolation across macOS Keychain / Windows Credential Manager / Linux Secret Service (Tier 2 where keychain available, Tier 1 mock fallback for CI).
-- `tests/integration/test_ledger_materialized_index_rebuild.py` — rebuild from Ledger replay at startup (Tier 2).
-- `tests/integration/test_shadow_segment_real_only_key.py` — duress passphrase cannot read shadow segment.
-- `tests/integration/test_padding_bucket_size_indistinguishable.py` — file size in {1, 4, 16, 64} MiB regardless of hidden-envelope presence.
-- `tests/integration/test_sync_chunked_write_rate.py` — 256 KiB versioned chunks + constant-write-rate.
-- `tests/regression/test_t002_household_adversarial.py` — T-002 household-adversarial vault read.
-- `tests/regression/test_t018_visible_secret.py` — T-018 visible-secret rendering across data-bearing entries.
-- `tests/regression/test_t040_lost_device.py` — T-040 lost-device recovery via Shamir.
-- `tests/regression/test_t053_sync_compromise.py` — T-053 sync target tampering detected at head commitment.
+Phase 01 ships the Trust Vault (single-region) layout + encryption + lifecycle, per-principal Connection-Vault isolation, and visible-secret rendering. Tested in-repo:
+
+- `tests/tier1/test_trust_vault_lifecycle.py` + `tests/tier2/test_envoy_trust_store_boundary.py` — Trust Vault single-region encryption + lock/unlock/zeroize lifecycle + store-boundary isolation.
+- `tests/tier2/test_envoy_trust_store_boundary.py` — the Phase-01 shadow-segment contract: `shadow_segment_unread_duress_events` returns `[]` (no duress detection wired in Phase 01); the duress-banner gate logic is exercised in `tests/tier1/test_daily_digest_duress_and_cli.py`.
+- `tests/tier1/test_connection_vault_adapter.py` — per-principal Connection-Vault isolation (cross-principal read raises).
+- `tests/regression/test_t018_dialog_spoofing_visible_secret.py` — T-018 visible-secret rendering on data-bearing entries.
+
+## Out of scope (this phase)
+
+- Ledger materialized-index rebuild-from-replay — Phase 02 (multi-device substrate).
+- Padding-bucket size indistinguishability ({1,4,16,64} MiB hidden-envelope deniability) — Phase 02+ deniability surface.
+- 256 KiB chunked constant-write-rate sync — Phase 02 (specs/ledger-merge.md multi-device sync).
+- T-002 household-adversarial vault read — Phase 03 (specs/shared-household.md).
+- T-040 lost-device recovery + T-053 sync-target tampering — Phase 02 (multi-device / sync compromise).
+- Duress shadow-segment **real-only-key separation** (duress passphrase reads a decoy, not the real segment) + duress passphrase / honeypot Genesis — Phase 04 (specs/trust-vault.md § scope; `envoy/trust/vault.py` Phase-04 extension list). Phase 01 ships only the no-detection contract (above) + the banner-gate logic.
 
 ## Open questions
 

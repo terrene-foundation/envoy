@@ -7,6 +7,8 @@
 **Exit criteria served:** This flow is the **prerequisite** to EC-1 (Boundary Conversation completion) and to EC-7 (per-channel onboarding); on its own it does NOT prove an exit criterion, but every other flow assumes the install is done.
 **Communication discipline:** Plain language per `rules/communication.md`. Most readers are non-technical.
 
+**Phase-01 CLI-surface note (added 2026-06-07 — `/redteam` F1 disposition):** This storyboard describes the full intended first-run journey. The shipped Phase-01 CLI is 7 of 10 subcommands (`version`, `posture`, `connection`, `model`, `shamir`, `digest`, `ledger`); **`envoy init` is deferred to Phase 02** — it shares the no-durable-pending-grant / no-long-running-session blocker class with `chat` / `grant` (per `specs/mvp-build-sequence.md` Phase-02 hooks item 9 + `journal/0048`). Steps below that invoke `envoy init` describe the intended UX whose CLI entry point lands in Phase 02; the Phase-01 onboarding ritual itself (Boundary Conversation) is exercised directly through its runtime, not through an `init` wrapper.
+
 ---
 
 ## 1. Persona & context

@@ -7,6 +7,8 @@
 **Exit criteria served:** **Cross-cutting structural prerequisite per `02-mvp-objectives.md` § 3 row 3** — without posture gate enforcement, BET-12 (governance-primary-surface palatability) is unfalsifiable. Specifically gates EC-2 cascade-revocation acceptance (the cascade of grants issued under a higher posture), and contributes to EC-1 cohort observability (initial PSEUDO seed at S9 of Flow 02).
 **Communication discipline:** Plain language per `rules/communication.md`.
 
+**Phase-01 CLI-surface note (added 2026-06-07 — `/redteam` F1 disposition):** `envoy posture` is a single read-only command in Phase 01 (shows the current autonomy level); **`envoy posture promote/demote` are NOT Phase-01 subcommands**. Posture transitions happen programmatically through the authorship-gated `EnvoyPostureGate` ratchet (5-step fail-closed); the interactive `promote` / `demote` CLI surface lands in Phase 02. This storyboard describes the intended ratchet UX.
+
 **Important UX caveat — timezone disposition (per `journal/0003-GAP-budget-ceiling-timezone.md`):** The cooling-off period on enterprise-tier transitions (`PostureCoolingOffActiveError` per `specs/posture-ladder.md` § Algorithm) is timezone-dependent. Phase 01 ships **Option A (UTC)** consistently across budget reset, daily digest, and posture cooling-off. A 24-hour cooling-off period that started at "Monday 9 AM Singapore time" is checked against UTC — the user-visible "still cooling off?" question depends on UTC clock, not local. § 4 (edge cases) below documents.
 
 ---

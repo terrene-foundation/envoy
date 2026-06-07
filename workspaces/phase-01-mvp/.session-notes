@@ -1,53 +1,55 @@
-# Session Notes — 2026-06-04
+# Session Notes — 2026-06-07
 
 ## Where we are
 
-Phase-01 largely COMPLETE (7/10 CLI shipped). Phase: redteam→implement. Last
-change: fresh full-Phase-01-surface /redteam CONVERGED at 0 CRIT/0 HIGH (PR #80
-merged 563a74a; receipt journal/0053). In-repo surface is red-team-clean; the
-remaining forest is externally blocked. Next move is a human unblock decision.
+Phase-01 in-repo surface **RE-CONVERGED at 0 CRIT/0 HIGH across 2 consecutive clean
+rounds** (this cycle: `/autonomize` + `/redteam`). Receipt: journal/0055 + round report
+`04-validate/rounds-1-4-fresh-convergence-2026-06-07.md`. Convergence was owed because
+F8/F9/F19 (journal/0054) landed after the 0053 convergence, resetting the counter
+(specs-authority Rule 5b).
+
+**State: working tree has the fixes; NOT yet committed/PR'd.** Next action is the PR
+(branch protection requires PR to main; CI tests-gate HARD-required).
 
 ## Read first
 
-1. `journal/0053-DECISION-redteam-fresh-fullsurface-convergence.md` — this cycle's verdict + deferred-item dispositions.
-2. `04-validate/round-1-fresh-fullsurface-convergence-2026-06-03.md` — round report + receipts.
-3. `journal/0050`–`0052` — CI gate + ResourceWarning root-cause + kailash-py#1245 (still live).
-4. `specs/mvp-build-sequence.md` Milestone-5 — ship gate + remaining deferred.
-5. `.claude/workflows/redteam-round.mjs` — reusable redteam workflow (see Traps re: emit limit).
+1. `journal/0055-DECISION-redteam-fresh-convergence-2026-06-07.md` — verdict + dispositions.
+2. `04-validate/rounds-1-4-fresh-convergence-2026-06-07.md` — round-by-round receipts + fix inventory.
+3. `journal/0053` + `0054` — prior convergence + F8/F9/F19 delivery (this cycle continues them).
 
-## In-flight state
+## In-flight state (UNCOMMITTED — 16 files)
 
-- Working tree clean; everything merged to main. No uncommitted state.
-- `-W error::ResourceWarning` deliberately NOT enabled (blocked on F22 / kailash-py#1245).
+- **Code (1):** `envoy/ledger/__init__.py` — `RuntimeIdentity` re-export (SC-02 LOW).
+- **Specs (8):** classification-policy, session-state, envelope-model, connection-vault,
+  data-model, model-adapter, runtime-abstraction, distribution — `## Test location`
+  re-pointed to real tests + `## Out of scope (this phase)` carve-outs (HIGH-class citation drift).
+- **Storyboards (3):** 03-user-flows/{01-install,05-channel-onboarding,08-posture-ratchet} — Phase-01 CLI-surface notes (F1).
+- **Tooling (1):** `.claude/workflows/redteam-round.mjs` — wave-batching + failed_to_emit (rate-limit fix).
+- **Docs (3):** journal/0055, the round report, this .session-notes.
 
-## Outstanding ledger (forest)
-
-| ID  | Item | Value-anchor (MUST-1) | Status |
-| --- | ---- | --------------------- | ------ |
-| F2  | Independent ledger verifier (`envoy-ledger-verifier`) | 02-mvp-objectives EC-9 | in-flight, SEPARATE repo (out of scope); producer DELIVERED |
-| F4  | EC-6 full-Phase-01 redteam (2 clean rounds) | 02-mvp-objectives EC-6 | BLOCKED on F2 (in-repo surface now clean, journal/0053) |
-| F5.2-grant | `envoy grant` | specs/mvp-build-sequence:128 | BLOCKED — pending-grant TrustVault sub-store + SessionRouter |
-| F21 | Onboarding arc (`init`/`chat`) | EC-1/EC-7 + specs:128 | BLOCKED — BC bootstrap + prod CommitmentBinder |
-| F20 | Web visible-secret render (client WS modal) | grant-moment §Rendering | BLOCKED on Wave-4 Nexus InboundRouter |
-| F5.3 | pipx Windows smoke | build-sequence §M5 | queued (needs Windows host) |
-| F6  | Redteam follow-up tests | EC-7/EC-8/BET-12 | **F8/F9/F19 DELIVERED** (journal/0054); F11 deferred-LOW (Phase-02+, 0053:32) |
-| F7  | Phase-02/Wave-2/3 deferred bucket | journal 0043/0046/0047 | VERIFIED-deferred |
-| F22 | ResourceWarning cleanup → enable CI `-W error` | journal 0050+0051+0052 + observability R5 | BLOCKED-UPSTREAM (kailash-py#1245) |
-| F23 | Threat-coverage meta-gate (`tests/coverage/`) | threat-model.md:51 / EC-6 | DEFERRED to Phase-02 (co-owner approved 2026-06-03) |
-
-Closed this session (2026-06-04, continue-from-0053): **F8 + F9 + F19** delivered as in-repo redteam-followup tests (journal/0054; 3 new test files, full suite 1705 passed). These were the only genuinely-actionable in-repo Phase-01 items; surfaced by an adversarial F6-reality re-verification that found 0053 never individually re-validated their anchors (MUST-3 gap). F11 stays deferred-LOW. The in-repo Phase-01 surface now has ZERO un-re-validated deferred shards.
-
-Prior (0053 cycle): `F4` advanced (in-repo Phase-01 surface redteam-clean → journal/0053, PR #80) but stays BLOCKED on `F2`. `F23` (TEST-02 deferred).
+Suite re-derived GREEN ×3: 1705 passed / 9 skipped / 3 xfailed.
 
 ## Traps
 
-- CI `tests-gate` is HARD-required (ruleset): `--admin` can NOT merge over red CI. Doc-only PRs skip-pass instantly.
-- ResourceWarning attribution is GC-TIMED, not allocation-site (journal/0051) — don't chase the file that "shows" it.
-- `LEDGER_SIGNING_KEY_ID` / `LEDGER_DEVICE_ID` string VALUES are load-bearing (on-disk + keychain) — never change (`envoy/ledger/bootstrap.py`).
-- `redteam-round.mjs` finders fail StructuredOutput emit when a dimension is too broad — keep ≤3 specs/dim + the budget/emit directive, or fall back to direct mechanical sweeps + schema-less individual Agent calls (reliable).
-- The 37 specs are FROZEN full-product (all 4 phases): Test-location/`TBD` citing future paths is by-design, NOT a Phase-01 finding — do not mass-edit out-of-phase frozen specs (brief: no spec edits unless HIGH gap).
-- Local parity: `uv run mypy/pyright/pytest` + run `tests/e2e/` (not just tier1/2/regression).
+- `redteam-round.mjs` schema-forced finders hit API 429 under concurrency (12-burst AND wave-of-3
+  verify-bursts). The reliable path is direct mechanical sweeps + **schema-less SEQUENTIAL agents**
+  (1 at a time). The wave-batch + failed_to_emit fix is landed in the workflow but the StructuredOutput-emit
+  unreliability under live throttle remains — prefer sequential schema-less agents for redteam rounds.
+- The 37 frozen specs span ALL 4 phases. ~148 future-phase `## Test location` citations are BY-DESIGN
+  (in_repo_scope=false; verified no test exists anywhere). Only Phase-01-SHIPPED-primitive citation drift
+  (real test exists elsewhere) is a HIGH to fix. Do NOT mass-fix future-phase citations.
+- Spec edits this cycle were CITATION-ONLY (Test-location/Out-of-scope) → Rule 5b sibling re-derivation
+  not triggered; but always re-verify cross-spec consistency (the data-model↔trust-vault duress
+  contradiction F1-r2 was the one cross-spec defect).
+- `git reset --hard` would discard these uncommitted fixes — commit first (git.md).
 
 ## Open questions for the human
 
-- **In-repo work is now exhausted** — F6 (F8/F9/F19) delivered this session; the in-repo Phase-01 surface is complete at the 7/10 spec ceiling (mvp-build-sequence:190), red-team-clean, ZERO un-re-validated deferred shards. The remaining forest is ALL externally/strategically gated. Highest-value unblock (genuinely the human's call): prioritize the **F2 verifier** (separate repo — the last open Phase-01 deliverable per brief constraint 4 + EC-9; gates full EC-6), OR authorize **Phase-02 entry** (unblocks init/chat/grant via Phase-02 substrate — a deliberate phase boundary), OR declare Phase-01 in-repo complete and pause.
+- **PR pending:** commit the 16 files on a `test/`- or `redteam/`-prefixed branch → push → PR → admin-merge
+  after CI green. (Recommended branch: `test/phase01-redteam-convergence-citation-hygiene`.) Awaiting
+  go-ahead to push/open the PR (outward-facing).
+- Should future-phase `## Test location` sections convert to an explicit `## Tests scheduled to land`
+  shape (like trust-vault.md) to make the shipped-vs-future discriminator mechanical and stop the
+  recurring per-cycle re-distinguish cost? (journal/0055 For-Discussion #2.)
+- In-repo Phase-01 surface remains complete at the 7/10 CLI ceiling; remaining forest (F2 verifier /
+  EC-9, Phase-02 substrate) is externally/strategically gated — unchanged from 0054.

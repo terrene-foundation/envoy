@@ -95,12 +95,15 @@ Grant Moment dialogs that capture credentials use secure-text-field inputs (bypa
 
 ## Test location
 
-- `tests/integration/test_connection_vault_per_platform.py` — macOS/Windows/Linux/iOS/Android keychain round-trip (Tier 2, real OS keychain when available).
-- `tests/regression/test_t007_credential_storage_no_sync.py` — T-007 defense; vault never copied to sync surfaces.
-- `tests/integration/test_per_principal_isolation.py` — Principal A cannot retrieve Principal B's entry without Grant Moment.
-- `tests/integration/test_envelope_scope_enforcement.py` — entry_envelope_scope vs session envelope.
-- `tests/integration/test_post_shamir_recovery_repair.py` — Connection Vault empty after Shamir; user re-pairs.
-- `tests/regression/test_clipboard_autoclear_30s.py` — credential capture clears clipboard ≤30s.
+Phase 01 ships the OS-keychain Connection Vault adapter (macOS Keychain / Windows Credential Manager / Linux Secret Service), per-principal isolation, envelope-scope binding, and the no-sync (T-007) guarantee. Tested in-repo:
+
+- `tests/tier1/test_connection_vault_adapter.py` — `CredentialEntry` dataclass + `entry_envelope_scope`, keychain serialization round-trip, per-principal isolation (`test_get_refuses_entry_owned_by_other_principal`; cross-principal access raises), and `principal_genesis_id`-keyed no-sync storage (T-007: vault never copied to sync surfaces).
+
+## Out of scope (this phase)
+
+- iOS / Android keychain (`Keystore` / native bindings) — Phase 02 (specs/mvp-build-sequence.md Phase-02 hooks item 3).
+- Post-Shamir-recovery Connection-Vault re-pair flow — Phase 02 (depends on the long-running session model).
+- Clipboard auto-clear ≤30s on credential capture — Phase 02 (specs/ui-platform.md § Out of scope).
 
 ## Open questions
 

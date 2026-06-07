@@ -49,7 +49,7 @@ from envoy.ledger.export import (
 )
 from envoy.ledger.facade import EnvoyLedger, VerificationReport
 from envoy.ledger.hash_chain import EntryEnvelope, HashChainBuilder
-from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment
+from envoy.ledger.head import HaltedByRollbackRecord, HeadCommitment, RuntimeIdentity
 from envoy.ledger.lamport import LamportClock
 
 __all__ = [
@@ -70,6 +70,7 @@ __all__ = [
     "LedgerSyncConflictError",
     "LedgerVerificationFailedError",
     "PhaseAOrphanDetectedError",
+    "RuntimeIdentity",
     "SegmentBoundary",
     "TrustAnchorKey",
     "VerificationReport",
