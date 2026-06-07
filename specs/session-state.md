@@ -206,15 +206,23 @@ Per specs/ledger.md §Two-phase signing, Phase A intents without matching Phase 
 
 ## Test location
 
-`tests/integration/test_session_state.py` (Phase 01) + `tests/integration/test_reasoning_commit.py` (Phase 01):
+Phase 01 ships the `ReasoningCommit` and `session_boundary_crossed` Ledger entries (emitted by `envoy/boundary_conversation/runtime.py`: `_ENTRY_REASONING_COMMIT` per S1..S9 transition, `_ENTRY_SESSION_BOUNDARY` at S8 shamir-suspend). Both are tested in-repo:
 
-- First-time-action gate recognition + reset on session boundary.
-- ReasoningCommit byte-identity across runtimes (BET-6).
-- Orphan Phase-A TTL.
-- session_boundary_crossed emission on all 6 triggers.
-- ReasoningCommit preimage-mismatch detection.
+- `tests/tier2/test_boundary_conversation_per_state_ledger_entries.py` — each S1..S9 transition emits a `ReasoningCommit` (`assert len(reasoning) >= 8`); S8 emits `session_boundary_crossed`; full chain verifies end-to-end (`test_chain_verifies_end_to_end`).
+- `tests/tier3/test_boundary_conversation_full_path.py` — the full ritual path exercising the per-state Ledger schedule end-to-end.
 
-Threat tests T-013/T-015/T-019 live here, per specs/threat-model.md §Test location.
+T-019 (velocity ratchet across session boundary) has its dedicated regression test under `tests/regression/` (`test_t019*`).
+
+## Out of scope (this phase)
+
+The full `SessionObservedState` cache surface (tool-call fingerprints, first-time-action gate, goal-reconfirmation counter) is NOT wired in Phase 01 — `KailashRuntime.first_time_action_gate` is a typed Phase-02 stub on both adapters ("requires Wave-2 session state + Grant"; `envoy/runtime/adapters/kailash_py.py`), and `SessionObservedState` is referenced as Phase-04 scope at `envoy/model/errors.py`. The following test surfaces land with the Phase-02 session-state substrate (+ Phase-03 two-phase signing) and are NOT present in Phase 01:
+
+- First-time-action gate recognition + reset on session boundary (Phase-02 session-state cache).
+- ReasoningCommit byte-identity ACROSS runtimes (BET-6 — Phase 02 wires the second runtime; Phase 01 has the single `kailash-py` runtime path tested above).
+- Orphan Phase-A TTL (Phase-03 two-phase signing).
+- `session_boundary_crossed` emission on all 6 triggers (Phase 01 exercises the S8 ritual-suspend trigger; the idle-timeout / user-lock / channel-disconnect triggers land with the long-running session model, Phase-02 hooks item 9).
+- ReasoningCommit preimage-mismatch detection (`ReasoningCommitPreimageMismatchError` — Phase-02 runtime reasoning-context observation).
+- Dedicated T-013 / T-015 threat tests (Phase-01 carries structural mitigations in this spec; the full-matrix threat-coverage gate is the Phase-02 deferral per `workspaces/phase-01-mvp/journal/0053`).
 
 ## Open questions
 

@@ -192,21 +192,28 @@ Per doc 02 §11. Every error logged as Ledger entry with `content_trust_level: s
 
 ## Test location
 
-- `tests/integration/test_envelope_canonical_jcs_corpus_67.py` — 67 JCS test vectors across 6 categories (Tier 2; cross-SDK byte-identity per BET-6).
-- `tests/integration/test_envelope_intersect_commutative.py` — `intersect_envelopes` commutativity + associativity under distinct constraint_id.
-- `tests/integration/test_envelope_classifier_ensemble.py` — minimum-2 classifiers, weighted vote, fail-closed unavailability.
-- `tests/integration/test_envelope_first_time_action_gate.py` — fingerprint cache + session-boundary reset (cross-ref specs/session-state.md).
-- `tests/regression/test_t005_classifier_ensemble_bypass.py` — T-005 defense.
-- `tests/regression/test_t010_t011_prompt_injection_structural.py` — T-010/T-011 structural defense at envelope boundary.
-- `tests/regression/test_t013_composition_aware.py` — T-013 ReasoningCommit composition awareness.
-- `tests/regression/test_t015_system_prompt_pinning.py` — T-015 prompt-size budget + envelope re-read checkpoint.
-- `tests/regression/test_t019_velocity_raise_ratchet.py` — T-019 batch-to-envelope conversion.
-- `tests/regression/test_t021_linter.py` — T-021 envelope linter catches malformed AST.
-- `tests/regression/test_t023_authorship_score.py` — T-023 score-inflation defense.
-- `tests/regression/test_t024_enterprise_mode_attestation.py` — T-024 EnterpriseDeploymentRecord verify.
-- `tests/regression/test_t093_budget_velocity.py` — T-093 budget-exhaustion-fraud.
-- `tests/regression/test_t104_envelope_version_binding.py` — T-104 envelope_version + composed-action binding.
-- `tests/regression/test_t105_subset_proof_schema.py` — T-105 sub-agent envelope-downgrade defense.
+Phase 01 ships the envelope compiler, canonical/JCS encoding, `intersect_envelopes` + monotonic-tightening, the scope predicate, and the authorship-score / posture-ratchet gate. These are tested in-repo:
+
+- `tests/tier1/test_envelope_canonical_bytes_pure.py` + `tests/tier1/test_envelope_config_dataclass_post_init.py` — canonical byte / JCS encoding + `EnvelopeConfig` dataclass invariants (single-runtime byte-identity; cross-runtime BET-6 is Phase 02 per specs/runtime-abstraction.md § Out of scope).
+- `tests/tier1/test_envelope_compiler_pipeline.py` + `tests/tier2/test_envelope_compiler_monotonic_tightening_at_compile.py` — `intersect_envelopes` + `IntersectConflictError` + monotonic-tightening at compile.
+- `tests/tier1/test_envelope_scope_predicate.py` — `envelope_contains_scope` scope-ref predicate.
+- `tests/tier1/test_authorship_score_recompute_pure.py` + `tests/tier1/test_posture_gate_5_step_fail_closed.py` — T-023 authorship-score recompute + score-inflation / posture-ratchet fail-closed defense.
+- `tests/regression/test_t019_velocity_raise_inline_block.py` + `tests/regression/test_t019_novelty_friction_5s_read_delay.py` — T-019 velocity-raise ratchet + batch-to-envelope conversion.
+- `tests/regression/test_t093_budget_exhaustion_fraud.py` — T-093 budget-exhaustion-fraud.
+- `tests/tier2/test_boundary_conversation_per_state_ledger_entries.py` — T-013 ReasoningCommit emission per composition-gated transition (envelope_version carried per entry).
+
+## Out of scope (this phase)
+
+The following envelope-boundary defenses land with their owning primitives in later phases (no Phase-01 implementation; see the owning spec's § Out of scope):
+
+- T-005 semantic classifier-ensemble bypass + minimum-2-classifier weighted vote — Phase 02, with the real `ClassificationPolicy` wiring (specs/classification-policy.md).
+- First-time-action gate fingerprint cache + session-boundary reset — Phase 02 session-state substrate (`first_time_action_gate` is a typed Phase-02 stub; specs/session-state.md).
+- T-010/T-011 prompt-injection structural defense at tool-return — Phase 02 (specs/tool-output-sanitization.md).
+- T-015 system-prompt-size budget + envelope re-read checkpoint — Phase 02 (specs/runtime-abstraction.md).
+- T-021 envelope linter (malformed-AST) — Phase 02 (specs/envelope-library.md).
+- T-024 EnterpriseDeploymentRecord attestation — Phase 02 (specs/enterprise-deployment.md).
+- T-104 full envelope_version + composed-action binding — lands with the long-running session model (Phase-02 hooks item 9 in specs/mvp-build-sequence.md); Phase 01 exercises envelope_version carriage via the grant-moment out-of-envelope detector (`tests/tier1/test_grant_moment_out_of_envelope_detector.py`).
+- T-105 sub-agent SubsetProof envelope-downgrade defense — Phase 03 (specs/sub-agent-delegation.md).
 
 ## §X Change log
 

@@ -96,13 +96,19 @@ Minimum 2 classifiers per semantic check. Weighted vote. Disagreement fails CLOS
 
 ## Test location
 
-`tests/integration/test_classification_policy.py` (Phase 01) exercises: 5-enum ordering, `@classify` decorator canonical-only acceptance (reject `PII` / `SECRET` etc.), MaskingStrategy round-trip (Redact / LastFour / Hash / NullOut), `apply_read_classification` clearance comparison, `format_record_id_for_event` cross-SDK prefix parity. Threat tests T-005 / T-012 live here per specs/threat-model.md §Test location.
+Phase 01 ships the `format_record_id_for_event` classified-PK hashing primitive plus the Ledger-emitter classified-redaction routing (no-policy passthrough). Both are tested in-repo:
 
-Additional:
+- `tests/tier1/test_format_record_id_for_event.py` — `format_record_id_for_event` input-type handling (None / int / str / classified-string) + cross-SDK sha256-8hex prefix parity (T-01-17; the T-012 record-id-hash byte-identity half).
+- `tests/tier2/test_ledger_emitter_classified_redaction.py` — classified-PK values routed through the redactor before Ledger emission; Phase 01 no-policy passthrough (`test_phase01_no_policy_passes_value_through`).
 
-- `tests/regression/test_t005_classifier_ensemble_disagree_fail_closed.py` — T-005 ensemble disagreement fail-closed.
-- `tests/regression/test_t012_record_id_hash_cross_sdk_parity.py` — kailash-py vs kailash-rs sha256-8hex prefix byte-identity.
-- `tests/integration/test_classifier_version_replay.py` — Ledger-recorded classifier version pinning at retrospective verify.
+## Out of scope (this phase)
+
+The full PACT `ClassificationPolicy` enforcement surface lands with the T-01-21 Tier-2 wiring (Phase 02), when a real `ClassificationPolicy` from kailash-dataflow is wired into the ledger emitter (per the deferral note at `envoy/ledger/facade.py`). The following test surfaces land with it and are NOT present in Phase 01:
+
+- `@classify` decorator canonical-only acceptance (5-enum ordering; reject `PII` / `SECRET`) + `apply_read_classification` clearance comparison + MaskingStrategy round-trip (Redact / LastFour / Hash / NullOut).
+- T-005 semantic classifier-ensemble disagreement fail-closed.
+- Ledger-recorded classifier-version pinning at retrospective replay.
+- Full-matrix threat-coverage gate for T-005 / T-012 (per specs/threat-model.md §Test location; the cross-phase threat-coverage meta-gate is the Phase-02 deferral recorded in `workspaces/phase-01-mvp/journal/0053`).
 
 ## Open questions
 

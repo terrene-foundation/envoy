@@ -115,17 +115,20 @@ Signed installer (bash/PowerShell). Platform verification (Gatekeeper/SmartScree
 
 ## Test location
 
-- `tests/integration/test_pipx_install_phase01.py` — `pipx install envoy-agent` PyPI install + `envoy init` bootstrap (Tier 2).
-- `tests/regression/test_t050a_mirror_signature_mismatch.py` — T-050a defense; mirror compromise refused via 2-of-3 hash match.
-- `tests/regression/test_t050b_revoked_signing_key.py` — T-050b defense; revoked-key binary refused.
-- `tests/regression/test_t060_binary_poisoning_reproducible_build.py` — T-060 defense; reproducible-build attestation cross-check.
-- `tests/regression/test_t060_n3_mirror_divergence_refusal.py` — N=3 mirror divergence triggers refusal (T-060 sub-case; mirror-coordination divergence is a sub-class of binary-poisoning defense pending T-061 ratification in anchor doc 09).
-- `tests/integration/test_first_run_offline_model_bundled.py` — local model bundle works without network.
-- `tests/integration/test_upgrade_rollback_30_day_window.py` — rollback within window succeeds; outside refused.
-- `tests/integration/test_uninstall_destroy_vault_double_confirm.py` — `--destroy-vault` requires double-confirm.
-- `tests/integration/test_jurisdictional_advisory_eu_us.py` — GDPR + EAR advisories surface at install.
-- `tests/integration/test_trust_vault_dir_permissions.py` — world-readable Trust Vault dir refused.
-- `tests/e2e/test_first_run_phase02_installer_full.py` — Phase 02 curl-pipe installer + first-run picker (Tier 3).
+Phase 01 distributes via PyPI / `pipx` only; it ships the packaging surface + Trust Vault directory permissions. Tested in-repo:
+
+- `tests/e2e/test_envoy_cli_packaging_acceptance.py` — `pipx install`-shape packaging acceptance (console entry point + subcommand surface + uninstall).
+- `tests/tier1/test_sqlite_perms.py` — `chmod_sqlite_family` applies `0o600` to the Trust Vault sqlite + WAL family so governance rows are not left world-readable.
+
+## Out of scope (this phase)
+
+The binary distribution + N=3 mirror layer + offline-model bundle land in Phase 02 (per `specs/mvp-build-sequence.md` Phase-02 hooks item 8):
+
+- First-run offline-model bundle (no network) — Phase 02.
+- Upgrade / rollback 30-day window + `--destroy-vault` double-confirm uninstall — Phase 02.
+- Jurisdictional (GDPR / EAR) install advisories — Phase 02.
+- Phase-02 curl-pipe installer + first-run picker (Tier 3) — Phase 02.
+- T-050a/b mirror-signature + revoked-key refusal, T-060 reproducible-build + N=3 mirror-divergence refusal — Phase 02 (binary mirror infra).
 
 ## Open questions
 

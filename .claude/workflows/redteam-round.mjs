@@ -15,7 +15,7 @@ const alreadyConfirmed = (args && args.alreadyConfirmed) || 'none'
 
 const PREAMBLE = `PROJECT: envoy — Phase-01 MVP, a Python agent-trust system (consumer of Rust-backed kailash bindings).
 Production package: envoy/  (envelope, trust, ledger, model, connection_vault, runtime, heartbeat, authorship, shamir, boundary_conversation, grant_moment, budget, channels, daily_digest, cli).
-Tests: tests/{tier1,tier2,tier3,integration,regression,e2e,sdk}. Suite GREEN at HEAD 70eea1a (1693 passed).
+Tests: tests/{tier1,tier2,tier3,integration,regression,e2e,sdk}. Suite GREEN at HEAD 5768af8 (1717 collected; re-derive the pass count yourself via 'uv run python -m pytest -q' — do NOT trust this line).
 You are a RED-TEAM finder. Round ${round}. ${priorNote}
 
 SOURCE OF TRUTH: specs/*.md (37 files; specs/_index.md=manifest). EC objectives: workspaces/phase-01-mvp/01-analysis/02-mvp-objectives.md. Brief: workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scope.md. User-flows: workspaces/phase-01-mvp/03-user-flows/.
@@ -83,27 +83,52 @@ const ALL_DIMS = [
 
 const dims = onlyKeys ? ALL_DIMS.filter((d) => onlyKeys.includes(d.key)) : ALL_DIMS
 
+// Rate-limit safety (worktree-isolation.md Rule 4): >3 concurrent Opus agents
+// hit server-side 429 and ALL die at 30-45s. Launch finders + verifications in
+// waves of WAVE (default 3). args.wave overrides.
+const WAVE = (args && args.wave) || 3
+function chunk(arr, n) { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o }
+
 phase('Find')
-log(`Round ${round}: ${dims.length} finders (${dims.map((d) => d.key).join(', ')}) + adversarial verify`)
+log(`Round ${round}: ${dims.length} finders in waves of ${WAVE} (${dims.map((d) => d.key).join(', ')}) + adversarial verify`)
 
-const results = await pipeline(
-  dims,
-  (d) => agent(`${PREAMBLE}\n\nYOUR DIMENSION: ${d.focus}`, { agentType: d.agentType, schema: FINDINGS_SCHEMA, label: `find:${d.key}`, phase: 'Find' }),
-  (findResult, d) => {
-    const findings = (findResult && findResult.findings) || []
-    if (!findings.length) return []
-    return parallel(
-      findings.map((f) => () =>
-        agent(
-          `${PREAMBLE}\n\nADVERSARIAL VERIFICATION (dimension "${d.key}"). REFUTE this finding. Default is_real=false unless you REPRODUCE the evidence.\nFINDING:\n- id: ${f.id}\n- severity claimed: ${f.severity}\n- title: ${f.title}\n- location: ${f.location}\n- claim: ${f.claim}\n- evidence_command: ${f.evidence_command}\n- claimed output: ${f.evidence_output}\n- in_repo_scope claimed: ${f.in_repo_scope}\n- suggested_fix: ${f.suggested_fix}\nSTEPS: (1) re-run evidence_command via Bash; set reproduced. (2) does the claim hold at HEAD or is the line out of context/handled elsewhere? (3) is it a KNOWN DISPOSITION → is_real=false, NOT_A_FINDING. (4) fixable in THIS repo this session → in_repo_scope. (5) re-grade severity honestly. EMIT the verdict via StructuredOutput as your final action.`,
-          { agentType: 'general-purpose', schema: VERDICT_SCHEMA, label: `verify:${d.key}:${f.id}`, phase: 'Verify' },
-        ).then((v) => ({ dimension: d.key, finding: f, verdict: v })),
-      ),
-    )
-  },
-)
+// Stage 1 — finders, wave-batched. Track per-dimension emit success so a
+// rate-limited / budget-overrun finder surfaces as FAILED-TO-EMIT (not silent 0).
+const findResults = []
+for (const w of chunk(dims, WAVE)) {
+  const batch = await parallel(
+    w.map((d) => () =>
+      agent(`${PREAMBLE}\n\nYOUR DIMENSION: ${d.focus}`, { agentType: d.agentType, schema: FINDINGS_SCHEMA, label: `find:${d.key}`, phase: 'Find' })
+        .then((r) => ({ d, findings: (r && r.findings) || [], emitted: !!r }))
+        .catch(() => ({ d, findings: [], emitted: false })),
+    ),
+  )
+  findResults.push(...batch.filter(Boolean))
+}
 
-const all = results.flat().filter(Boolean)
+const emittedKeys = findResults.filter((r) => r.emitted).map((r) => r.d.key)
+const failedToEmit = dims.filter((d) => !emittedKeys.includes(d.key)).map((d) => d.key)
+log(`Find done: emitted [${emittedKeys.join(', ') || 'none'}]; FAILED-TO-EMIT [${failedToEmit.join(', ') || 'none'}]`)
+
+const rawFindings = findResults.flatMap((r) => r.findings.map((f) => ({ dimension: r.d.key, finding: f })))
+log(`${rawFindings.length} raw findings → adversarial verify in waves of ${WAVE}`)
+
+// Stage 2 — adversarial verification, wave-batched.
+phase('Verify')
+const all = []
+for (const w of chunk(rawFindings, WAVE)) {
+  const batch = await parallel(
+    w.map(({ dimension, finding: f }) => () =>
+      agent(
+        `${PREAMBLE}\n\nADVERSARIAL VERIFICATION (dimension "${dimension}"). REFUTE this finding. Default is_real=false unless you REPRODUCE the evidence.\nFINDING:\n- id: ${f.id}\n- severity claimed: ${f.severity}\n- title: ${f.title}\n- location: ${f.location}\n- claim: ${f.claim}\n- evidence_command: ${f.evidence_command}\n- claimed output: ${f.evidence_output}\n- in_repo_scope claimed: ${f.in_repo_scope}\n- suggested_fix: ${f.suggested_fix}\nSTEPS: (1) re-run evidence_command via Bash; set reproduced. (2) does the claim hold at HEAD or is the line out of context/handled elsewhere? (3) is it a KNOWN DISPOSITION → is_real=false, NOT_A_FINDING. (4) fixable in THIS repo this session → in_repo_scope. (5) re-grade severity honestly. EMIT the verdict via StructuredOutput as your final action.`,
+        { agentType: 'general-purpose', schema: VERDICT_SCHEMA, label: `verify:${dimension}:${f.id}`, phase: 'Verify' },
+      )
+        .then((v) => ({ dimension, finding: f, verdict: v }))
+        .catch(() => ({ dimension, finding: f, verdict: null })),
+    ),
+  )
+  all.push(...batch.filter(Boolean))
+}
 const confirmed = all.filter((r) => r.verdict && r.verdict.is_real && r.verdict.reproduced && r.verdict.in_repo_scope && r.verdict.correct_severity !== 'NOT_A_FINDING')
 const refuted = all.filter((r) => !(r.verdict && r.verdict.is_real && r.verdict.reproduced && r.verdict.in_repo_scope && r.verdict.correct_severity !== 'NOT_A_FINDING'))
 const sev = (s) => confirmed.filter((r) => r.verdict.correct_severity === s).length
@@ -112,6 +137,7 @@ log(`Round ${round}: ${all.length} raw → ${confirmed.length} confirmed (CRIT $
 
 return {
   round, total_raw: all.length, confirmed_count: confirmed.length,
+  failed_to_emit: failedToEmit,
   counts: { CRITICAL: sev('CRITICAL'), HIGH: sev('HIGH'), MED: sev('MED'), LOW: sev('LOW') },
   confirmed: confirmed.map((r) => ({ dimension: r.dimension, id: r.finding.id, severity: r.verdict.correct_severity, title: r.finding.title, location: r.finding.location, claim: r.finding.claim, evidence_command: r.finding.evidence_command, suggested_fix: r.finding.suggested_fix, refutation_notes: r.verdict.refutation_notes })),
   refuted: refuted.map((r) => ({ dimension: r.dimension, id: r.finding.id, claimed_severity: r.finding.severity, title: r.finding.title, reason: r.verdict ? r.verdict.refutation_notes : 'no verdict' })),
