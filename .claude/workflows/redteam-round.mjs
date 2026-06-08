@@ -34,6 +34,8 @@ ALREADY CONFIRMED THIS CYCLE (being fixed; do NOT re-report — only report NEW 
 RIGOR: every assertion MUST cite a LITERAL command (grep -n/-c, python3 -c 'import ast...', uv run pytest --collect-only -q, wc -l) AND its ACTUAL output. "exists: yes"/"looks correct" = BLOCKED. Re-derive from scratch.
 SEVERITY: CRITICAL=security/data-integrity/silent-corruption or broken acceptance gate; HIGH=spec divergence w/o logged deviation, new module zero tests, fake/stub-as-real, error-hiding losing a stack trace; MED=actionability/hygiene; LOW=cosmetic/doc.
 
+SHIPS-CLAIM <-> REAL-IMPL CROSS-CHECK (spec dims; codified 2026-06-07 from the F1-r2 finding): a spec sentence claiming "Phase-01 ships X" MUST grep to a NON-STUB impl in envoy/; a ships-claim naming a deferred / typed-stub / Phase-02+ feature is a HIGH over-claim (origin: data-model.md over-claimed the duress shadow-segment real-only-key as Phase-01 when trust-vault.md + vault.py mark it Phase-04). Symmetric to disposition #6: a "## Test location" must cite a REAL test for a SHIPPED primitive (phantom path while the real test exists elsewhere = HIGH drift), and an "## Out of scope (this phase)" must name a GENUINELY-deferred feature (verify no real impl/test exists). Verify BOTH directions before grading a spec clean.
+
 *** BUDGET + EMIT DISCIPLINE (CRITICAL) ***
 Spend AT MOST ~60% of your effort investigating. You have limited budget. Your FINAL action MUST be a single StructuredOutput call carrying your findings array (use findings:[] if you found nothing). Do NOT write a prose report instead of calling StructuredOutput — a prose report with no StructuredOutput call is a FAILED run. Cap at ~8 findings; pick the highest-severity. Stop investigating and EMIT before you run low on budget.`
 
@@ -86,6 +88,13 @@ const dims = onlyKeys ? ALL_DIMS.filter((d) => onlyKeys.includes(d.key)) : ALL_D
 // Rate-limit safety (worktree-isolation.md Rule 4): >3 concurrent Opus agents
 // hit server-side 429 and ALL die at 30-45s. Launch finders + verifications in
 // waves of WAVE (default 3). args.wave overrides.
+// FALLBACK (2026-06-07): under a live server-side throttle even waves of 3 can
+// 429 (the verify burst overlaps the next finder wave), AND schema-forced
+// StructuredOutput finders are unreliable under throttle (they investigate then
+// fail to emit). When that happens, abandon this workflow and run the round as
+// direct mechanical sweeps + SCHEMA-LESS SEQUENTIAL Agent calls (one at a time =
+// no concurrency throttle) — the reliable path that carried the 2026-06-07
+// convergence. See workspaces/phase-01-mvp/journal/0055 + .session-notes Traps.
 const WAVE = (args && args.wave) || 3
 function chunk(arr, n) { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o }
 
