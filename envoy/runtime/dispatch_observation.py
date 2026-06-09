@@ -36,7 +36,6 @@ import contextlib
 import contextvars
 import dataclasses
 from collections.abc import Iterator
-from typing import Optional
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,7 +67,7 @@ class _DispatchAccumulator:
 # `record_dispatch` call outside `observe()` is a no-op (the production hot path
 # dispatches the classifier without the harness watching; only the harness opens
 # an observation context).
-_active: contextvars.ContextVar[Optional[_DispatchAccumulator]] = contextvars.ContextVar(
+_active: contextvars.ContextVar[_DispatchAccumulator | None] = contextvars.ContextVar(
     "envoy_dispatch_observation", default=None
 )
 
@@ -89,7 +88,7 @@ def record_dispatch(ref: str) -> None:
 
 
 @contextlib.contextmanager
-def observe() -> Iterator["_ObservationHandle"]:
+def observe() -> Iterator[_ObservationHandle]:
     """Open a dispatch-observation context.
 
     Usage in the harness::
@@ -119,7 +118,7 @@ class _ObservationHandle:
 
     def __init__(self, acc: _DispatchAccumulator) -> None:
         self._acc = acc
-        self._sealed: Optional[DispatchObservation] = None
+        self._sealed: DispatchObservation | None = None
 
     def _seal(self) -> None:
         self._sealed = DispatchObservation(
