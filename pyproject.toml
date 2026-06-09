@@ -117,6 +117,16 @@ filterwarnings = [
     # Upstream-file candidate (human-gated per upstream-issue-hygiene.md) — tracked in
     # workspaces/phase-02-distribution journal.
     "ignore:Instance-based API usage detected:UserWarning",
+    # Upstream kailash SDK resource leak: `nexus.Nexus.close()` does not cascade
+    # to close the internal `AsyncLocalRuntime` it constructs, so a GC-time
+    # ResourceWarning surfaces for every test that builds a Nexus app (the S8
+    # Envelope Library FV registry tests and the S10 OHTTP server tests). envoy
+    # IS closing every Nexus app it owns (the `build_nexus` test fixtures call
+    # `app.close()`); the residual leak is inside kailash and unfixable from this
+    # application repo. Scoped by message+category so it never masks an
+    # envoy-originated ResourceWarning. Upstream-file candidate (human-gated per
+    # upstream-issue-hygiene.md) — tracked in workspaces/phase-02-distribution.
+    "ignore:Unclosed AsyncLocalRuntime:ResourceWarning",
 ]
 markers = [
     "regression: Permanent regression tests reproducing fixed bugs (rules/testing.md § Regression Testing); never deleted",
@@ -169,4 +179,15 @@ disallow_any_generics = false
 # framework decorator is untyped. `strict` still enforces the rest of envoy's
 # registry surface (steward_quorum, fv_resolver, storage, errors).
 module = "envoy.registry.library_app"
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# The S10 OHTTP Key Config Server + Relay handler set registers callables via
+# the Nexus `@app.handler(...)` decorator, which ships untyped (kailash-nexus
+# has no type stubs; `ignore_missing_imports` resolves it to Any). An untyped
+# decorator makes the decorated handler untyped under `strict` — relax
+# untyped-decorator for this module only, exactly as for `library_app` above.
+# The handler bodies + the HPKE crypto core + the TLS policy gate are fully
+# typed; only the framework decorator is untyped.
+module = "envoy.foundation_ops.ohttp_server"
 disallow_untyped_decorators = false

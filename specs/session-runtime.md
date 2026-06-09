@@ -11,11 +11,12 @@ process, rather than in process memory.
 
 Code-first per `rules/specs-authority.md` Rule 5 + `rules/spec-accuracy.md`
 Rule 5: this spec describes ONLY what is shipped on the branch. The router opens
-the empty-but-durable store + the raw region read/write surface. It does NOT
-yet contain the cross-process decision rendezvous (poll), the `grant` read
-surface, the `init` genesis write, or the SessionObservedState gate
-semantics — those land in their own shards (S4r / S4g / S4i / S5o) and extend
-this spec as they ship.
+the empty-but-durable store + the raw region read/write surface, AND (S4r) the
+cross-process decision rendezvous — the store-poll-with-monotonic-version-re-check
+that replaces the in-process `asyncio.Future`. It does NOT yet contain the
+`grant` read surface, the `init` genesis write, or the SessionObservedState gate
+semantics — those land in their own shards (S4g / S4i / S5o) and extend this
+spec as they ship.
 
 ## Provenance
 
@@ -102,7 +103,7 @@ The durable form of `runtime.py:403`'s in-memory `_inflight` queue.
 
 | Column            | Type    | Notes                                                                        |
 | ----------------- | ------- | ---------------------------------------------------------------------------- |
-| `request_id`      | TEXT PK | key shape — the `GrantMomentRequest.request_id` (uuid-v7)                     |
+| `request_id`      | TEXT PK | key shape — the `GrantMomentRequest.request_id` (uuid-v7)                    |
 | `principal_id`    | TEXT    | owning principal                                                             |
 | `session_id`      | TEXT    | issuing session                                                              |
 | `state`           | TEXT    | enum `pending` / `resolved` / `expired`, enforced by a SQLite CHECK          |
@@ -127,9 +128,21 @@ Raw store surface shipped in S4s:
 - `put_pending_grant(*, request_id, session_id, request_json, ttl_expires_at)` —
   enqueue (state=pending, version=1); re-put bumps `version`, keeps `created_at`.
 - `get_pending_grant(request_id) -> PendingGrantRow | None` — cross-process
-  read-back (returns `version` for the S4r poll re-check); None if absent.
+  read-back (returns `version` + `resolution_json` for the S4r poll re-check);
+  None if absent.
 - `count_pending_grants() -> int` — count of `state=pending` rows for the
   principal (the primitive S4g's back-pressure ceiling reads).
+
+Resolution-write surface shipped in S4r:
+
+- `resolve_pending_grant(*, request_id, resolution_json, state="resolved") -> int` —
+  the cross-process WRITE half. Flips a `pending` row to `resolved` (or
+  `expired`), persists `resolution_json`, bumps `version`, and returns the new
+  version. The UPDATE is gated on `state='pending'` as a cross-process
+  compare-and-set: a double-resolve or an absent row raises `KeyError` (lost-update
+  / double-resolve guard) rather than silently no-op'ing. `resolution_json` MUST
+  be a parseable JSON object (fail-loud). `PendingGrantRow` carries
+  `resolution_json` so the poller reconstructs the answer.
 
 `request_json` MUST be a parseable JSON object — a malformed blob raises at the
 write boundary (fail-loud per `rules/zero-tolerance.md` Rule 2). S4s does NOT
@@ -142,13 +155,13 @@ The durable snapshot home for `specs/session-state.md` § Persistence
 ("snapshot to Trust Vault encrypted at every Ledger append, so a crash
 mid-session preserves orphan-phase-A tracking", `session-state.md:182`).
 
-| Column         | Type    | Notes                                                                 |
-| -------------- | ------- | --------------------------------------------------------------------- |
-| `session_id`   | TEXT PK | key shape — the `SessionObservedState.session_id` (uuid-v7)           |
-| `principal_id` | TEXT    | owning principal                                                      |
-| `state_json`   | TEXT    | canonical-JSON `SessionObservedState`, stored verbatim                |
-| `version`      | INTEGER | monotonic; bumped on every snapshot                                   |
-| `updated_at`   | TEXT    | ISO-8601                                                              |
+| Column         | Type    | Notes                                                       |
+| -------------- | ------- | ----------------------------------------------------------- |
+| `session_id`   | TEXT PK | key shape — the `SessionObservedState.session_id` (uuid-v7) |
+| `principal_id` | TEXT    | owning principal                                            |
+| `state_json`   | TEXT    | canonical-JSON `SessionObservedState`, stored verbatim      |
+| `version`      | INTEGER | monotonic; bumped on every snapshot                         |
+| `updated_at`   | TEXT    | ISO-8601                                                    |
 
 Raw store surface shipped in S4s:
 
@@ -161,11 +174,99 @@ S4s stores + returns the `state_json` verbatim. The fingerprint /
 first-time-action gate / goal-reconfirmation semantics that DERIVE the blob are
 owned by S5o (`specs/session-state.md` § Algorithm), which consumes this region.
 
+## Cross-process decision rendezvous (S4r)
+
+The `grant` flow issues a Grant Moment in one CLI invocation and answers it in
+another, separate OS process. An in-process `decision_future: asyncio.Future`
+cannot be `set_result`-ed across that boundary; S4r replaces it with a
+**store-poll-with-monotonic-version-re-check as the PRIMARY mechanism**, wired
+through `envoy/grant_moment/runtime.py::EnvoyGrantMomentRuntime`.
+
+When a `SessionRouter` is injected (`session_router=` constructor kwarg), the
+durable pending-grant sub-store is the rendezvous AUTHORITY:
+
+1. **Issue (M0/M1)** — the runtime writes the signed `GrantMomentRequest` to the
+   sub-store via `put_pending_grant` and records the `version` observed at issue
+   (`store_version_at_issue`).
+2. **Answer (cross-process)** — a SEPARATE process writes the resolution via
+   `resolve_pending_grant(request_id, resolution_json, state="resolved")`, which
+   flips `pending → resolved` and bumps `version`. The resolution wire form is
+   produced by the `resolution_to_json` / `resolution_from_json` codec
+   (`envoy/grant_moment/resolution.py`), which preserves the concrete
+   `ResolutionShape` subclass across the boundary.
+3. **Resume (M2 poll)** — `await_decision` polls `get_pending_grant`, treating
+   `state in {resolved, expired} AND version > store_version_at_issue` as the
+   resolution signal. The version-re-check is the lost-update guard: comparing
+   against the issue-time version (not the prior poll's) means a writer that
+   resolves between issue and the first poll is still observed. Each poll opens
+   a fresh SQLite connection (WAL), so a concurrent committed write is visible
+   on the next tick — no stale snapshot.
+
+**Resolution authenticity (fail-closed).** A resolution row crosses an OS-process
+boundary, so before `await_decision` treats it as the user's decision the row's
+detached signature MUST verify. `resolve_pending_grant` signs the resolution at
+the write boundary: the answering process signs `resolution_signing_payload(
+request_id, resolution_json)` — a sorted-key JSON envelope binding the
+`request_id` to the canonical resolution — with the session signing key
+(`SESSION_SIGNING_KEY_ID`), persisting the hex signature in the `resolution_sig`
+column alongside `resolution_json` in the same atomic UPDATE. On read,
+`_poll_store_for_resolution` calls `SessionRouter.verify_resolution_signature`
+and raises `GrantMomentResolutionUnauthenticatedError` (fail-closed) on a
+missing, malformed, invalid, or tampered signature, or one whose `request_id`
+binding does not match — so a resolution written by direct sqlite tampering or
+by a process lacking the session key is REFUSED, never executed. The `request_id`
+binding defeats replay of a captured signature onto a different pending row. The
+same-process fast-path (a `post_decision` that sets the in-process future) needs
+no verification: it was produced in-process by the adapter and is trusted by
+construction. The signature authenticates that the resolution came from a holder
+of the session signing key; distinguishing a distinct _answerer principal_ by a
+separate co-signing key is out of this spec's scope (the cross-principal
+dual-signature surface is owned by `specs/grant-moment.md`).
+
+The in-process `asyncio.Future` survives ONLY as a same-process fast-path cache
+OVER the store (a same-process `post_decision` short-circuits the poll), never
+as the cross-process rendezvous. Local IPC-signal is a per-platform optimization
+layered on the store, NOT an OR — the store is authority regardless (local IPC
+breaks on musl-static per the WS-6 architecture verdict). When NO router is
+wired (legacy single-process callers, Tier-1 unit tests), the future is the
+same-process-only rendezvous (Phase-01 fallback).
+
+**Timeout-audit-row preservation (zero-tolerance Rule 1):** on poll-timeout the
+runtime drives the SAME `next_state(.., TIMEOUT_EXPIRED)` M2→M3 transition and
+raises the SAME `GrantMomentExpiredError(request_id, timeout_seconds)` as the
+Phase-01 `asyncio.TimeoutError` path. The timeout path appends NO ledger row in
+either configuration; the only durable audit row a timed-out grant emits is the
+Phase-A row written at issue, which is byte-identical across both paths
+(`specs/grant-moment.md` § Timeout + § State machine).
+
+### Poll interval / backoff (open-question #4 — DECIDED)
+
+**Decision: bounded exponential backoff, 50ms start → 500ms cap, ×2 per idle
+poll.** Constants `_DEFAULT_POLL_INTERVAL_START_SECONDS = 0.05`,
+`_DEFAULT_POLL_INTERVAL_CAP_SECONDS = 0.5`, `_POLL_INTERVAL_BACKOFF_FACTOR = 2.0`
+in `envoy/grant_moment/runtime.py`; overridable via the constructor for tests.
+
+Rationale: a `grant` is answered by a human at a CLI prompt, so the latency is
+seconds-to-minutes. The 50ms first interval makes a fast local answer resume
+near-instantly; the ×2 backoff to a 500ms ceiling means a 5-minute deliberation
+costs ≈ (5 × 60 / 0.5) ≈ 600 idle reads of a small WAL SQLite file — negligible
+disk load — rather than 6000+ at a flat 50ms. The interval is a per-platform
+OPTIMIZATION of the poll cadence, NOT a correctness parameter: the store is
+authority and the monotonic-version guard holds at any cadence, so tuning the
+interval cannot change which resolution is observed, only how soon.
+
 ## Public surface
 
 `envoy.runtime.session` exports (also re-exported from `envoy.runtime`):
 `SessionRouter`, `PendingGrantRow`, `PENDING_GRANT_STATES`,
-`SESSION_SIGNING_KEY_ID`, `session_db_path`.
+`SESSION_SIGNING_KEY_ID`, `session_db_path`. `SessionRouter` now also exposes
+`resolve_pending_grant` (S4r write half); `PendingGrantRow` carries
+`resolution_json`.
+
+The cross-process resolution codec `resolution_to_json` / `resolution_from_json`
+is exported from `envoy.grant_moment` (it owns the `ResolutionShape` types). The
+runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
+`envoy/grant_moment/runtime.py`.
 
 ## Test location
 
@@ -176,6 +277,16 @@ owned by S5o (`specs/session-state.md` § Algorithm), which consumes this region
   the real SQLite CHECK constraint (store is real, not a dict), and fail-loud
   boundary validation. Real file-backed SQLite + real Ed25519 keychain key via
   an injected dict backend; no mocking.
+- `tests/tier2/test_grant_moment_store_poll_rendezvous.py` — Tier-2 S4r
+  cross-process rendezvous: process A's runtime issues + polls; a SEPARATE
+  `SessionRouter` instance (fresh-process model) writes the resolution to the
+  sub-store via `resolve_pending_grant`; A's `await_decision` poll resumes — NOT
+  a same-event-loop `set_result`. Covers the monotonic-version lost-update guard
+  (a version bump on a still-pending row is NOT a resolution; a resolved row
+  written mid-poll IS observed) and the timeout-audit-row byte-identity (a
+  poll-timeout emits the byte-identical Phase-A row + `GrantMomentExpiredError`
+  and NO extra ledger row vs the Phase-01 future path). Real file-backed SQLite +
+  real codec; no mocking.
 
 ## Cross-references
 
@@ -183,17 +294,18 @@ owned by S5o (`specs/session-state.md` § Algorithm), which consumes this region
   (Region 2 stores this blob; S5o owns its semantics).
 - **specs/grant-moment.md** — `GrantMomentRequest` / `GrantMomentResult` wire
   formats (Region 1 stores the request verbatim; S4r / S4g own the rendezvous
-  + resolution).
+  - resolution).
 - **specs/data-model.md** — Trust Vault persisted entities; the
   rebuild-from-replay generalization of these regions (Phase-02 multi-device).
 - **specs/runtime-abstraction.md** — the abstract runtime the `SessionRouter`
   composes with (Phase-02 substrate-gated adapter methods).
 
-## Out of scope (this shard — separate shards extend this spec)
+## Out of scope (separate shards extend this spec)
 
-- Cross-process decision rendezvous — `await_decision` store-poll-with-monotonic-version
-  re-check, replacing the in-process `asyncio.Future` (S4r).
-- `grant` read surface + sign-resolution flow + nonce dedup (S4g).
+- `grant` CLI read surface (`grant list` / `grant approve|deny`) + the
+  back-pressure ceiling + cross-process nonce dedup (S4g). S4r ships the
+  rendezvous codec + poll + the `resolve_pending_grant` write primitive the
+  `grant` CLI drives; the CLI subcommand + its UX are S4g.
 - `init` / Boundary-Conversation genesis write (S4i).
 - SessionObservedState first-time-action gate + reset-on-boundary writes (S5o).
 - Multi-device materialized-index rebuild-from-replay (`specs/data-model.md:99`,
