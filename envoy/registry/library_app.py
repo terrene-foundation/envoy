@@ -25,19 +25,82 @@ quorum-verify catches that.
 instance (the deep-dive's "ONE NexusApp handler set"); `LibraryRegistryHandlers`
 exposes the same callables for the Tier-2 harness to drive through the real
 registry without binding a port.
+
+**Publish is an air-gapped-ceremony-only entry, NOT network-exposed this phase.**
+FV `library.publish` records bytes + steward signatures produced offline by the
+Foundation's air-gapped signing ceremony; the Nexus `publish` handler is NOT a
+network-writable surface in Phase-02 (the FV read path — `fetch` / `resolve_tier`
+/ `list` — is the only live network surface; Community/Org publish is gated off
+behind `CommunityPublishingDisabledError`). There is no authenticated-publish
+seam to gate on yet, so the publish handler hardens its UNTRUSTED inputs
+defensively (strict `template_id` / `version` charset + length validation +
+bounded `steward_signatures`) so that even if a garbage / unauthenticated
+publish reaches it, it cannot fill the store with junk or shadow a legitimate
+`template_id@version`. When an auth seam lands (Phase-03+), gate the handler on
+it; until then, input-bounds hardening is the structural defense.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from envoy.registry.errors import CommunityPublishingDisabledError
+from envoy.registry.errors import (
+    CommunityPublishingDisabledError,
+    PublishInputError,
+)
+from envoy.registry.steward_quorum import MAX_STEWARD_SIGNATURES
 from envoy.registry.storage import ContentAddressedStore, LibraryRecord, Tier
 
 # The Phase at which Community-tier publishing opens (deep-dive § 1.1).
 _COMMUNITY_PUBLISH_PHASE = "Phase-03"
+
+# Max length for a `template_id` / `version` identifier on the publish path.
+# Mirrors the S4 `_validate_id_safety` 256-char DoS guard; identifiers feed
+# content-store metadata keys, never raw filesystem paths, but the same bound
+# blocks a memory-DoS via a multi-megabyte identifier.
+_MAX_IDENTIFIER_LEN = 256
+
+
+def _validate_publish_identifier(value: object, *, field: str) -> str:
+    """Validate a `template_id` / `version` from the UNTRUSTED publish surface.
+
+    Mirrors S4's `_validate_id_safety` (`envoy/trust/store.py`): reject inputs
+    that could enable path-traversal, null-byte, or control-character attacks,
+    or a memory-DoS via an oversized identifier. Returns the validated `str`.
+
+    Raises `PublishInputError` on:
+      - non-`str`
+      - empty
+      - length > 256 (DoS guard)
+      - leading `.` (hidden-file shape)
+      - null byte (`\\x00`) or any C0/C1 control character
+      - `/` or `\\` (path separator)
+      - `..` (path traversal)
+
+    These identifiers index content-store metadata (`template_id@version`); a
+    crafted value MUST NOT be able to shadow another entry's key or smuggle a
+    traversal component into a future filesystem-backed persistence target.
+    """
+    if not isinstance(value, str):
+        raise PublishInputError(f"{field} must be str (got {type(value).__name__})")
+    if not value:
+        raise PublishInputError(f"{field} must not be empty")
+    if len(value) > _MAX_IDENTIFIER_LEN:
+        raise PublishInputError(f"{field} length {len(value)} exceeds max {_MAX_IDENTIFIER_LEN}")
+    if value.startswith("."):
+        raise PublishInputError(f"{field} must not start with '.' (hidden-file shape)")
+    if "\x00" in value:
+        raise PublishInputError(f"{field} contains null byte")
+    if any(unicodedata.category(ch) == "Cc" or 0x7F <= ord(ch) < 0xA0 for ch in value):
+        raise PublishInputError(f"{field} contains control character")
+    if "/" in value or "\\" in value:
+        raise PublishInputError(f"{field} contains path separator")
+    if ".." in value:
+        raise PublishInputError(f"{field} contains '..' (path traversal)")
+    return value
 
 
 def _record_to_wire(record: LibraryRecord) -> dict[str, Any]:
@@ -95,6 +158,10 @@ class LibraryRegistryHandlers:
             "content_hash": record.content_hash,
             "tier": record.tier.value,
             "steward_signatures": [dict(s) for s in record.steward_signatures],
+            # `published_at` rides along as the freshness marker the offline
+            # resolver uses to refuse a cached entry that a newer (supersedes)
+            # publish has rolled forward past (pin-rollback defense).
+            "published_at": record.published_at,
         }
 
     def resolve_tier(self, *, template_id_version: str) -> dict[str, Any] | None:
@@ -124,15 +191,31 @@ class LibraryRegistryHandlers:
         ceremony, never by this code). Community/Org: raises
         `CommunityPublishingDisabledError` (rendered HTTP 503) unless the
         feature flag is flipped (Phase-03 enable).
+
+        Defensive input hardening (this surface is air-gapped-ceremony-only and
+        NOT network-writable this phase — see module docstring): `template_id`
+        and `version` are validated against a strict charset + length, and
+        `steward_signatures` is bounded by `MAX_STEWARD_SIGNATURES`, so an
+        unauthenticated / garbage publish cannot fill the store or shadow a
+        `template_id@version`. Validation runs BEFORE the tier gate so a
+        malformed identifier is rejected regardless of tier.
         """
+        validated_id = _validate_publish_identifier(template_id, field="template_id")
+        validated_version = _validate_publish_identifier(version, field="version")
+        n_sigs = len(steward_signatures)
+        if n_sigs > MAX_STEWARD_SIGNATURES:
+            raise PublishInputError(
+                f"steward_signatures length {n_sigs} exceeds max "
+                f"{MAX_STEWARD_SIGNATURES} (verify-cost DoS guard)"
+            )
         tier_enum = Tier(tier)
         if tier_enum is not Tier.FOUNDATION_VERIFIED and not self.community_publish_enabled:
             raise CommunityPublishingDisabledError(
                 f"{tier_enum.value} publishing opens {_COMMUNITY_PUBLISH_PHASE}"
             )
         record = self.store.put(
-            template_id=template_id,
-            version=version,
+            template_id=validated_id,
+            version=validated_version,
             content=content,
             tier=tier_enum,
             steward_signatures=steward_signatures,

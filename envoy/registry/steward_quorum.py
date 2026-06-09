@@ -56,6 +56,15 @@ from envoy.registry.errors import (
     StewardQuorumReason,
 )
 
+# Upper bound on the published steward-signature array. The transport is
+# untrusted (`fv_resolver` re-verifies but does NOT bound the count), so an
+# attacker-controlled fetch can hand the verifier an arbitrarily long
+# `signatures` array and force one expensive Ed25519 verify per pinned,
+# non-revoked, distinct entry — a verify-cost DoS. A real N-of-M Foundation
+# steward set is tiny (2-of-N, N in the low single digits); 64 is far above any
+# legitimate quorum yet caps the worst-case verify count to a constant.
+MAX_STEWARD_SIGNATURES = 64
+
 
 class _VerifyKeyManager(Protocol):
     """The single method `verify_steward_quorum` needs from a key manager.
@@ -104,7 +113,9 @@ async def verify_steward_quorum(
         signed `content_hash`.
 
     Raises:
-        StewardQuorumInputError: `threshold < 1` (caller programming error).
+        StewardQuorumInputError: `threshold < 1` (caller programming error) OR
+            `len(signatures) > MAX_STEWARD_SIGNATURES` (untrusted-input bound —
+            an oversized array is a verify-cost DoS, not a real quorum).
         StewardQuorumError: the quorum is not met. Carries a structured
             `reason` (`StewardQuorumReason`) + `distinct_valid` + `threshold`
             so consumers map to their own taxonomy structurally.
@@ -113,6 +124,19 @@ async def verify_steward_quorum(
         raise StewardQuorumInputError(
             f"threshold must be >= 1 (got {threshold}); a zero threshold would "
             "fail-open and accept unsigned content"
+        )
+
+    # Bound the untrusted signature array BEFORE the verify loop. The transport
+    # is not trusted, so an unbounded array forces one Ed25519 verify per
+    # candidate entry (verify-cost DoS). Reject early — no real Foundation
+    # quorum approaches this size. (len() works for both Sequence and the
+    # general case; the verifier only iterates `signatures` once below.)
+    n_signatures = len(signatures)
+    if n_signatures > MAX_STEWARD_SIGNATURES:
+        raise StewardQuorumInputError(
+            f"signature array length {n_signatures} exceeds max "
+            f"{MAX_STEWARD_SIGNATURES}; an oversized array forces an unbounded "
+            "number of Ed25519 verifies (verify-cost DoS) — refusing"
         )
 
     pinned = set(pinned_pubkeys)
@@ -173,4 +197,4 @@ async def verify_steward_quorum(
     )
 
 
-__all__ = ["verify_steward_quorum"]
+__all__ = ["MAX_STEWARD_SIGNATURES", "verify_steward_quorum"]

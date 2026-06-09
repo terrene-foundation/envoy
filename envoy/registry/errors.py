@@ -67,11 +67,26 @@ class StewardQuorumError(Exception):
 
 
 class StewardQuorumInputError(ValueError):
-    """A malformed input to `verify_steward_quorum` (e.g. threshold < 1).
+    """A malformed input to `verify_steward_quorum` (e.g. threshold < 1, or an
+    oversized signature array beyond `MAX_STEWARD_SIGNATURES`).
 
     Distinct from `StewardQuorumError` — this is a programming error in the
-    CALLER, not a failed-verification verdict. Raising rather than returning
-    False prevents a degenerate `threshold=0` from silently "passing".
+    CALLER (or an untrusted-input bound violation), not a failed-verification
+    verdict. Raising rather than returning False prevents a degenerate
+    `threshold=0` from silently "passing" and bounds the verify-cost DoS surface
+    of an unbounded signature array.
+    """
+
+
+class PublishInputError(ValueError):
+    """A malformed / out-of-bounds input to the `library.publish` handler.
+
+    Raised when `template_id` / `version` fail strict charset + length
+    validation (null byte, control char, path separator, `..`, leading `.`,
+    >256 len, non-`str`) OR `steward_signatures` exceeds `MAX_STEWARD_SIGNATURES`.
+    The publish surface is air-gapped-ceremony-only this phase (NOT
+    network-writable); this guard hardens it so an unauthenticated / garbage
+    publish cannot fill the store or shadow a `template_id@version`.
     """
 
 
@@ -115,6 +130,23 @@ class FVTierMembershipNotProvenError(LibraryError):
     """
 
 
+class StaleOfflineTemplateError(LibraryError):
+    """An offline (cached) resolve would serve a SUPERSEDED template version.
+
+    The offline content-addressed cache is keyed by `(id_version, content_hash)`
+    and the resolver tracks the highest `published_at` it has ever observed for
+    each `id_version`. A cached entry whose `published_at` is OLDER than that
+    high-water mark is a pin-rollback: a still-validly-signed but superseded
+    version that an offline consumer would otherwise accept with no rollback
+    signal. Refuse it — the consumer must reach the network for the current
+    version (or pin the expected `content_hash` explicitly).
+
+    `specs/envelope-library.md` § Error taxonomy (offline freshness): distinct
+    from `LibraryUnreachableError` (no entry at all) — here an entry EXISTS but
+    is known-stale.
+    """
+
+
 class CommunityPublishingDisabledError(LibraryError):
     """Community-tier publish attempted while the tier is frozen (Phase 03).
 
@@ -129,7 +161,9 @@ __all__ = [
     "FVTierMembershipNotProvenError",
     "LibraryError",
     "LibraryUnreachableError",
+    "PublishInputError",
     "PublisherSignatureInvalidError",
+    "StaleOfflineTemplateError",
     "StewardQuorumError",
     "StewardQuorumInputError",
     "StewardQuorumReason",
