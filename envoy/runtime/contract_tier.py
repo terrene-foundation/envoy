@@ -33,7 +33,8 @@ and the per-field tag use.
 from __future__ import annotations
 
 import enum
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -101,7 +102,7 @@ def tier_of(fn: object) -> ContractTier:
     would silently score with the wrong scorer.
     """
     tier = getattr(fn, CONTRACT_TIER_ATTR, None)
-    if tier is None:
+    if not isinstance(tier, ContractTier):
         name = getattr(fn, "__name__", repr(fn))
         raise MissingContractTierError(
             f"method {name!r} has no contract-tier decorator; add "
@@ -128,7 +129,7 @@ def assert_all_methods_tagged(protocol: type) -> dict[str, ContractTier]:
         if name.startswith("_"):
             continue
         tier = getattr(member, CONTRACT_TIER_ATTR, None)
-        if tier is None:
+        if not isinstance(tier, ContractTier):
             raise MissingContractTierError(
                 f"{protocol.__name__}.{name} has no contract-tier decorator; "
                 f"add @byte_identical or @semantically_equivalent in "
