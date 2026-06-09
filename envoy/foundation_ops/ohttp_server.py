@@ -351,11 +351,24 @@ def build_ohttp_nexus(
     """
     from nexus import Nexus  # noqa: PLC0415 — lazy: heavy Nexus runtime import
 
+    # Fail-closed build-time gate: refuse to stand up an OHTTP endpoint whose
+    # declared TLS contract is weaker than the Foundation floor (TLS 1.3 +
+    # strict SNI), per specs/network-security.md §5/§15/§24 + rules/security.md
+    # § Rust fail-closed defaults (same principle at the Python build surface).
+    # The deployment transport layer enforces termination; this gate guarantees
+    # it is never handed a sub-floor policy to enforce.
+    if tls_policy.min_tls_version < _TLS_1_3:
+        raise TLSVersionTooLowError(
+            f"OHTTP endpoint TLS policy minimum {tls_policy.min_tls_version:#06x} "
+            f"< required floor {_TLS_1_3:#06x} (TLS 1.3); refusing to build."
+        )
+    if not tls_policy.require_strict_sni:
+        raise SNIStrippingDetectedError(
+            "OHTTP endpoint TLS policy must require strict SNI "
+            "(specs/network-security.md §15); refusing to build with it disabled."
+        )
+
     app = Nexus(api_port=api_port, mcp_port=mcp_port)
-    # The TLS policy is attached so a deployment's transport layer can read the
-    # required minimum + SNI/HSTS contract off the app (the Nexus transport
-    # enforces TLS termination; the policy is the declarative contract).
-    app_tls_policy = tls_policy
 
     @app.handler(
         "ohttp.key_config",
@@ -375,8 +388,6 @@ def build_ohttp_nexus(
             encapsulated_request_hex=encapsulated_request_hex, source_ip=source_ip
         )
 
-    # Expose the TLS policy on the app for the deployment transport layer.
-    app.ohttp_tls_policy = app_tls_policy
     return app
 
 

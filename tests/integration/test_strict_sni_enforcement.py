@@ -19,7 +19,11 @@ from envoy.foundation_ops.errors import (
 )
 from envoy.foundation_ops.ohttp_server import (
     DEFAULT_TLS_POLICY,
+    OhttpKeyConfigServerHandlers,
+    OhttpRelayHandlers,
+    TlsEndpointPolicy,
     TlsHandshake,
+    build_ohttp_nexus,
     enforce_tls_policy,
 )
 
@@ -71,3 +75,24 @@ class TestStrictSniEnforcement:
         assert DEFAULT_TLS_POLICY.min_tls_version == _TLS_1_3
         assert DEFAULT_TLS_POLICY.require_strict_sni is True
         assert DEFAULT_TLS_POLICY.require_hsts is True
+
+
+class TestBuildTimeTlsFloorGate:
+    """`build_ohttp_nexus` is fail-closed: it refuses to stand up an OHTTP
+    endpoint whose declared TLS contract is weaker than the Foundation floor
+    (TLS 1.3 + strict SNI), so the deployment transport layer is never handed a
+    sub-floor policy to enforce (`specs/network-security.md` §5/§15/§24)."""
+
+    def test_build_refuses_sub_tls_1_3_policy(self) -> None:
+        server = OhttpKeyConfigServerHandlers()
+        relay = OhttpRelayHandlers()
+        weak = TlsEndpointPolicy(min_tls_version=_TLS_1_2)
+        with pytest.raises(TLSVersionTooLowError):
+            build_ohttp_nexus(server, relay, tls_policy=weak)
+
+    def test_build_refuses_non_strict_sni_policy(self) -> None:
+        server = OhttpKeyConfigServerHandlers()
+        relay = OhttpRelayHandlers()
+        weak = TlsEndpointPolicy(require_strict_sni=False)
+        with pytest.raises(SNIStrippingDetectedError):
+            build_ohttp_nexus(server, relay, tls_policy=weak)
