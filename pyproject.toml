@@ -170,3 +170,14 @@ disallow_any_generics = false
 # registry surface (steward_quorum, fv_resolver, storage, errors).
 module = "envoy.registry.library_app"
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# The S10 OHTTP Key Config Server + Relay handler set registers callables via
+# the Nexus `@app.handler(...)` decorator, which ships untyped (kailash-nexus
+# has no type stubs; `ignore_missing_imports` resolves it to Any). An untyped
+# decorator makes the decorated handler untyped under `strict` — relax
+# untyped-decorator for this module only, exactly as for `library_app` above.
+# The handler bodies + the HPKE crypto core + the TLS policy gate are fully
+# typed; only the framework decorator is untyped.
+module = "envoy.foundation_ops.ohttp_server"
+disallow_untyped_decorators = false
