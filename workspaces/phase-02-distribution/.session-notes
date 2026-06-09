@@ -1,48 +1,46 @@
-# Session Notes — 2026-06-08 (phase-02-distribution)
+# Session Notes — 2026-06-09 (phase-02-distribution)
 
 ## Where we are
 
-**Phase-02 entry opened and `/analyze` substantively CONVERGED.** Phase-02 = "Distribution +
-channels + runtime pluggability" (ROADMAP §74). `/analyze` ran end-to-end: blessed brief → 6
-parallel implementation deep-dives → objectives spine → architecture plan (build sequence + 31-shard
-map) → 5 user flows → **5 red-team rounds**. R5 clean (0 CRIT/0 HIGH × 3 independent lenses);
-`/todos`-ready. Working tree all untracked (nothing committed yet — `/analyze` artifacts only).
+Phase-02 (Distribution + channels + runtime pluggability): `/analyze` CONVERGED → `/todos` APPROVED →
+**`/implement` Wave 1 COMPLETE.** S1 (WS-1 conformance harness) + S4s (WS-6 store substrate) + S8
+(WS-4 steward quorum + FV registry) implemented, reviewed (both gates APPROVE 0C/0H), and **landed on
+`main`** (PR after the integration branch `feat/phase-02-wave-1`). Full suite **1758 passed / 0 failed**.
 
 ## Read first
 
-1. `briefs/00-phase-02-scope.md` — blessed scope brief (6 workstreams; ⚠️ external-gate blocker).
-2. `02-plans/01-architecture.md` — THE `/todos` input: dependency graph, legal-gate-aware build
-   sequence, 31-shard map, design verdicts. Status: CONVERGED (substantive).
-3. `journal/0001` — brief corrections gate (Phase-01 shipped 5/8 surfaces not 8; `RuntimeBackendNotWired` phantom).
-4. `journal/0002`–`0006` — red-team rounds 1–5 dispositions + convergence verdict.
-5. `01-analysis/01-research/0{1..6}-ws*.md` — per-workstream implementation deep-dives (with round-1/3 correction notes).
+1. `journal/0010-DECISION-implement-wave1-complete.md` — Wave-1 verification records + review verdicts + dispositions.
+2. `journal/0009-DISCOVERY-implement-baseline-green-uv-env.md` — **the `uv run pytest` env requirement** (critical).
+3. `todos/active/_index.md` — the 47-todo roadmap; Wave-1 status + Wave-2 next-shards.
+4. `02-plans/01-architecture.md` — the 31-shard DAG + build sequence (the `/implement` source of truth).
 
-## Convergence trajectory
+## Next action: `/implement` Wave 2
 
-R1 2C/9H → R2 0C/2H → R3 0C/2H → R4 0C/1H → **R5 0C/0H**. Rounds 3–4 churn was a single bug-class
-(conformance-vector tier precision: E-vectors then N4), now exhaustively correct. Design confirmed
-sound by independent agents across all 5 rounds.
+Per the DAG (`02-plans/01-architecture.md`), Wave-2 eligible shards (deps now satisfied by Wave 1):
+- **S2a** — kailash-rs-bindings adapter behind the frozen interface (deps S1). Critical path.
+- **S4r** — decision-rendezvous: replace `asyncio.Future` with store-poll + monotonic-version (deps S4s). WS-6 long pole.
+- **S4i** — `init`/Boundary-Conversation bootstrap (deps S4s).
+- **S8e** — EnterpriseDeploymentRecord verifier (deps S8); **S9a** — CO validator steps 1-4,6 (deps S8).
+- **S10** — WS-5 OHTTP key-config server + relay (root, independent).
 
-## Next action (human gate)
+WS-6 shards are SAME-class serialized (most touch `runtime.py`/the store) — do NOT worktree-parallelize them.
 
-**`/todos`** on `02-plans/01-architecture.md` — size + sequence the 31 shards (stops for plan approval).
-OR optional R6 to formally close the EC-6 2-consecutive-clean bar (R5 is the 1st clean round).
+## Critical env + process facts (DON'T re-discover)
 
-## Key facts the next session needs
+- **Tests:** `uv run pytest` or `.venv/bin/python -m pytest` (Python 3.13 `.venv` with `dataflow`/`pytest`/`nexus`).
+  Bare `python -m pytest` uses the global pyenv (no `dataflow` extra) → false-red collection. Per `python-environment.md`.
+- **envoy is an APPLICATION repo** (the product), NOT a PyPI BUILD repo → no `/release`; `main` + `/deploy` is the path.
+- **kailash 2.13.4** in `.venv`; `nexus` is the top-level import (`from nexus import Nexus`), NOT `kailash.nexus`.
+- **Worktree test env gotcha:** a fresh worktree `.venv` may lack pytest/the extras; agents should use the MAIN
+  checkout's `.venv/bin/python` or `uv run` from the worktree after `uv sync`.
+- **`/implement` post-merge gate:** the agents' green slice-tests are NOT sufficient — run the FULL suite via the
+  complete `.venv` over the merged tree (it caught the T-020 regression from the S8 MED-1 hardening).
+- **Upstream-file candidate (human-gated):** kailash `Instance-based API usage` UserWarning from `@app.handler`
+  (scope-suppressed in pyproject; SDK-internal, not envoy code).
 
-- **External-gate blocker:** Phase-00 legal gates (trademark, composite LICENSE, export-control,
-  ADR-0009 board) are OPEN and gate the WS-2 *release* (binary publish). They do NOT block *building* —
-  5 of 6 workstreams are buildable now; only public release waits on the human legal gates.
-- **Critical correctness risk:** the cross-runtime conformance harness (BET-6, byte-identity N1–N6 + E1–E7).
-- **WS-6 is the long pole** — SAME-class serialized (most shards touch `runtime.py`/the store).
-- **Flagged `/todos` open questions:** N4 rendered-text scoring metric (`runtime-abstraction.md:239`);
-  SPAKE2-vs-Noise-XX for QR pairing; store-poll interval/backoff; ADR-0006 degraded-mode runtime scope.
-- **Recommended de-scopes** (overflow valve, not in shard map): iMessage native, Signal Path A,
-  mobile native keychain, ECH/Tor, multi-device rebuild-from-replay.
+## Open / deferred (tracked)
 
-## Traps
-
-- `/redteam` waves of 3 schema-less agents CAN still hit API 429 (round-5: 2 of 3 throttled). Re-run
-  throttled lenses sequentially.
-- Phase-01 forest items F2/F4 (independent verifier, full EC-6) RESOLVE inside Phase-02 via the
-  mandatory Rust verifier shard (S7v) — though the verifier stays separately-codebased.
+- S8 `ContentAddressedStore` is an in-process dict (reviewer MED, deferred-by-design — Foundation registry-server
+  state; DataFlow `@db.model` swap before the registry is multi-process/network-exposed).
+- Flagged `/todos` open questions still pending decisions: N4 scoring metric, SPAKE2-vs-Noise (S13), store-poll
+  interval (S4r), ADR-0006 degraded-mode scope (S17).

@@ -42,6 +42,13 @@ from envoy.runtime.errors import (
 from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
 from envoy.runtime.protocol import KailashRuntime
 from envoy.runtime.selection import get_runtime
+from envoy.runtime.session import (
+    PENDING_GRANT_STATES,
+    SESSION_SIGNING_KEY_ID,
+    PendingGrantRow,
+    SessionRouter,
+    session_db_path,
+)
 
 __all__ = [
     # Protocol + adapters
@@ -52,6 +59,12 @@ __all__ = [
     "get_runtime",
     # Feature flag
     "RS_BINDINGS_ENABLED",
+    # WS-6 S4s — store-backed session substrate
+    "SessionRouter",
+    "PendingGrantRow",
+    "PENDING_GRANT_STATES",
+    "SESSION_SIGNING_KEY_ID",
+    "session_db_path",
     # Errors (spec § Error taxonomy + Envoy-internal)
     "RuntimeError",
     "RuntimeNotReadyError",

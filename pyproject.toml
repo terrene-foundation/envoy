@@ -109,6 +109,14 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # Upstream kailash SDK advisory from kailash/nodes/handler.py: emitted when the
+    # framework-first `@app.handler` decorator registers a Nexus handler (S8 Envelope
+    # Library FV registry). NOT envoy code — envoy uses the documented framework-first
+    # Nexus API; the advisory is the SDK's internal instance-vs-class add_node detail.
+    # Scoped by message+category so it never masks an envoy-originated UserWarning.
+    # Upstream-file candidate (human-gated per upstream-issue-hygiene.md) — tracked in
+    # workspaces/phase-02-distribution journal.
+    "ignore:Instance-based API usage detected:UserWarning",
 ]
 markers = [
     "regression: Permanent regression tests reproducing fixed bugs (rules/testing.md § Regression Testing); never deleted",
@@ -151,3 +159,14 @@ ignore_missing_imports = true
 module = "envoy.boundary_conversation.signatures"
 disallow_subclassing_any = false
 disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+# The Envelope Library registry handler set registers callables via the Nexus
+# `@app.handler(...)` decorator, which ships untyped (kailash-nexus has no type
+# stubs; `ignore_missing_imports` resolves it to Any). An untyped decorator
+# makes the decorated handler untyped under `strict` — relax untyped-decorator
+# for this module only. The handler bodies themselves are fully typed; only the
+# framework decorator is untyped. `strict` still enforces the rest of envoy's
+# registry surface (steward_quorum, fv_resolver, storage, errors).
+module = "envoy.registry.library_app"
+disallow_untyped_decorators = false
