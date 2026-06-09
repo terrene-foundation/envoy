@@ -3,7 +3,7 @@
 **Document role:** Lean manifest for every Phase-02 todo. `/implement` reads this first, then the milestone file for the current todo, then the per-todo section. Per `rules/specs-authority.md` MUST Rule 1: this is a manifest; the work lives in the linked files.
 
 **Date:** 2026-06-08 (`/todos` opening, after `/analyze` convergence — `journal/0006`).
-**Status:** APPROVED 2026-06-08 — `/todos` structural gate cleared by the co-owner (`journal/0008`). `/implement` may open; Wave 1 = S1 (WS-1) + S4s (WS-6) + S8 (WS-4).
+**Status:** IN IMPLEMENT — `/todos` gate cleared 2026-06-08 (`journal/0008`). **Wave 1 COMPLETE** (2026-06-09, `journal/0010`): S1 (WS-1 conformance harness) ✅ · S4s (WS-6 store substrate) ✅ · S8 (WS-4 steward quorum + FV registry) ✅ — both review gates APPROVE 0C/0H; full suite 1758 passed. **Next: Wave 2** — S2a (rs-bindings adapter), S4r (rendezvous), S4i (init), S8e/S9a (WS-4), S10 (WS-5 OHTTP) per the DAG.
 **Source authority:**
 
 - `briefs/00-phase-02-scope.md` — what Phase-02 must ship (6 workstreams + 10 exit criteria).

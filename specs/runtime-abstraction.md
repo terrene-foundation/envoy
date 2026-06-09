@@ -142,6 +142,10 @@ Phase A intent pre-execution (delegation-key-signed); Phase B outcome post-execu
 
 **Semantically-equivalent:** agent LLM responses, Grant Moment prompt text, tool-call timing metadata.
 
+### Contract-tier enforcement (machine-readable)
+
+The byte-identical/semantically-equivalent partition is enforced in code, not prose: every `KailashRuntime` Protocol method carries a `@byte_identical` or `@semantically_equivalent` decorator (`envoy/runtime/contract_tier.py`) that stamps `__contract_tier__`. `assert_all_methods_tagged()` fails loudly (`MissingContractTierError`) on any untagged method — there is no silent default, and demoting a method from byte-identical to semantically-equivalent is BLOCKED. The BET-6 conformance harness (`envoy/runtime/conformance/`, `tests/conformance/harness.py`) reads these tiers to select the byte-identity (hash-equality) scorer vs the deferred semantic scorer per method. The N3 structural-vs-semantic dispatch is observed deterministically via the cross-runtime dispatch-observation hook (`envoy/runtime/dispatch_observation.py`), not output heuristics. (Shipped: Phase-02 shard S1.)
+
 ## Conformance vectors N1–N6 decoded
 
 Inherited from doc 05 v2 / PACT N-vectors. Each vector is a cross-SDK byte-identity gate per BET-6.
