@@ -113,7 +113,8 @@ class FoundationVerifiedTemplateResolver:
         # means a superseded version is a DISTINCT cache slot, never overwriting
         # the current one.
         self._cache_by_id: dict[
-            tuple[str, str], tuple[dict[str, Any], str, list[Mapping[str, str]], str]
+            tuple[str, str],
+            tuple[dict[str, Any], str, list[Mapping[str, str]], str | None],
         ] = {}
         # Highest `published_at` ever observed per id_version — the freshness
         # high-water mark used to refuse a stale (pin-rollback) cached entry.
@@ -209,20 +210,25 @@ class FoundationVerifiedTemplateResolver:
             template_origin="foundation-verified",
         )
 
-    def _note_published_at(self, id_version: str, published_at: str) -> None:
+    def _note_published_at(self, id_version: str, published_at: str | None) -> None:
         """Advance the per-id freshness high-water mark (lexicographic max).
+
+        A `None` `published_at` (client/fixture on the pre-freshness wire shape)
+        is a no-op: there is no freshness signal to advance the high-water with.
 
         `published_at` is an ISO-8601 UTC timestamp (`...Z`); ISO-8601 in UTC
         sorts lexicographically in chronological order, so `max(...)` over the
         string form is a correct freshness comparison without parsing.
         """
+        if published_at is None:
+            return
         prior = self._highest_published_at.get(id_version)
         if prior is None or published_at > prior:
             self._highest_published_at[id_version] = published_at
 
     async def _fetch_or_cache(
         self, id_version: str
-    ) -> tuple[dict[str, Any], str, list[Mapping[str, str]], str]:
+    ) -> tuple[dict[str, Any], str, list[Mapping[str, str]], str | None]:
         """Fetch from the Nexus client; fall back to the content-addressed cache
         on transport failure. Raises `LibraryUnreachableError` when the endpoint
         is unreachable AND no cache entry exists; raises
@@ -237,7 +243,11 @@ class FoundationVerifiedTemplateResolver:
             transport_down = False
 
         if result is not None:
-            published_at = result["published_at"]
+            # `published_at` is the freshness marker the FV registry emits; a
+            # client/fixture on the pre-freshness wire shape may omit it, in
+            # which case we degrade gracefully (cache keyed by content_hash,
+            # no freshness refusal) rather than hard-failing the resolve.
+            published_at = result.get("published_at")
             # An online fetch is authoritative for freshness — advance the
             # high-water mark so a subsequent OFFLINE hit on a superseded
             # cache slot is recognised as stale.
@@ -262,9 +272,9 @@ class FoundationVerifiedTemplateResolver:
         if candidates:
             high_water = self._highest_published_at.get(id_version)
             (content, declared_hash, signatures, published_at), _ = max(
-                candidates, key=lambda c: c[0][3]
+                candidates, key=lambda c: (c[0][3] is not None, c[0][3] or "")
             )
-            if high_water is not None and published_at < high_water:
+            if high_water is not None and published_at is not None and published_at < high_water:
                 raise StaleOfflineTemplateError(
                     f"offline cache for {id_version!r} holds only a superseded "
                     f"version (cached published_at {published_at!r} < highest "
