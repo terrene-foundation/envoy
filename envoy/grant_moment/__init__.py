@@ -74,6 +74,8 @@ from envoy.grant_moment.resolution import (
     ApproveWithModificationResolution,
     DeclineResolution,
     ResolutionShape,
+    resolution_from_json,
+    resolution_to_json,
 )
 from envoy.grant_moment.signed_consent import (
     ConsequencePreview,
@@ -114,6 +116,8 @@ __all__ = [
     "ApproveWithModificationResolution",
     "DeclineResolution",
     "ResolutionShape",
+    "resolution_from_json",
+    "resolution_to_json",
     # Signed-consent wire shapes (JCS+NFC canonicalized; delegation_key signed)
     "ConsequencePreview",
     "GrantMomentRequest",

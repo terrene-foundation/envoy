@@ -152,6 +152,7 @@ class PendingGrantRow:
     version: int
     created_at: str
     updated_at: str
+    resolution_json: str | None = None
 
 
 class SessionRouter:
@@ -423,18 +424,108 @@ class SessionRouter:
             version=row["version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            resolution_json=row["resolution_json"],
         )
 
     def _sync_get_pending_grant(self, request_id: str) -> sqlite3.Row | None:
         conn = self._connect()
         try:
             cur = conn.execute(
-                "SELECT request_id, state, request_json, version, created_at, updated_at "
+                "SELECT request_id, state, request_json, resolution_json, version, "
+                "created_at, updated_at "
                 "FROM pending_grant WHERE request_id = ?",
                 (request_id,),
             )
             row: sqlite3.Row | None = cur.fetchone()
             return row
+        finally:
+            conn.close()
+
+    async def resolve_pending_grant(
+        self,
+        *,
+        request_id: str,
+        resolution_json: str,
+        state: str = "resolved",
+    ) -> int:
+        """Durably write a resolution onto a pending row and bump ``version``.
+
+        This is the cross-process rendezvous WRITE half (S4r): process B
+        (the answering CLI invocation) calls this to flip a ``pending`` row to
+        ``state=resolved`` (or ``expired``), persisting ``resolution_json`` and
+        incrementing the monotonic ``version`` so process A's poll observes a
+        strictly-newer value (the lost-update guard). Returns the new
+        ``version`` after the bump.
+
+        ``state`` MUST be ``resolved`` or ``expired`` (a writer never reverts a
+        row to ``pending`` via this path — that is the issue path's job). The
+        target row MUST exist and be in ``state=pending``; resolving an absent
+        or already-terminal row raises ``KeyError`` so a double-resolve / lost
+        row surfaces loudly rather than silently no-op'ing (the cross-process
+        equivalent of the in-process ``decision_future.done()`` guard).
+
+        ``resolution_json`` MUST be a parseable JSON object (fail-loud at the
+        write boundary, same discipline as ``request_json`` — S4r writes the
+        canonical-JSON resolution wire form; S4s stores it verbatim).
+        """
+        self._require_open()
+        _validate_session_id(request_id, field="request_id")
+        if state not in ("resolved", "expired"):
+            raise ValueError(
+                f"resolve_pending_grant state must be 'resolved' or 'expired' (got {state!r})"
+            )
+        _require_json_object(resolution_json, field="resolution_json")
+        now = _now_iso()
+        new_version = await asyncio.to_thread(
+            self._sync_resolve_pending_grant, request_id, resolution_json, state, now
+        )
+        return new_version
+
+    def _sync_resolve_pending_grant(
+        self,
+        request_id: str,
+        resolution_json: str,
+        state: str,
+        now: str,
+    ) -> int:
+        conn = self._connect()
+        try:
+            # Single atomic UPDATE gated on state='pending': the WHERE clause is
+            # the cross-process compare-and-set. Two writers racing the same row
+            # leave exactly one with rowcount=1 (it flipped pending→terminal);
+            # the loser sees rowcount=0 and raises below — no lost write, no
+            # silent double-resolve.
+            cur = conn.execute(
+                """
+                UPDATE pending_grant
+                   SET state=?, resolution_json=?, version=version + 1, updated_at=?
+                 WHERE request_id=? AND state='pending'
+                """,
+                (state, resolution_json, now, request_id),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                # Distinguish absent from already-terminal for a clearer error.
+                probe = conn.execute(
+                    "SELECT state FROM pending_grant WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+                if probe is None:
+                    raise KeyError(
+                        f"resolve_pending_grant: request_id {request_id!r} is not in the "
+                        "pending-grant store — it never issued, or the row was reaped"
+                    )
+                raise KeyError(
+                    f"resolve_pending_grant: request_id {request_id!r} is already in "
+                    f"state={probe['state']!r}, not 'pending' — refusing to re-resolve "
+                    "(cross-process double-resolve / lost-update guard)"
+                )
+            new_version_row = conn.execute(
+                "SELECT version FROM pending_grant WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            conn.commit()
+            return int(new_version_row["version"])
         finally:
             conn.close()
 

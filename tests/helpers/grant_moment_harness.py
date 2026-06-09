@@ -109,6 +109,9 @@ async def make_runtime(
     cascade_responses: dict[str, set[str]] | None = None,
     trust_store: StubTrustStore | None = None,
     plan_suspension_bridge: PlanSuspensionBridge | None = None,
+    session_router: object | None = None,
+    poll_interval_start_seconds: float = 0.01,
+    poll_interval_cap_seconds: float = 0.05,
 ) -> tuple[
     EnvoyGrantMomentRuntime,
     InMemoryKeyManager,
@@ -157,6 +160,9 @@ async def make_runtime(
         queue_ceiling=queue_ceiling,
         velocity_raise_cooling_off_seconds=velocity_raise_cooling_off_seconds,
         dedup_store_ceiling=dedup_store_ceiling,
+        session_router=session_router,
+        poll_interval_start_seconds=poll_interval_start_seconds,
+        poll_interval_cap_seconds=poll_interval_cap_seconds,
     )
     return runtime, key_manager, ledger, audit_store, list(adapters)
 

@@ -99,11 +99,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
@@ -139,6 +140,8 @@ from envoy.grant_moment.resolution import (
     ApproveWithModificationResolution,
     DeclineResolution,
     ResolutionShape,
+    resolution_from_json,
+    resolution_to_json,
 )
 from envoy.grant_moment.signed_consent import (
     ConsequencePreview,
@@ -216,6 +219,21 @@ _DEFAULT_PHASE_A_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days per ledger spec § o
 # each successful issue rolls the eviction window forward in FIFO order.
 _DEFAULT_DEDUP_CEILING = 100_000  # 100k pairs per principal; honest about Phase 01 memory budget
 
+# ── Cross-process store-poll rendezvous tuning (S4r) ─────────────────────────
+# A ``grant`` request is issued in one CLI invocation and answered in another
+# OS process; a ``decision_future: asyncio.Future`` cannot be ``set_result``-ed
+# across that boundary, so the requesting process POLLS the S4s pending-grant
+# sub-store for a resolution row, re-checking the monotonic ``version`` each
+# poll. Bounded exponential backoff: start tight (50ms) so a fast local answer
+# resumes near-instantly, then back off to a 500ms ceiling so a 5-minute human
+# deliberation does not spin the disk. The interval is a per-platform
+# OPTIMIZATION of the poll cadence — NOT a correctness parameter; the store is
+# authority regardless of how often it is read. Recorded in
+# ``specs/session-runtime.md`` § Cross-process rendezvous.
+_DEFAULT_POLL_INTERVAL_START_SECONDS = 0.05  # 50ms first poll
+_DEFAULT_POLL_INTERVAL_CAP_SECONDS = 0.5  # 500ms ceiling
+_POLL_INTERVAL_BACKOFF_FACTOR = 2.0  # double each idle poll until the cap
+
 
 class _LedgerProtocol(Protocol):
     """Subset of ``envoy.ledger.facade.EnvoyLedger`` we depend on.
@@ -257,6 +275,49 @@ class _VisibleSecretProviderProtocol(Protocol):
     """
 
     async def get_visible_secret(self, principal_id: str) -> _VisibleSecretShape | None: ...
+
+
+class _PendingGrantRowShape(Protocol):
+    """Structural shape the runtime reads off an S4s ``PendingGrantRow``.
+
+    Only the cross-process rendezvous fields are consumed: ``state`` (the
+    pending→resolved flip), ``version`` (the monotonic lost-update primitive),
+    and ``resolution_json`` (the serialized ResolutionShape the answering
+    process wrote). The runtime does NOT read ``request_json`` here — that is
+    the issue path's concern.
+    """
+
+    state: str
+    version: int
+    resolution_json: str | None
+
+
+class _SessionRouterProtocol(Protocol):
+    """Subset of ``envoy.runtime.session.SessionRouter`` the rendezvous needs.
+
+    Injected explicitly per ``rules/facade-manager-detection.md`` Rule 3 — the
+    runtime does NOT construct its own router (that would open a parallel
+    store). When a router is wired, it is the cross-process rendezvous
+    AUTHORITY: ``await_decision`` polls ``get_pending_grant`` for the resolution
+    row, and ``submit_resolution`` / the answering CLI writes via
+    ``resolve_pending_grant``. The in-process ``decision_future`` becomes a
+    same-process fast-path cache OVER this store, never the sole rendezvous.
+
+    Phase-01 narrow scope: when NO router is injected (legacy single-process
+    callers + Tier-1 unit tests), the runtime falls back to the in-process
+    future as the same-process-only rendezvous — there is no cross-process
+    grant in that configuration, so a future is sufficient.
+    """
+
+    async def put_pending_grant(
+        self, *, request_id: str, session_id: str, request_json: str, ttl_expires_at: str
+    ) -> None: ...
+
+    async def get_pending_grant(self, request_id: str) -> _PendingGrantRowShape | None: ...
+
+    async def resolve_pending_grant(
+        self, *, request_id: str, resolution_json: str, state: str = ...
+    ) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,8 +363,17 @@ class _PendingGrant:
     friction_acks: set[str] = field(default_factory=set)
     cross_channel_confirmed: bool = False
     confirm_channel_id: str | None = None
+    # In-process fast-path cache OVER the store (NOT the cross-process
+    # rendezvous). When a session_router is wired, the store is authority and
+    # the future only short-circuits a SAME-process post_decision; when no
+    # router is wired, the future IS the same-process-only rendezvous.
     decision_future: asyncio.Future[ResolutionShape] | None = None
     decided_on_channel_id: str | None = None
+    # The monotonic store version observed when the pending row was enqueued at
+    # M0. The cross-process poll treats ``state=resolved AND version >
+    # version_at_issue`` as the resolution signal, so a writer that resolves
+    # between issue and the first poll is still observed (lost-update guard).
+    store_version_at_issue: int = 0
 
 
 class EnvoyGrantMomentRuntime:
@@ -336,12 +406,15 @@ class EnvoyGrantMomentRuntime:
         cascade_orchestrator: CascadeRevocationOrchestrator | None = None,
         plan_suspension_bridge: PlanSuspensionBridge | None = None,
         novelty_classifier: NoveltyClassifier | None = None,
+        session_router: _SessionRouterProtocol | None = None,
         default_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
         novelty_read_delay_seconds: float = _DEFAULT_NOVELTY_READ_DELAY_SECONDS,
         queue_ceiling: int = _DEFAULT_QUEUE_CEILING,
         velocity_raise_cooling_off_seconds: int = _DEFAULT_VELOCITY_COOLING_OFF_SECONDS,
         phase_a_ttl_seconds: int = _DEFAULT_PHASE_A_TTL_SECONDS,
         dedup_store_ceiling: int = _DEFAULT_DEDUP_CEILING,
+        poll_interval_start_seconds: float = _DEFAULT_POLL_INTERVAL_START_SECONDS,
+        poll_interval_cap_seconds: float = _DEFAULT_POLL_INTERVAL_CAP_SECONDS,
     ) -> None:
         if not delegation_key_id:
             raise ValueError("delegation_key_id is required")
@@ -365,6 +438,10 @@ class EnvoyGrantMomentRuntime:
             raise ValueError("dedup_store_ceiling must be positive")
         if phase_a_ttl_seconds <= 0:
             raise ValueError("phase_a_ttl_seconds must be positive")
+        if poll_interval_start_seconds <= 0:
+            raise ValueError("poll_interval_start_seconds must be positive")
+        if poll_interval_cap_seconds < poll_interval_start_seconds:
+            raise ValueError("poll_interval_cap_seconds must be >= poll_interval_start_seconds")
 
         self._key_manager = key_manager
         self._delegation_key_id = delegation_key_id
@@ -383,6 +460,13 @@ class EnvoyGrantMomentRuntime:
         self._velocity_raise_cooling_off_seconds = velocity_raise_cooling_off_seconds
         self._phase_a_ttl_seconds = phase_a_ttl_seconds
         self._dedup_store_ceiling = dedup_store_ceiling
+        # Cross-process rendezvous (S4r). When wired, the durable S4s sub-store
+        # is the rendezvous AUTHORITY; the in-process future is a same-process
+        # fast-path cache OVER it. When None, the future is the same-process-only
+        # rendezvous (no cross-process grant in that configuration).
+        self._session_router = session_router
+        self._poll_interval_start_seconds = poll_interval_start_seconds
+        self._poll_interval_cap_seconds = poll_interval_cap_seconds
 
         # The H-03 enforcer needs the primary channel id; ChannelHandoff
         # exposes a public ``primary_channel_id`` property (reviewer-R1
@@ -600,6 +684,34 @@ class EnvoyGrantMomentRuntime:
         )
         self._inflight[signed_request.request_id] = pending
 
+        # Durable cross-process enqueue (S4r). When a session_router is wired,
+        # the pending row lands in the S4s sub-store so a SEPARATE OS process
+        # (the answering ``grant`` CLI invocation) can see + resolve it — the
+        # store is the rendezvous AUTHORITY. We record the store ``version``
+        # observed at issue so the poll's lost-update guard compares against it
+        # (a writer that resolves between issue and the first poll is still
+        # observed). A future cannot cross the process boundary; this row can.
+        if self._session_router is not None:
+            request_json = _serialize_request_for_store(signed_request)
+            grant_ttl = (
+                datetime.now(timezone.utc) + timedelta(seconds=effective_timeout)
+            ).isoformat(timespec="microseconds")
+            await self._session_router.put_pending_grant(
+                request_id=signed_request.request_id,
+                session_id=signed_request.session_id,
+                request_json=request_json,
+                ttl_expires_at=grant_ttl,
+            )
+            issued_row = await self._session_router.get_pending_grant(signed_request.request_id)
+            # The row was just written; a None here is a store-corruption
+            # programming error, not a benign absence — fail loud.
+            if issued_row is None:
+                raise RuntimeError(
+                    "session_router.put_pending_grant succeeded but the row is absent on "
+                    f"read-back (request_id={signed_request.request_id!r}) — store corruption"
+                )
+            pending.store_version_at_issue = issued_row.version
+
         # M0 → M1 transition via the state machine. The transition is
         # strictly enforced; any subsequent state mutation reuses ``next_state``.
         pending.state = next_state(pending.state, GrantMomentEvent.DISPATCH_TO_CHANNELS)
@@ -660,6 +772,15 @@ class EnvoyGrantMomentRuntime:
                 intent_id=signed_request.intent_id,
                 content_trust_level="system",
             )
+            # Mark the durable row terminal so a SEPARATE process polling the
+            # sub-store sees ``expired`` rather than a stuck ``pending`` — the
+            # grant never rendered, so it is dead, not awaitable.
+            if self._session_router is not None:
+                await self._session_router.resolve_pending_grant(
+                    request_id=signed_request.request_id,
+                    resolution_json=_DISPATCH_FAILED_RESOLUTION_JSON,
+                    state="expired",
+                )
             # Audit-row landed; safe to release the dedup reservations so
             # the user can retry the intent with the same identifiers.
             self._seen_nonces.pop(signed_request.nonce, None)
@@ -691,10 +812,27 @@ class EnvoyGrantMomentRuntime:
         *,
         timeout_seconds: int | None = None,
     ) -> ResolutionShape:
-        """M2 await: block until the channel adapter posts a decision OR the
-        timeout elapses. Returns the user's ``ResolutionShape``; raises
-        ``GrantMomentExpiredError`` on timeout (the M2 → M3 transition is
-        recorded so the timeout's audit row matches a successful path's).
+        """M2 await: block until a decision lands OR the timeout elapses.
+
+        When a ``session_router`` is wired, this POLLS the durable S4s
+        pending-grant sub-store as the PRIMARY rendezvous (the store is
+        authority — a ``decision_future`` cannot be ``set_result``-ed across the
+        two OS processes the ``grant`` flow spans). Each poll re-checks the
+        monotonic ``version`` against the value observed at issue, so a
+        concurrent writer's resolution is observed without a lost-update. A
+        SAME-process ``post_decision`` short-circuits the poll via the
+        in-process future fast-path cache, but the store remains authority.
+
+        When NO router is wired (legacy single-process callers, Tier-1 unit
+        tests), the in-process future IS the same-process-only rendezvous —
+        there is no cross-process grant in that configuration.
+
+        On timeout: drives the ``next_state(..., TIMEOUT_EXPIRED)`` M2 → M3
+        transition and raises ``GrantMomentExpiredError(request_id,
+        timeout_seconds=effective_timeout)`` — BYTE-IDENTICALLY to the Phase-01
+        ``asyncio.TimeoutError`` path, so the timeout's audit trail is
+        unchanged by the rendezvous rewrite (zero-tolerance Rule 1 — no
+        behavioral regression).
         """
         pending = self._require_inflight(request_id)
         if pending.state != GrantMomentState.M2_AWAIT:
@@ -712,29 +850,130 @@ class EnvoyGrantMomentRuntime:
         effective_timeout = (
             timeout_seconds if timeout_seconds is not None else pending.request.timeout_seconds
         )
-        try:
-            resolution = await asyncio.wait_for(pending.decision_future, timeout=effective_timeout)
-        except asyncio.TimeoutError:
+
+        if self._session_router is not None:
+            resolution_or_timeout = await self._poll_store_for_resolution(
+                pending, effective_timeout
+            )
+        else:
+            # No store wired — the in-process future is the same-process-only
+            # rendezvous (Phase-01 single-process fallback).
+            resolution_or_timeout = await self._await_future_for_resolution(
+                pending, effective_timeout
+            )
+
+        if resolution_or_timeout is _TIMEOUT_SENTINEL:
             # M2 → M3 (with timeout disposition) — the state machine routes
-            # ``TIMEOUT_EXPIRED`` to M3 sign per the transition table.
+            # ``TIMEOUT_EXPIRED`` to M3 sign per the transition table. This
+            # block is BYTE-IDENTICAL to the Phase-01 timeout path (same
+            # next_state event, same pop, same raised error + kwargs) — the
+            # rendezvous mechanism changed, the audit-emitting M2 → M3
+            # transition did NOT.
             pending.state = next_state(pending.state, GrantMomentEvent.TIMEOUT_EXPIRED)
             self._inflight.pop(request_id, None)
             raise GrantMomentExpiredError(
                 request_id=request_id, timeout_seconds=effective_timeout
             ) from None
-        else:
-            pending.state = next_state(pending.state, GrantMomentEvent.DECISION_RECEIVED)
-            return resolution
+
+        assert isinstance(resolution_or_timeout, ResolutionShape)
+        pending.state = next_state(pending.state, GrantMomentEvent.DECISION_RECEIVED)
+        return resolution_or_timeout
+
+    async def _await_future_for_resolution(
+        self, pending: _PendingGrant, effective_timeout: float
+    ) -> ResolutionShape | object:
+        """Same-process-only rendezvous: await the in-process future.
+
+        Returns the resolution, or ``_TIMEOUT_SENTINEL`` on timeout. Used only
+        when no session_router is wired (Phase-01 single-process fallback).
+        """
+        assert pending.decision_future is not None
+        try:
+            return await asyncio.wait_for(pending.decision_future, timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            return _TIMEOUT_SENTINEL
+
+    async def _poll_store_for_resolution(
+        self, pending: _PendingGrant, effective_timeout: float
+    ) -> ResolutionShape | object:
+        """Cross-process rendezvous: poll the durable sub-store (PRIMARY).
+
+        The store is authority. Each poll re-reads the pending row and treats
+        ``state in {resolved, expired} AND version > store_version_at_issue`` as
+        the resolution signal (the monotonic-version lost-update guard — a
+        writer that resolved between issue and the first poll is still
+        observed). The in-process future is raced ALONGSIDE the poll as a
+        same-process fast-path cache: a SAME-process ``post_decision`` resolves
+        the future AND writes the store, so whichever lands first wins and the
+        other is a no-op (the store guard refuses a double-resolve).
+
+        Bounded exponential backoff (``poll_interval_start`` →
+        ``poll_interval_cap``) keeps a fast local answer near-instant while a
+        multi-minute human deliberation does not spin the disk. Returns the
+        resolution, or ``_TIMEOUT_SENTINEL`` on timeout.
+        """
+        assert self._session_router is not None
+        assert pending.decision_future is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + effective_timeout
+        interval = self._poll_interval_start_seconds
+        request_id = pending.request.request_id
+
+        while True:
+            # Same-process fast-path cache: if a post_decision already set the
+            # future, return immediately without a store round-trip.
+            if pending.decision_future.done():
+                return pending.decision_future.result()
+
+            row = await self._session_router.get_pending_grant(request_id)
+            if (
+                row is not None
+                and row.state in ("resolved", "expired")
+                and row.version > pending.store_version_at_issue
+            ):
+                if row.resolution_json is None:
+                    raise RuntimeError(
+                        f"pending row {request_id!r} is state={row.state!r} but "
+                        "resolution_json is NULL — store corruption (a resolved row "
+                        "MUST carry the serialized ResolutionShape)"
+                    )
+                return resolution_from_json(row.resolution_json)
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return _TIMEOUT_SENTINEL
+
+            # Sleep the shorter of the backoff interval and the remaining
+            # budget, then re-poll. A same-process post_decision is caught by
+            # the done-future fast-path at the top of the next loop iteration
+            # (≤ poll_interval_cap latency); the cross-process resolution is
+            # caught by the store read. Bounded backoff keeps a fast local
+            # answer near-instant while a long human deliberation does not spin.
+            sleep_for = min(interval, max(remaining, 0.0))
+            await asyncio.sleep(sleep_for)
+            interval = min(
+                interval * _POLL_INTERVAL_BACKOFF_FACTOR, self._poll_interval_cap_seconds
+            )
 
     def post_decision(self, request_id: str, resolution: ResolutionShape) -> None:
-        """Adapter-side push: deliver the user's decision to ``await_decision``.
+        """Adapter-side SAME-process push: deliver the user's decision.
 
-        Adapters call this when the user signs in their channel UI. The
-        ``await_decision`` coroutine resumes with the supplied resolution.
-        Calling ``post_decision`` for an unknown request_id raises
-        ``GrantMomentReplayError`` only if the request was previously
-        completed; a never-seen request_id raises ``KeyError`` (programming
-        error, not a security event).
+        Sets the in-process future — the same-process fast-path cache OVER the
+        store. ``await_decision``'s poll loop short-circuits on a done future,
+        so a same-process answer resumes near-instantly without a store
+        round-trip. Durability for the same-process path lands at
+        ``submit_resolution`` (M3), where the resolution is persisted to the
+        sub-store alongside the signed Ledger row; the store is still authority.
+
+        The CROSS-process answer path does NOT go through here — a separate OS
+        process writes the resolution directly to the sub-store via
+        ``session_router.resolve_pending_grant`` (the S4g surface), and process
+        A's ``await_decision`` poll observes it. ``post_decision`` is therefore
+        a pure same-process convenience; it remains synchronous so the
+        established adapter API is unchanged.
+
+        A never-seen ``request_id`` raises ``KeyError`` (programming error, not
+        a security event), matching the prior contract.
         """
         pending = self._require_inflight(request_id)
         if pending.decision_future is None:
@@ -996,6 +1235,24 @@ class EnvoyGrantMomentRuntime:
             resolution, (ApproveResolution, ApproveWithModificationResolution)
         ):
             self._velocity_raise_last_approved_wallclock[self._principal_id] = time.time()
+
+        # Same-process durability: persist the resolution onto the durable row
+        # so a crash after M3 does not lose the answer (store is authority). On
+        # the cross-process path the row is ALREADY resolved (process B wrote it
+        # via resolve_pending_grant), so the state=pending guard raises KeyError
+        # — swallowed here because the answer already landed. The Decline path
+        # persists too (the durable row records the deny terminal).
+        if self._session_router is not None:
+            try:
+                await self._session_router.resolve_pending_grant(
+                    request_id=request_id,
+                    resolution_json=resolution_to_json(resolution),
+                    state="resolved",
+                )
+            except KeyError:
+                # Row already terminal (cross-process resolve already landed,
+                # or a prior submit). The answer is durable; nothing to do.
+                pass
 
         # M3 → M4 transition + cleanup. The dedup stores keep the nonce /
         # intent_id (replay safety survives M4 cleanup); only the in-flight
@@ -1278,3 +1535,30 @@ def _now_iso() -> str:
     ``_now_canonical`` shape for wire-form parity).
     """
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+# Unique sentinel distinguishing "poll/await timed out" from a real
+# ResolutionShape return — ``None`` is NOT used because a future resolved with
+# None would be ambiguous, and a sentinel object identity check is exact.
+_TIMEOUT_SENTINEL: object = object()
+
+# Serialized terminal-resolution marker for a grant whose M1 dispatch failed
+# (every adapter raised). The durable row is flipped to ``expired`` carrying
+# this blob so a polling process sees a terminal state, not a stuck pending.
+_DISPATCH_FAILED_RESOLUTION_JSON = json.dumps(
+    {"shape": "expired", "reason": "dispatch_failed_all_channels_raised"},
+    sort_keys=True,
+    separators=(",", ":"),
+)
+
+
+def _serialize_request_for_store(request: GrantMomentRequest) -> str:
+    """Serialize a signed ``GrantMomentRequest`` to a canonical-JSON object for
+    the S4s ``request_json`` column.
+
+    ``asdict`` recurses through the nested ``ConsequencePreview`` dataclass to a
+    plain dict; sorted keys + no whitespace give deterministic stored bytes. The
+    S4s store validates this is a JSON object and stores it verbatim (it does
+    NOT interpret the fields — the wire-format semantics stay in this runtime).
+    """
+    return json.dumps(asdict(request), sort_keys=True, separators=(",", ":"))
