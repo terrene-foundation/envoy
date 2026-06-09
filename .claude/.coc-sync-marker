@@ -13,10 +13,10 @@ migrated_from:
   migrated_at: "2026-05-11T00:00:00Z"
 prior_sync:
   template_version: 2.22.3
-  last_synced: "2026-05-11T00:00:00Z"
+  last_synced: "2026-06-09T15:43:29Z"
 last_synced: "2026-05-28T00:00:00Z"
 loom_version: 2.35.0
-sync_direction: "rsync template @ 2.23.1 (loom 2.35.0) into consumer. Pulled refreshed agents, commands, rules, skills, guides, hooks, bin, audit-fixtures, codex-mcp-guard, codex-templates, gemini-templates, sync-manifest. New rules adopted: knowledge-convergence, multi-operator-coordination, user-flow-validation, rule-authoring v10+v11 (proximity-band + recurrent-extraction-escalation), self-referential-codify allowlist extensions, llm-deployment-coverage, variant-authoring. New commands: onboard, certify, claim, claims, release-claim, whoami (multi-operator coordination surface). New skills: 41-onboard, 42-certify, hook-authoring, command-authoring, skill-authoring. Preserved CLAUDE.md, .claude/learning/, .claude/settings.local.json, .claude/variants/rs/, workspaces/. Purged .claude/skills/management/ per .coc-obsoleted manifest. Companion change: .gitignore now tracks workspace .session-notes (project-tracking — workspaces should not be gitignored per co-owner directive)."
+sync_direction: "rsync template kailash-coc-rs @ 2.23.1 (HEAD 7ee9a0d) into consumer 2026-06-09T15:43:29Z. Refreshed agents/commands/rules/skills/guides/hooks/bin/audit-fixtures/codex-mcp-guard/codex-templates/gemini-templates + AGENTS.md/GEMINI.md. Purged per .coc-obsoleted: skills/management, open-source-strategist (claude+gemini), management agents (gh-manager/posture-auditor/todo-manager), scheduled_tasks.lock, .claude/variants/ (rs-variant content now inlined into base rules). Preserved CLAUDE.md, README.md, .claude/learning/, settings.local.json, .proposals/, operators.roster.json, ci-runners.operator.local.md, workspaces/. Integrity: hooks<->libs all resolve."
 files_adopted:
   - .claude/agents/                   # REFRESHED
   - .claude/commands/                 # REFRESHED + new (onboard, certify, claim, claims, release-claim, whoami)

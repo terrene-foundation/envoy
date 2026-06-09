@@ -54,7 +54,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import { resolveRepo, LinkError } from "./lib/loom-links.mjs";
 
 // ────────────────────────────────────────────────────────────────
@@ -106,16 +108,23 @@ function rejectUnsafePurgeEntry(entry) {
 }
 
 /**
- * Symlink-safe copy. fs.copyFileSync follows symlinks at destination
- * by default, opening a TOCTOU race where a planted symlink between
- * mkdir and copy redirects the write outside the template. Mirrors
- * emit.mjs::safeWriteFileSync — O_NOFOLLOW refuses to open a symlink
- * target, closing the window. Asymmetry between the two sync paths
- * (emit.mjs strict; sync-tier-aware lax) would itself be institutional
- * drift per `cross-repo.md` MUST-1.
+ * Symlink-safe single-source write — Buffer (binary copy) or utf8
+ * string (text write) share one open-write-close path. fs.copyFileSync
+ * + fs.writeFileSync-by-path both follow symlinks at destination by
+ * default; this helper refuses via O_NOFOLLOW, raising ELOOP on a
+ * pre-planted symlink at `dest`. Mirrors emit.mjs::safeWriteFileSync;
+ * asymmetry between emit.mjs and sync-tier-aware sync paths would
+ * itself be institutional drift per `cross-repo.md` MUST-1.
+ *
+ * The encoding parameter distinguishes the two callers: Buffer for
+ * safeCopyFile (binary file→file copy); "utf8" for safeWriteTextSync
+ * (manifest-derived text). Collapsing avoids the duplicated-TOCTOU-
+ * defense drift `rules/security.md` § "Pre-Encoder Consolidation"
+ * names for credential decode/encode pairs.
+ *
+ * Reviewer Round-1 MED: helper collapse.
  */
-function safeCopyFile(src, dest) {
-  const srcData = fs.readFileSync(src);
+function safeWriteSync(dest, data, encoding = null) {
   const fd = fs.openSync(
     dest,
     fs.constants.O_CREAT |
@@ -125,10 +134,163 @@ function safeCopyFile(src, dest) {
     0o644,
   );
   try {
-    fs.writeFileSync(fd, srcData);
+    if (encoding === null) {
+      fs.writeFileSync(fd, data);
+    } else {
+      fs.writeFileSync(fd, data, encoding);
+    }
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function safeCopyFile(src, dest) {
+  safeWriteSync(dest, fs.readFileSync(src));
+}
+
+/**
+ * Post-copy byte-equality verification — #401 Defect-2 fix.
+ *
+ * The incident reported `copied 1228` while 13 hooks + 189 files stayed at
+ * stale HEAD content: the success COUNT was trusted, but a copy can silently
+ * no-op (or land partial bytes), shipping the OLD artifact under a green
+ * report. `safeCopyFile` is a raw byte copy, so the contract is exact:
+ * dest bytes MUST equal src bytes after a successful copy.
+ *
+ * Returns `null` on byte-equal success; otherwise a human-readable failure
+ * reason. A read error on `dest` is the "planned-but-not-written" case the
+ * #401 acceptance criterion names — surfaced as a failure, never swallowed.
+ */
+function verifyCopiedBytes(src, dest) {
+  try {
+    const srcBuf = fs.readFileSync(src);
+    const destBuf = fs.readFileSync(dest);
+    if (srcBuf.equals(destBuf)) return null;
+    return `byte mismatch (src ${srcBuf.length}B vs dest ${destBuf.length}B)`;
+  } catch (e) {
+    return `planned copy not readable post-write: ${e.message}`;
+  }
+}
+
+function safeWriteTextSync(dest, content) {
+  safeWriteSync(dest, content, "utf8");
+}
+
+/**
+ * Pre-write safety snapshot — the "forever"-grade defense (issue #401).
+ *
+ * BEFORE any copy-overwrite or purge-delete touches a consumer template,
+ * capture every UNTRACKED working-tree file to an out-of-tree quarantine
+ * under the repo's git-common-dir. `git clean` / `git reset --hard` /
+ * `rm` operate on the working tree and cannot reach inside `.git/`, so
+ * the snapshot survives any downstream destructive primitive — a Bash
+ * `rm`, this tool's own `fs.rmSync` purge branch, OR a future tool's
+ * internal fs delete. It runs at the filesystem-mutation boundary, so it
+ * is surface-agnostic (the design red-team's CRIT-1: a PreToolUse Bash
+ * hook is blind to `fs.rmSync` inside a Node tool; a pre-write snapshot
+ * is not).
+ *
+ * It runs PER RESOLVED TEMPLATE DIR (called from executePlan's loop), so
+ * it covers COLLATERAL writes too — a fan-out to a sibling template still
+ * snapshots that sibling's untracked work (the #401 incident: a `--target
+ * py` run wrote into kailash-coc-py as collateral and a cleanup destroyed
+ * its untracked Docker files).
+ *
+ * Scope: `git ls-files --others --exclude-standard` = untracked-AND-not-
+ * ignored — exactly the class with no git object that is unrecoverable if
+ * destroyed. Ignored files are out of scope (documented; they are by
+ * definition reproducible build artifacts).
+ *
+ * THROWS (does not call fail()/exit, for testability) when untracked
+ * files exist but cannot be enumerated or copied — the caller MUST let it
+ * propagate so the sync HALTS rather than proceeding to mutate unprotected
+ * untracked work.
+ *
+ * Returns { snapshotDir, count }; { snapshotDir: null, count: 0 } when the
+ * tree is clean, not a git repo, or dryRun.
+ */
+function snapshotUntrackedFiles(dir, { dryRun } = {}) {
+  if (dryRun) return { snapshotDir: null, count: 0 };
+  // Locate the git-common-dir (worktree-aware). Not a git repo → no
+  // git-op deletion vector; return clean.
+  let gitCommonDir;
+  try {
+    gitCommonDir = execFileSync(
+      "git",
+      ["-C", dir, "rev-parse", "--git-common-dir"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+  } catch {
+    return { snapshotDir: null, count: 0 };
+  }
+  const gitDirAbs = path.isAbsolute(gitCommonDir)
+    ? gitCommonDir
+    : path.resolve(dir, gitCommonDir);
+  let untracked;
+  try {
+    untracked = execFileSync(
+      "git",
+      ["-C", dir, "ls-files", "--others", "--exclude-standard", "-z"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    )
+      .split("\0")
+      .filter(Boolean);
+  } catch (e) {
+    throw new Error(
+      `presync-snapshot: could not enumerate untracked files in ${path.basename(dir)}: ${e.message}`,
+    );
+  }
+  if (untracked.length === 0) return { snapshotDir: null, count: 0 };
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  // crypto.randomBytes suffix collision-proofs against same-millisecond
+  // re-invocations sharing a git-common-dir, mirroring the gitignore
+  // tmp-suffix hardening elsewhere in this file (Round-1 consensus).
+  const rand = crypto.randomBytes(4).toString("hex");
+  const snapshotDir = path.join(
+    gitDirAbs,
+    `coc-presync-snapshot-${ts}-${rand}`,
+  );
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  const failures = [];
+  let copied = 0;
+  for (const rel of untracked) {
+    const srcAbs = path.join(dir, rel);
+    // Defense-in-depth (security-reviewer MED-1): route the quarantine
+    // destination through the same containment guard the copy/purge
+    // branches use. git ls-files emits repo-relative normalized paths
+    // today; the guard makes the invariant structural, not git-version-
+    // dependent.
+    let destAbs;
+    try {
+      destAbs = safeJoinUnder(snapshotDir, rel);
+    } catch (e) {
+      failures.push(`${rel}: refused (containment): ${e.message}`);
+      continue;
+    }
+    try {
+      if (!fs.existsSync(srcAbs)) continue; // vanished / dangling symlink
+      const st = fs.lstatSync(srcAbs);
+      if (st.isDirectory()) continue; // ls-files lists files, not dirs
+      // Do NOT follow symlinks (security-reviewer HIGH-1): copyFileSync
+      // copies the TARGET's bytes, leaking out-of-tree content into the
+      // quarantine and corrupting recovery. A symlink's target is tracked
+      // elsewhere or out of scope; the snapshot preserves files git would
+      // otherwise lose. lstatSync above already returns the link's own
+      // stat (does not follow), so this is the race-minimal test.
+      if (st.isSymbolicLink()) continue;
+      fs.mkdirSync(path.dirname(destAbs), { recursive: true });
+      fs.copyFileSync(srcAbs, destAbs);
+      copied++;
+    } catch (e) {
+      failures.push(`${rel}: ${e.message}`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(
+      `presync-snapshot: ${failures.length} untracked file(s) could not be snapshotted in ${path.basename(dir)} — refusing to proceed (would risk unrecoverable loss): ${failures.slice(0, 3).join("; ")}`,
+    );
+  }
+  return { snapshotDir, count: copied };
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -161,12 +323,36 @@ const ALWAYS_INCLUDE = [
 const LOOM_LOCAL_PATTERNS = [".claude/bin/*.local.json"];
 
 // ────────────────────────────────────────────────────────────────
+// `.gitignore` apply — managed block markers (GH #368 finding 1)
+// ────────────────────────────────────────────────────────────────
+//
+// `sync-manifest.yaml::gitignore_additions:` declares paths every
+// consumer's `.gitignore` MUST contain. Apply discipline:
+//
+//  1. Read the consumer's existing `.gitignore` (empty if absent).
+//  2. Locate the managed block by literal marker lines (BEGIN/END).
+//  3. If present, REPLACE the block body with the manifest's current
+//     entries (no diff merge — manifest is authoritative INSIDE the
+//     block). If absent, APPEND the block (with a leading blank line
+//     if the file does not already end with one).
+//  4. Lines OUTSIDE the block are NEVER touched — user-managed.
+//  5. Write atomically via `.tmp.<pid>` + `rename()` per
+//     `knowledge-convergence.md` MUST-1 + `coc-append.js` lineage.
+//
+// The block markers are byte-stable: same manifest input produces
+// byte-identical block output across runs (idempotency proof).
+const GITIGNORE_MANAGED_BEGIN =
+  "# >>> coc:gitignore_additions — managed by loom /sync; do not edit between markers >>>";
+const GITIGNORE_MANAGED_END = "# <<< coc:gitignore_additions <<<";
+
+// ────────────────────────────────────────────────────────────────
 // CLI parse
 // ────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const args = {
     target: null,
     template: null,
+    allTemplates: false,
     dryRun: false,
     out: null,
     json: false,
@@ -175,6 +361,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--target") args.target = argv[++i];
     else if (a === "--template") args.template = argv[++i];
+    else if (a === "--all-templates") args.allTemplates = true;
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--out") args.out = argv[++i];
     else if (a === "--json") args.json = true;
@@ -196,7 +383,11 @@ function parseArgs(argv) {
 function usage() {
   return (
     "Usage: sync-tier-aware.mjs --target <py|rs|rb|base>\n" +
-    "       [--template <repo>] [--dry-run] [--out <dir>] [--json]\n"
+    "       [--template <repo> | --all-templates] [--dry-run] [--out <dir>] [--json]\n" +
+    "\n" +
+    "  --template <repo>   restrict the write to ONE template in the lane\n" +
+    "  --all-templates     write EVERY template in the lane (explicit opt-in;\n" +
+    "                      required when the lane has >1 template — #401)\n"
   );
 }
 
@@ -388,6 +579,379 @@ function matchesAny(relpath, globs) {
 }
 
 // ────────────────────────────────────────────────────────────────
+// gitignore_additions — manifest read + idempotent apply
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Parse `gitignore_additions:` from the manifest. Returns the declared
+ * entries in manifest order (order preservation lets an operator diff
+ * the manifest against the consumer's `.gitignore` line-for-line).
+ */
+function parseGitignoreAdditions(manifestText) {
+  return parseList(sliceBlock(manifestText, "gitignore_additions"));
+}
+
+/**
+ * FA — parse `visibility_gitignore_additions.public:` from the manifest.
+ * These entries are appended to a consumer's `.gitignore` ONLY when the
+ * consumer declares `visibility: public` in its `.coc-sync-marker`.
+ *
+ * The block has one nested class (`public:`) whose items are a `- ` list;
+ * sliceBlock grabs the whole `visibility_gitignore_additions:` body and
+ * parseList extracts the list items under it (the only list in the block).
+ * Returns [] when the block is absent (back-compat: a manifest without
+ * the FA block applies no visibility-conditional entries).
+ */
+function parseVisibilityGitignoreAdditions(manifestText) {
+  return parseList(sliceBlock(manifestText, "visibility_gitignore_additions"));
+}
+
+/**
+ * FA — resolve a consumer's visibility from its `.coc-sync-marker`.
+ * Returns { visibility, optOut } where visibility ∈ {"public","private"}
+ * and optOut is the marker's `visibility_opt_out` array (paths a private
+ * consumer wants ignored anyway, OR a public consumer wants to keep —
+ * currently honored as "public consumer skips these visibility entries").
+ *
+ * DEFAULT IS "public" (fail-safe per FA decision): a marker with no
+ * `visibility` field, an unreadable/absent marker, or malformed content
+ * all resolve to "public" so a misconfigured repo IGNORES its
+ * operator-local session state rather than risking a public commit of
+ * it. The marker lives at `<dir>/.claude/.coc-sync-marker`.
+ *
+ * FORMAT TOLERANCE: markers on disk today are single-line JSON, but
+ * coc-sync.md Step 9 mandates YAML going forward. This reader handles
+ * BOTH — JSON.parse first; on failure, a minimal line-scan for
+ * `visibility:` + `visibility_opt_out:` YAML keys. Neither format is
+ * privileged; visibility detection works regardless of which the
+ * consumer's marker uses. (Fail-safe still applies: a marker this
+ * reader cannot extract a visibility from → "public".)
+ */
+function readConsumerVisibility(dir) {
+  const markerPath = path.join(dir, ".claude", ".coc-sync-marker");
+  const fallback = { visibility: "public", optOut: [] };
+  // Hardening (security-reviewer LOW-1): O_NOFOLLOW refuses a symlinked
+  // marker (a symlink could redirect the read outside the consumer dir),
+  // and a size cap bounds the read so a multi-GB marker cannot OOM the
+  // sync. Both failure modes fall to the fail-safe public default — a
+  // marker we cannot safely read is treated as "no visibility declared".
+  // Mirrors the .gitignore read discipline (O_NOFOLLOW) below.
+  const MAX_MARKER_BYTES = 64 * 1024; // markers are tiny JSON/YAML; 64KiB is generous
+  let raw;
+  let fd;
+  try {
+    fd = fs.openSync(
+      markerPath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+  } catch {
+    return fallback; // absent / unreadable / symlink (ELOOP) → fail-safe public
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_MARKER_BYTES) {
+      return fallback; // non-regular-file or oversize → fail-safe public
+    }
+    raw = fs.readFileSync(fd, "utf8");
+  } catch {
+    return fallback; // read error → fail-safe public
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  let visibilityRaw = null;
+  let optOut = [];
+
+  // Path 1 — JSON (current on-disk format).
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.visibility === "string") {
+      visibilityRaw = parsed.visibility;
+    }
+    if (Array.isArray(parsed && parsed.visibility_opt_out)) {
+      optOut = parsed.visibility_opt_out.filter((e) => typeof e === "string");
+    }
+  } catch {
+    // Path 2 — YAML line-scan (future mandated format). Minimal, no
+    // YAML lib: match `visibility: <value>` and a flow/block opt-out
+    // list. Anything unparseable leaves visibilityRaw null → public.
+    const vm = raw.match(/^\s*visibility:\s*["']?([A-Za-z]+)["']?\s*$/m);
+    if (vm) visibilityRaw = vm[1];
+    // Flow list: `visibility_opt_out: [a, b]`
+    const flow = raw.match(/^\s*visibility_opt_out:\s*\[([^\]]*)\]\s*$/m);
+    if (flow) {
+      optOut = flow[1]
+        .split(",")
+        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+        .filter((s) => s.length > 0);
+    }
+  }
+
+  const v =
+    typeof visibilityRaw === "string"
+      ? visibilityRaw.trim().toLowerCase()
+      : "public";
+  const visibility = v === "private" ? "private" : "public"; // only these two; anything else → public
+  return { visibility, optOut };
+}
+
+/**
+ * FA — compute the effective gitignore additions for ONE consumer:
+ * the always-applied `base` entries plus, when the consumer is public,
+ * the visibility entries (minus any the marker opted out of). Private
+ * consumers get base only → they TRACK session-notes + workspaces.
+ *
+ *   optOut semantics: an entry in the marker's visibility_opt_out[] whose
+ *   value is a prefix-or-exact match of a visibility entry suppresses that
+ *   entry. "session-notes" suppresses the .session-notes* trio;
+ *   "workspaces" suppresses the /workspaces/* pair. Matching is by the
+ *   coarse token the operator writes, not the literal gitignore line.
+ */
+function effectiveGitignoreAdditions(base, visibilityAdds, marker) {
+  if (marker.visibility !== "public") return base.slice();
+  const optOut = marker.optOut || [];
+  const optOutMatches = (entry) =>
+    optOut.some((tok) => {
+      if (tok === "session-notes") return entry.includes("session-notes");
+      if (tok === "workspaces") return entry.includes("workspaces");
+      return entry === tok; // exact-line opt-out
+    });
+  const kept = visibilityAdds.filter((e) => !optOutMatches(e));
+  return [...base, ...kept];
+}
+
+/**
+ * Validate a single gitignore_additions entry. Defends against
+ * manifest defects that would either escape the consumer's repo
+ * boundary or break the managed-block grammar.
+ *
+ *   - Empty string → defect (would produce a blank ignore line that
+ *     silently ignores nothing).
+ *   - Newline in entry (ASCII \r, \n OR Unicode U+2028 LS,
+ *     U+2029 PS) → defect (would inject extra lines OUTSIDE the
+ *     managed block, evading the marker-block invariant).
+ *   - Entry colliding with the marker strings → defect (would close
+ *     the managed block one line early, leaving "user content
+ *     outside the block" that next-apply preserves verbatim).
+ *     Security-reviewer R1 MED-1 (marker-string-as-entry).
+ *
+ * Returns the defect description (string) or `null` if safe.
+ */
+function rejectUnsafeGitignoreEntry(entry) {
+  if (typeof entry !== "string" || entry.length === 0) {
+    return "empty entry";
+  }
+  // Reject ASCII CR/LF AND Unicode line separators (U+2028 LS, U+2029 PS).
+  // git uses LF-only grammar for .gitignore so the structural-injection
+  // path is ASCII; Unicode separators are rejected so editor / GitHub-UI
+  // previews stay aligned with on-disk semantics.
+  if (/[\r\n\u2028\u2029]/.test(entry)) {
+    return `entry contains line terminator (would break managed-block invariant): '${entry.replace(/[\r\n\u2028\u2029]/g, "\\n")}'`;
+  }
+  // Marker-collision check — reject any entry that contains either
+  // BEGIN or END marker as a substring. Substring (vs equality) check
+  // catches both literal-marker entries AND entries that embed a
+  // marker into a longer string (e.g. `# >>> coc:gitignore_additions
+  // ... # SUFFIX`).
+  if (
+    entry.includes(GITIGNORE_MANAGED_BEGIN) ||
+    entry.includes(GITIGNORE_MANAGED_END)
+  ) {
+    return `entry collides with managed-block marker: '${entry}'`;
+  }
+  return null;
+}
+
+/**
+ * Compose the managed-block body from the manifest's declared
+ * entries. The block is byte-stable: same `additions` input always
+ * produces the same output bytes (no timestamps, no sorting, no
+ * deduping — preserve manifest order verbatim).
+ */
+function composeGitignoreBlock(additions) {
+  const lines = [GITIGNORE_MANAGED_BEGIN, ...additions, GITIGNORE_MANAGED_END];
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * Find the managed block in an existing `.gitignore` body. Returns
+ * `{ start, end }` byte-offsets of the BEGIN line through the END
+ * line's trailing newline (inclusive), or `null` if no block exists.
+ *
+ * Detection is anchored to the literal marker strings — a partial
+ * marker (BEGIN with no matching END, or END before BEGIN) is
+ * treated as `null` (no managed block) and the next apply will
+ * append a fresh block. This preserves user-managed content even
+ * under marker corruption.
+ */
+function findGitignoreBlock(existingBody) {
+  const beginIdx = existingBody.indexOf(GITIGNORE_MANAGED_BEGIN);
+  if (beginIdx === -1) return null;
+  const endIdx = existingBody.indexOf(GITIGNORE_MANAGED_END, beginIdx);
+  if (endIdx === -1) return null;
+  // Extend through the END line's trailing newline (if any).
+  const newlineAfterEnd = existingBody.indexOf(
+    "\n",
+    endIdx + GITIGNORE_MANAGED_END.length,
+  );
+  const end =
+    newlineAfterEnd === -1
+      ? existingBody.length
+      : newlineAfterEnd + 1; // include the newline
+  return { start: beginIdx, end };
+}
+
+/**
+ * Compute the post-apply body without doing any FS write. Pure
+ * function for testability — the FS side-effect lives in
+ * `applyGitignoreAdditions` below.
+ *
+ * Idempotency: applying the same `additions` to the result of a
+ * prior apply produces byte-identical output.
+ */
+function computeGitignoreUpdate(existingBody, additions) {
+  const block = composeGitignoreBlock(additions);
+  const existing = findGitignoreBlock(existingBody);
+  if (existing !== null) {
+    // Replace the block in-place; lines outside untouched.
+    const before = existingBody.slice(0, existing.start);
+    const after = existingBody.slice(existing.end);
+    return { content: before + block + after, action: "replaced" };
+  }
+  // Append. If the file is empty, just write the block. Otherwise
+  // ensure a single blank line separates the user content from the
+  // managed block — both for readability AND so a later re-find
+  // operation always sees BEGIN at column 0.
+  if (existingBody.length === 0) {
+    return { content: block, action: "created" };
+  }
+  const sep = existingBody.endsWith("\n\n")
+    ? ""
+    : existingBody.endsWith("\n")
+      ? "\n"
+      : "\n\n";
+  return { content: existingBody + sep + block, action: "appended" };
+}
+
+/**
+ * Apply manifest-declared gitignore entries to `<dir>/.gitignore`
+ * idempotently. Returns a structured result describing what changed.
+ *
+ *   dir       — absolute path of the target consumer repo (template root).
+ *   additions — list of entries from parseGitignoreAdditions().
+ *   dryRun    — when true, compute the new content but do not write.
+ *
+ * Return shape:
+ *   { action: "replaced" | "appended" | "created" | "noop",
+ *     added: <count of entries declared>,
+ *     entries: <verbatim declared entries>,
+ *     pre_bytes, post_bytes,
+ *     gitignore_path: ".gitignore" }
+ *
+ * `action: "noop"` fires only when (a) the existing block content
+ * exactly matches the about-to-write content (byte-equal), avoiding
+ * a redundant atomic rename. This is what makes re-runs costless.
+ */
+function applyGitignoreAdditions(dir, additions, dryRun) {
+  const gitignorePath = path.join(dir, ".gitignore");
+  let existing = "";
+  let preStat = null;
+  try {
+    // O_NOFOLLOW on the READ side too — a symlinked `.gitignore`
+    // pointing outside the template is the same disclosure class
+    // as the write-side TOCTOU.
+    const fd = fs.openSync(
+      gitignorePath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    try {
+      preStat = fs.fstatSync(fd);
+      existing = fs.readFileSync(fd, "utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    if (e.code === "ENOENT") {
+      // No existing .gitignore — treat as empty.
+      existing = "";
+    } else if (e.code === "ELOOP") {
+      // Symlink at .gitignore path — refuse rather than rewrite.
+      throw new Error(
+        `.gitignore at ${rel(gitignorePath)} is a symlink; refusing to write ` +
+          `(O_NOFOLLOW). Resolve manually before next /sync.`,
+      );
+    } else {
+      throw e;
+    }
+  }
+
+  const { content, action } = computeGitignoreUpdate(existing, additions);
+
+  // Short-circuit when nothing would change.
+  if (content === existing) {
+    return {
+      action: "noop",
+      added: additions.length,
+      entries: additions.slice(),
+      pre_bytes: existing.length,
+      post_bytes: existing.length,
+      gitignore_path: ".gitignore",
+    };
+  }
+
+  if (!dryRun) {
+    // Atomic write: tmp file + rename. tmp lives next to target so
+    // rename is same-filesystem (POSIX guarantees atomic rename).
+    //
+    // Tmp suffix is `<pid>.<8-hex-random>` per Round-1 cross-agent
+    // consensus (reviewer-MED-3 + security-LOW-2): pid alone collides
+    // on (a) two concurrent invocations from a single Node process if
+    // executePlan ever becomes async, AND (b) cross-process race on
+    // the same out-tree where pid happens to recycle. The random
+    // suffix collapses both to negligible probability without changing
+    // the same-filesystem rename invariant. Same shape as Python
+    // tempfile.NamedTemporaryFile pid+random + os.O_EXCL discipline.
+    const tmpPath = path.join(
+      dir,
+      `.gitignore.tmp.${process.pid}.${crypto.randomBytes(4).toString("hex")}`,
+    );
+    try {
+      safeWriteTextSync(tmpPath, content);
+      // Preserve mode from existing file if any; default 0o644 already
+      // set on open. (chmod intentionally omitted — safeWriteTextSync
+      // creates with 0o644 which matches git's default for tracked files.)
+      fs.renameSync(tmpPath, gitignorePath);
+    } catch (e) {
+      // Best-effort cleanup of the tmp file on failure; never let
+      // a stale tmp block the next apply. Per `rules/observability.md`
+      // Rule 5 (cleanup failures surface as WARN+) — log the unlink
+      // failure to stderr so a stuck-tmp leaves a forensic trail
+      // rather than vanishing into the surrounding error path.
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch (unlinkErr) {
+        if (unlinkErr.code !== "ENOENT") {
+          process.stderr.write(
+            `sync-tier-aware: WARN cleanup of tmp ` +
+              `'${rel(tmpPath)}' failed: ${unlinkErr.code || unlinkErr.message}\n`,
+          );
+        }
+      }
+      throw e;
+    }
+  }
+
+  return {
+    action,
+    added: additions.length,
+    entries: additions.slice(),
+    pre_bytes: existing.length,
+    post_bytes: content.length,
+    gitignore_path: ".gitignore",
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
 // Walk loom/.claude/ — emit every file relative to repo root.
 // ────────────────────────────────────────────────────────────────
 function walkClaudeDir() {
@@ -463,8 +1027,14 @@ function buildPlan(manifest, target, templateFilter) {
   }
 
   const exclude = parseList(sliceBlock(manifest, "exclude"));
+  const loomOnly = parseList(sliceBlock(manifest, "loom_only")); // F104 — positive never-sync
   const useExclude = parseList(sliceBlock(manifest, "use_exclude"));
   const useObsoleted = parseList(sliceBlock(manifest, "use_obsoleted"));
+  const gitignoreAdditions = parseGitignoreAdditions(manifest);
+  // FA — visibility-conditional additions (applied per-consumer in
+  // executePlan based on each target's .coc-sync-marker visibility).
+  const visibilityGitignoreAdditions =
+    parseVisibilityGitignoreAdditions(manifest);
 
   // Reject unsafe purge entries at plan-build time (CRIT-1 defense).
   // An absolute / `.` / `..` entry would cause fs.rmSync to escape the
@@ -477,6 +1047,35 @@ function buildPlan(manifest, target, templateFilter) {
         `manifest defect: use_obsoleted entry ${defect} ` +
           `— sync-tier-aware refuses to apply this purge list ` +
           `(would escape target dir)`,
+      );
+    }
+  }
+
+  // Reject unsafe gitignore_additions entries at plan-build time.
+  // Same defense shape as use_obsoleted above — surface manifest
+  // defects BEFORE any FS mutation.
+  for (const entry of gitignoreAdditions) {
+    const defect = rejectUnsafeGitignoreEntry(entry);
+    if (defect !== null) {
+      fail(
+        1,
+        `manifest defect: gitignore_additions entry ${defect} ` +
+          `— sync-tier-aware refuses to apply this entry`,
+      );
+    }
+  }
+
+  // FA — same safety gate for visibility-conditional entries. The `!`
+  // negation prefix (e.g. `!/workspaces/_template/`) is a legitimate
+  // gitignore re-include and is NOT a path-escape; rejectUnsafe checks
+  // line-terminator + marker-collision, neither of which `!` trips.
+  for (const entry of visibilityGitignoreAdditions) {
+    const defect = rejectUnsafeGitignoreEntry(entry);
+    if (defect !== null) {
+      fail(
+        1,
+        `manifest defect: visibility_gitignore_additions entry ${defect} ` +
+          `— sync-tier-aware refuses to apply this entry`,
       );
     }
   }
@@ -506,7 +1105,6 @@ function buildPlan(manifest, target, templateFilter) {
         `Available: ${repo.templates.map((t) => t.repo).join(", ")}`,
     );
   }
-
   const allFiles = walkClaudeDir();
 
   // Per-file disposition.
@@ -517,6 +1115,7 @@ function buildPlan(manifest, target, templateFilter) {
       inclusionGlobs,
       exclude,
       useExclude,
+      loomOnly,
     );
     files.push({ path: f, ...disposition });
   }
@@ -528,15 +1127,25 @@ function buildPlan(manifest, target, templateFilter) {
     templates: templates.map((t) => t.repo),
     files,
     purge: useObsoleted.slice(),
+    gitignore_additions: gitignoreAdditions.slice(),
+    visibility_gitignore_additions: visibilityGitignoreAdditions.slice(),
   };
 }
 
-function classifyFile(relpath, inclusionGlobs, exclude, useExclude) {
+function classifyFile(relpath, inclusionGlobs, exclude, useExclude, loomOnly = []) {
   // 1. Always-include — wins over everything except loom-local.
   const alwaysInc = matchesAny(relpath, ALWAYS_INCLUDE);
   // 2. Loom-local — universal skip (gitignored operator config).
   if (matchesAny(relpath, LOOM_LOCAL_PATTERNS)) {
     return { action: "skip", reason: "loom_local" };
+  }
+  // 2b. loom_only (F104) — POSITIVE never-sync declaration. A matching
+  // path is skipped for EVERY target, BEFORE tier inclusion — a positive
+  // skip, not an accidental `no_tier_match`. Checked before always-include
+  // so a loom-only artifact is never copied even if it matched ALWAYS_INCLUDE
+  // (none do today; the ordering makes the never-sync invariant total).
+  if (matchesAnyManifestGlob(relpath, loomOnly)) {
+    return { action: "skip", reason: "loom_only" };
   }
   if (alwaysInc) {
     return { action: "copy", reason: "always_include" };
@@ -611,6 +1220,8 @@ function executePlan(plan, outOverride, dryRun) {
       // never escapes the function as serialized output.
       target_basename: path.basename(dir),
       copied: [],
+      verified: 0,
+      verify_failures: [],
       purged: [],
       skipped: {
         loom_local: 0,
@@ -619,6 +1230,15 @@ function executePlan(plan, outOverride, dryRun) {
         no_tier_match: 0,
       },
     };
+    // #401 forever-fix: snapshot this template's untracked working-tree
+    // files to an out-of-tree quarantine BEFORE any copy/purge below.
+    // Per-dir, so it covers collateral fan-out writes. A throw here
+    // propagates and HALTS the run rather than mutating unprotected work.
+    const presync = snapshotUntrackedFiles(dir, { dryRun });
+    result.presync_snapshot =
+      presync.count > 0
+        ? { dir: path.basename(presync.snapshotDir), count: presync.count }
+        : null;
     for (const f of plan.files) {
       if (f.action === "skip") {
         result.skipped[f.reason] = (result.skipped[f.reason] || 0) + 1;
@@ -638,6 +1258,15 @@ function executePlan(plan, outOverride, dryRun) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         // HIGH-1 defense: O_NOFOLLOW refuses symlink targets at dest.
         safeCopyFile(src, dest);
+        // #401 Defect-2 fix: post-copy byte-equality. A plain `copied++`
+        // count trusts that safeCopyFile landed the bytes; the incident
+        // proved a copy can silently no-op (dest left at stale HEAD).
+        const reason = verifyCopiedBytes(src, dest);
+        if (reason === null) {
+          result.verified++;
+        } else {
+          result.verify_failures.push(`${path.relative(dir, dest)} — ${reason}`);
+        }
       }
       result.copied.push({
         src: f.path,
@@ -666,6 +1295,28 @@ function executePlan(plan, outOverride, dryRun) {
         result.purged.push({ path: p });
       }
     }
+    // Apply gitignore_additions (GH #368 finding 1). Idempotent —
+    // a re-run on a previously-applied template produces action:"noop".
+    // Failures here halt the whole run rather than leaving partial
+    // state across templates 1..N-1.
+    //
+    // FA — resolve THIS consumer's visibility from its .coc-sync-marker
+    // (default public, fail-safe) and merge the visibility-conditional
+    // entries. Public → base + visibility (session-notes + active
+    // workspaces ignored, _template preserved). Private → base only
+    // (TRACK session-notes + workspaces as team knowledge).
+    const marker = readConsumerVisibility(dir);
+    const effectiveAdds = effectiveGitignoreAdditions(
+      plan.gitignore_additions,
+      plan.visibility_gitignore_additions,
+      marker,
+    );
+    result.visibility = marker.visibility;
+    try {
+      result.gitignore = applyGitignoreAdditions(dir, effectiveAdds, dryRun);
+    } catch (e) {
+      fail(1, `gitignore apply refused: ${e.message}`);
+    }
     results.push(result);
   }
   return results;
@@ -689,7 +1340,23 @@ function emitText(plan, results, dryRun) {
     lines.push("");
     lines.push(`## template: ${r.template}`);
     lines.push(`   target_dir: ${r.target_basename}/`);
+    if (r.presync_snapshot) {
+      // Surface the safety action so the operator SEES that N untracked
+      // files were quarantined and where to recover them (reviewer LOW-1).
+      lines.push(
+        `   presync_snapshot: ${r.presync_snapshot.count} untracked file(s) → .git/${r.presync_snapshot.dir}/`,
+      );
+    }
     lines.push(`   copied:  ${r.copied.length}`);
+    if (!dryRun) {
+      // #401 Defect-2: byte-equality verified count + any under-delivery.
+      lines.push(
+        `   verified: ${r.verified}/${r.copied.length} byte-equal` +
+          (r.verify_failures.length
+            ? ` — ${r.verify_failures.length} FAILED (sync under-delivered)`
+            : ""),
+      );
+    }
     lines.push(`   purged:  ${r.purged.length}`);
     lines.push(
       `   skipped: loom_local=${r.skipped.loom_local || 0} ` +
@@ -697,6 +1364,13 @@ function emitText(plan, results, dryRun) {
         `use_exclude=${r.skipped.use_exclude || 0} ` +
         `no_tier_match=${r.skipped.no_tier_match || 0}`,
     );
+    if (r.gitignore) {
+      lines.push(
+        `   .gitignore: ${r.gitignore.action} ` +
+          `(${r.gitignore.added} declared entr${r.gitignore.added === 1 ? "y" : "ies"}, ` +
+          `${r.gitignore.pre_bytes}B → ${r.gitignore.post_bytes}B)`,
+      );
+    }
   }
   return lines.join("\n") + "\n";
 }
@@ -724,12 +1398,57 @@ function main() {
   const args = parseArgs(process.argv);
   const manifest = loadManifest();
   const plan = buildPlan(manifest, args.target, args.template);
+  // #401 Defect-1 fix (ROOT CAUSE of the data loss): an un-scoped
+  // `--target <lane>` WRITE fans out to EVERY template in the lane as
+  // collateral. The incident: a sync intended for one consumer also wrote
+  // globals into a sibling consumer's working tree, and the cleanup
+  // destroyed that sibling's untracked files. A lane-wide WRITE MUST be an
+  // explicit operator decision, never the silent default. The gate fires
+  // on the WRITE path only — `--dry-run` inspection is free to preview the
+  // whole lane (that is its purpose; the danger is the write, not the
+  // preview). When the lane has >1 template and neither --template nor
+  // --all-templates was given, HALT before any FS mutation.
+  if (
+    !args.dryRun &&
+    args.template === null &&
+    !args.allTemplates &&
+    plan.templates.length > 1
+  ) {
+    fail(
+      2,
+      `lane '${args.target}' has ${plan.templates.length} templates ` +
+        `[${plan.templates.join(", ")}]. ` +
+        `Refusing an implicit lane-wide write (#401 data-loss root cause). ` +
+        `Pass --template <repo> to scope to one, or --all-templates to ` +
+        `write all ${plan.templates.length} (serial, snapshot-protected). ` +
+        `(Re-run with --dry-run to preview the full lane without writing.)`,
+    );
+  }
   const results = executePlan(plan, args.out, args.dryRun);
   if (args.json) {
     const out = { plan, results, dry_run: args.dryRun };
     process.stdout.write(JSON.stringify(out, null, 2) + "\n");
   } else {
     process.stdout.write(emitText(plan, results, args.dryRun));
+  }
+  // #401 Defect-2 fix: a non-zero verify_failures count means the tool
+  // reported a copy it did not actually land (the silent apply-gap: the
+  // incident reported `copied 1228` while 13 hooks + 189 files stayed at
+  // stale HEAD content). Surface every mismatch and exit non-zero so a
+  // caller can NEVER trust a success count that masks an under-delivery.
+  if (!args.dryRun) {
+    const failed = results.flatMap((r) =>
+      (r.verify_failures || []).map((f) => `${r.template}: ${f}`),
+    );
+    if (failed.length > 0) {
+      fail(
+        1,
+        `post-copy byte-equality verification FAILED for ${failed.length} ` +
+          `path(s) — the sync under-delivered (#401 Defect 2):\n  ` +
+          failed.slice(0, 20).join("\n  ") +
+          (failed.length > 20 ? `\n  …and ${failed.length - 20} more` : ""),
+      );
+    }
   }
 }
 
@@ -773,7 +1492,20 @@ export {
   classifyFile,
   buildPlan,
   safeJoinUnder,
+  snapshotUntrackedFiles,
+  verifyCopiedBytes,
   rejectUnsafePurgeEntry,
+  parseGitignoreAdditions,
+  parseVisibilityGitignoreAdditions,
+  readConsumerVisibility,
+  effectiveGitignoreAdditions,
+  rejectUnsafeGitignoreEntry,
+  composeGitignoreBlock,
+  findGitignoreBlock,
+  computeGitignoreUpdate,
+  applyGitignoreAdditions,
+  GITIGNORE_MANAGED_BEGIN,
+  GITIGNORE_MANAGED_END,
   ALWAYS_INCLUDE,
   LOOM_LOCAL_PATTERNS,
 };

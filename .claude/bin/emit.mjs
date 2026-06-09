@@ -23,7 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 
 // Symlink-safe write. Node's fs.writeFileSync follows symlinks by
 // default, so a TOCTOU attacker can plant a symlink between mkdirSync
@@ -49,6 +49,21 @@ function safeWriteFileSync(filePath, data) {
 import { parseSlotsV5, applyOverlay } from "./lib/slot-parser.mjs";
 import { resolveOverlay } from "./lib/variant-overlay.mjs";
 import { extractPolicies } from "../codex-mcp-guard/extract-policies.mjs";
+// Validator 18 (#408 AC#5-a) shares the EMITTER's canonical manifest parser +
+// glob matcher so the validator's cc-only certification provably matches what
+// emit-cli-artifacts actually excludes (no divergent hand-rolled second parser).
+import { loadExclusions, matchesAnyGlob } from "./emit-cli-artifacts.mjs";
+// cli_delivery resolution primitives (#408 AC#5-a contract) live in a SHARED
+// lib so BOTH Validator 18 here AND the AC#5-b rules-reference emitter in
+// emit-cli-artifacts.mjs resolve lanes through ONE parser. Re-exported below
+// for the cli-delivery-contract test + any standalone importer of emit.mjs.
+import {
+  CLI_DELIVERY_VALUES,
+  parseExcludeFrom,
+  deriveCliDelivery,
+  checkRuleCliDelivery,
+} from "./lib/cli-delivery.mjs";
+export { CLI_DELIVERY_VALUES, parseExcludeFrom, deriveCliDelivery, checkRuleCliDelivery };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..", "..");
@@ -236,8 +251,8 @@ export function stripRuleFrontmatter(raw) {
 //   4. variants/<lang>-<cli>/rules/<rule>.md  (ternary, both-axis)
 // 2–4 are all applied if present (union of slot replacements), in
 // that order. Language-axis overlays were added 2026-04-22 (Phase I2)
-// to close the semantic-licensing bug where, e.g., the proprietary
-// rs override of independence.md was invisible to emit because only
+// to close the semantic-override bug where, e.g., the language-specific
+// rs override of framework-first.md was invisible to emit because only
 // CLI-only and ternary paths composed into the baseline.
 export function composeRule(ruleName, cli, lang = null) {
   // Rule-name validation: must be a simple .md filename — no traversal.
@@ -462,6 +477,38 @@ export function getCritBaseline() {
   return crit.sort();
 }
 
+// #423 AC#4 — pure binding-token guard, exported so the violation shape is
+// testable in isolation (mirrors validateAggregateHeadroom). The always-on
+// baseline MUST carry ZERO Ruby binding-code fences: Ruby examples live ONLY
+// in the on-demand 28-ruby-bindings skill, never the abridged baseline.
+// abridgeV6 drops >200B non-DO code blocks, but a ```ruby DO-block ≤200B in a
+// rule body survives — this is the mechanical guard against re-introducing the
+// rb-in-baseline failure mode the rb→rs collapse eliminated. Python is the
+// baseline default example language, so only Ruby fences are asserted-absent.
+export function detectBindingTokenViolations(emission, cli, lang = null) {
+  const violations = [];
+  const lines = String(emission).split("\n");
+  // Match ```ruby / ~~~ruby / ```rb at column 0 OR indented, case-insensitive,
+  // any fence length (≥3) — covers every fence shape abridgeV6 can pass through
+  // (it strips column-0 fences; an indented one survives as a plain line). `\b`
+  // after the token excludes ```rbs / ```rbenv (RBS/rbenv are not Ruby code).
+  const FENCE_RX = /^[ \t]*(?:`{3,}|~{3,})(ruby|rb)\b/i;
+  const idx = lines.findIndex((l) => FENCE_RX.test(l));
+  if (idx !== -1) {
+    violations.push({
+      cli,
+      lang,
+      token: lines[idx].replace(/^[ \t]*(?:`{3,}|~{3,})/, "").trim(),
+      line: idx + 1,
+      message:
+        "Ruby binding-code fence in the abridged baseline — Ruby binding code " +
+        "MUST live in the on-demand 28-ruby-bindings skill, not the always-on " +
+        "baseline (#423 Phase 1 invariant). Move it out of the rule body.",
+    });
+  }
+  return violations;
+}
+
 // v6.2 Shard 1 — pure validator for aggregate headroom. Extracted from
 // emitBaseline so the violation shape is testable in isolation. Returns
 // an array (empty when no breach) so the call site can spread it directly
@@ -626,6 +673,10 @@ export function emitBaseline(cli, outDir, { lang = null, verbose = false, dryRun
   const emission = chunks.join("\n---\n\n").replace(/\n+$/, "") + "\n\n---\n";
   const emissionBytes = Buffer.byteLength(emission, "utf8");
 
+  // #423 AC#4 — binding-token regression guard (pure fn exported above for
+  // isolation testing). Ruby binding code MUST NOT reach the always-on baseline.
+  const bindingTokenViolations = detectBindingTokenViolations(emission, cli, lang);
+
   // v6 caps — load from sync-manifest.yaml (single source of truth). The
   // previous hardcoded WARN_CAP=32768 / BLOCK_CAP=61440 are now loaded per-CLI
   // from cli_variants.context/root.md.<cli>.{warn,block}_cap_bytes so a
@@ -714,6 +765,7 @@ export function emitBaseline(cli, outDir, { lang = null, verbose = false, dryRun
       headroom_pct: headroomPctForReport,
       headroom_floor_pct: HEADROOM_FLOOR_PCT,
       headroom_floor_violations: headroomFloorViolations,
+      binding_token_violations: bindingTokenViolations,
       proximity_band_advisory: proximityBandAdvisory,
       budget_warnings: budgetWarnings,
       budget_block_violations: budgetBlockViolations,
@@ -740,6 +792,7 @@ export function emitBaseline(cli, outDir, { lang = null, verbose = false, dryRun
         headroom_pct: headroomPctForReport,
         headroom_floor_pct: HEADROOM_FLOOR_PCT,
         headroom_floor_violations: headroomFloorViolations,
+        binding_token_violations: bindingTokenViolations,
         proximity_band_advisory: proximityBandAdvisory,
         rules_emitted: crit.length,
         per_rule: perRuleReport,
@@ -782,6 +835,7 @@ export function emitBaseline(cli, outDir, { lang = null, verbose = false, dryRun
     headroom_pct: Number(headroomPct.toFixed(2)),
     headroom_floor_pct: HEADROOM_FLOOR_PCT,
     headroom_floor_violations: headroomFloorViolations,
+    binding_token_violations: bindingTokenViolations,
     proximity_band_advisory: proximityBandAdvisory,
     budget_warnings: budgetWarnings,
     budget_block_violations: budgetBlockViolations,
@@ -913,6 +967,59 @@ export function validateRuleFrontmatter() {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Validator 18 — cli_delivery lane-declaration contract (#408 AC#5-a/b)
+// ────────────────────────────────────────────────────────────────
+// The per-rule resolution primitives (CLI_DELIVERY_VALUES, parseExcludeFrom,
+// deriveCliDelivery, checkRuleCliDelivery) live in the SHARED lib
+// `./lib/cli-delivery.mjs` (imported + re-exported at the top of this file).
+// They are shared because BOTH this validator AND the AC#5-b rules-reference
+// emitter (emit-cli-artifacts.mjs) must resolve lanes through ONE parser —
+// a divergent mirror was the exact R1 finding the AC#5-a redteam closed.
+//
+//   - baseline      → always-on in AGENTS.md / GEMINI.md (getCritBaseline).
+//   - skill-channel → on-demand index entry in the rules-reference skill,
+//                     emitted by emit-cli-artifacts.mjs::emitRulesReferenceSkill
+//                     (AC#5-b). The index points the non-CC LLM at the
+//                     canonical `.claude/rules/<name>.md` (shared path).
+//   - cc-only       → genuinely CC-specific; not delivered to Codex/Gemini.
+//
+// validateCliDelivery() is the fs-wiring: it reads every rule's frontmatter,
+// computes the per-lane manifest-exclusion booleans via the SHARED loadExclusions
+// + matchesAnyGlob (so the verdict provably tracks the real emit), and buckets
+// each rule into the report by its resolved lane.
+export function validateCliDelivery() {
+  const rulesDir = path.join(REPO, ".claude", "rules");
+  const files = fs.readdirSync(rulesDir).filter((f) => f.endsWith(".md")).sort();
+  // SHARED canonical parser + glob matcher from the emitter (no divergent mirror):
+  // the validator's cc-only verdict is computed from the SAME exclusion read the
+  // real emit uses, so a future manifest-parse change cannot drift the two apart.
+  const excl = loadExclusions();
+  const failures = [];
+  const report = {
+    baseline: [],
+    "skill-channel": [],
+    "cc-only": [],
+    "n/a-skill-embedded": [],
+  };
+
+  for (const f of files) {
+    const content = fs.readFileSync(path.join(rulesDir, f), "utf8");
+    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) continue; // Validator 14 already fails on a missing frontmatter block.
+    const relPath = `rules/${f}`;
+    const manifest = {
+      codex: matchesAnyGlob(relPath, excl.codex || []),
+      gemini: matchesAnyGlob(relPath, excl.gemini || []),
+    };
+    const res = checkRuleCliDelivery(fm[1], manifest);
+    for (const msg of res.failures) failures.push(`${f}: ${msg}`);
+    if (res.lane) report[res.lane].push(f);
+  }
+
+  return { pass: failures.length === 0, failures, report };
+}
+
+// ────────────────────────────────────────────────────────────────
 // Validator 15 — manifest tier-completeness (loom 2026-05-16, journal
 // 0078). Every .claude/rules/*.md MUST have its distribution fate
 // consciously declared in sync-manifest.yaml — exactly one of:
@@ -1025,6 +1132,216 @@ export function validateManifestYaml() {
     };
   }
   return { pass: true, failures: [] };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Validator 17 — multi-operator substrate hook ⇔ data file coupling
+// (loom F67 2026-05-28, journal 0161, GH issue #379).
+//
+// roster-schema-validate.js + genesis-anchor-guard.js read
+// .claude/operators.roster.schema.json at runtime (path hardcoded in
+// roster-schema-validate.js:56-61). Before F67 the substrate sync
+// shipped the validator code but not the schema; consumer repos that
+// received the substrate without the schema had genesis-anchor-guard
+// fail-close every commit ("operators roster missing; trust root not
+// established") — the schema is not consumer-authorable, so there is
+// no in-repo recovery path.
+//
+// This validator codifies the coupling: if either hook is present in
+// loom source (which it is and will be), the manifest's tiered set
+// MUST contain operators.roster.schema.json — bare existence in
+// .claude/ is NOT enough; the path must appear in a tier so /sync
+// distributes it. Structural exit per hook-output-discipline.md
+// MUST-2 (file-existence + tier-membership are structural signals,
+// not lexical regex).
+export function validateRosterSchemaCoupling() {
+  const hooksRoot = path.join(REPO, ".claude", "hooks");
+  const schemaPath = path.join(REPO, ".claude", "operators.roster.schema.json");
+  const manifestPath = path.join(REPO, ".claude", "sync-manifest.yaml");
+
+  const validatorJs = path.join(hooksRoot, "lib", "roster-schema-validate.js");
+  const guardJs = path.join(hooksRoot, "genesis-anchor-guard.js");
+
+  const failures = [];
+
+  const hookPresent =
+    fs.existsSync(validatorJs) || fs.existsSync(guardJs);
+  if (!hookPresent) {
+    // No coupling to enforce — the substrate hasn't landed in this checkout.
+    return { pass: true, failures };
+  }
+
+  if (!fs.existsSync(schemaPath)) {
+    failures.push(
+      `operators.roster.schema.json missing at .claude/ — required by ` +
+        `roster-schema-validate.js:56-61 (runtime hardcoded path). ` +
+        `Restore the schema file before declaring substrate complete.`,
+    );
+    return { pass: false, failures };
+  }
+
+  // Manifest tier-membership check. The schema MUST appear as a
+  // bare-name entry in the `tiers:` block — NOT in `use_exclude:`
+  // (loom-only) or `use_obsoleted:` (purged on next sync). Per
+  // reviewer M1 + cc-architect HIGH-2 (journal 0162): a whole-file
+  // regex sweep would false-PASS if a future operator moved the
+  // entry to use_exclude/obsoleted, restoring the exact failure mode
+  // V17 exists to block. Mirroring V15's sliceBlock pattern keeps
+  // the validator's mechanical sweep scope-matched to its prose
+  // claim ("the schema MUST appear in a TIER").
+  const manifestText = fs.readFileSync(manifestPath, "utf8");
+  // Slice the `tiers:` block: from the line AFTER `^tiers:` to the
+  // next column-0 key. Same shape as validateTierCompleteness above
+  // (lines 939-948); duplicated rather than factored to keep V17
+  // self-contained (the factoring belongs in a separate refactor
+  // codify, not this same-shard remediation wave).
+  const tiersStart = manifestText.search(/^tiers:\s*$/m);
+  if (tiersStart === -1) {
+    failures.push(
+      `sync-manifest.yaml has no \`tiers:\` block — V17 cannot verify ` +
+        `schema tier-membership. Restore the tiers block before declaring ` +
+        `substrate complete.`,
+    );
+    return { pass: false, failures };
+  }
+  const tiersBodyStart = manifestText.indexOf("\n", tiersStart);
+  const afterTiers = manifestText.slice(tiersBodyStart + 1);
+  const nextKeyRel = afterTiers.search(/^[A-Za-z_][\w-]*:\s*$/m);
+  const tiersBlock =
+    nextKeyRel === -1 ? afterTiers : afterTiers.slice(0, nextKeyRel);
+  const tieredRe = /^\s*-\s*operators\.roster\.schema\.json\s*$/m;
+  if (!tieredRe.test(tiersBlock)) {
+    failures.push(
+      `operators.roster.schema.json EXISTS at .claude/ but is NOT declared ` +
+        `in any sync-manifest.yaml \`tiers:\` entry. The substrate's hook ` +
+        `consumers (roster-schema-validate.js, genesis-anchor-guard.js) ` +
+        `ship without their runtime data; consumer repos receiving the ` +
+        `substrate via /sync will fail-close every commit ("operators ` +
+        `roster missing; trust root not established"). Add ` +
+        `\`- operators.roster.schema.json\` to a tier (recommended: coc, ` +
+        `alongside commands/whoami.md). Origin: F67 / GH #379 / journal 0161. ` +
+        `Note: an entry in \`use_exclude:\` or \`use_obsoleted:\` does NOT ` +
+        `satisfy this check — the schema must be IN a tier so /sync ships ` +
+        `it (journal 0162 scope-fix).`,
+    );
+    return { pass: false, failures };
+  }
+
+  // F70: end-to-end strengthening — invoke sync-tier-aware.mjs --dry-run
+  // --json per declared sync target and assert
+  // operators.roster.schema.json appears in the planned `copied` list.
+  //
+  // The text-declaration check above (tieredRe) verifies the schema is
+  // SYNTACTICALLY in the manifest. F70 verifies it is SEMANTICALLY
+  // distributed — closes the grammar-evolution drift class where a
+  // future manifest addition (per-entry `disabled: true` marker, a new
+  // `use_exclude_v2:` block) silently drops the schema from every
+  // target's plan while leaving the tier-declaration intact. The text
+  // check would pass; only the end-to-end dry-run sees the drift.
+  //
+  // Per journal/0162 § F70 acceptance. Subprocess cost: ~1-2s per
+  // target × 5 targets ≈ 5-10s. Borne at /codify validation time, not
+  // at every emit.mjs invocation; opt-in via an env var would defeat
+  // the regression-lock so the deep check is unconditional.
+  const declaredTargets = ["py", "rs", "rb", "base", "prism"];
+  const syncTierAwarePath = path.join(REPO, ".claude", "bin", "sync-tier-aware.mjs");
+  const SCHEMA_PLAN_PATH = ".claude/operators.roster.schema.json";
+  // Use a synthetic --out path so the loom-links resolver is bypassed:
+  // V17 inspects the dry-run plan only, never writes, never actually
+  // resolves the target's on-disk location. This makes the validator
+  // operator-portable — it passes on every workstation regardless of
+  // which targets the operator has cloned locally.
+  const syntheticOut = path.join(REPO, ".claude", "bin", "v17-probe-out");
+  for (const target of declaredTargets) {
+    let stdout;
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          syncTierAwarePath,
+          "--target",
+          target,
+          "--dry-run",
+          "--json",
+          "--out",
+          syntheticOut,
+        ],
+        // maxBuffer: the --dry-run --json probe enumerates the full consumer
+        // tree; on a large consumer repo the output exceeds the 1 MiB
+        // execFileSync default → spurious ENOBUFS (measured ~2.8 MiB for rs).
+        // 64 MiB headroom keeps the V17 probe robust against tree growth.
+        {
+          encoding: "utf8",
+          timeout: 20000,
+          stdio: ["ignore", "pipe", "pipe"],
+          maxBuffer: 64 * 1024 * 1024,
+        },
+      );
+    } catch (err) {
+      failures.push(
+        `V17 (F70 end-to-end): sync-tier-aware --target ${target} --dry-run --json ` +
+          `failed: ${err && err.message ? err.message.slice(0, 200) : String(err).slice(0, 200)}. ` +
+          `The dry-run probe MUST succeed for every declared target so V17 can verify the schema ` +
+          `actually distributes; if the target is intentionally retired, remove it from this validator's ` +
+          `declaredTargets list AND remove repos.${target} from sync-manifest.yaml in the same commit.`,
+      );
+      continue;
+    }
+    let plan;
+    try {
+      plan = JSON.parse(stdout);
+    } catch (err) {
+      failures.push(
+        `V17 (F70 end-to-end): sync-tier-aware --target ${target} --dry-run --json ` +
+          `emitted unparseable output: ${err.message.slice(0, 120)}. ` +
+          `Expected JSON with plan.files[] containing the schema's distribution action.`,
+      );
+      continue;
+    }
+    const files =
+      plan && plan.plan && Array.isArray(plan.plan.files) ? plan.plan.files : [];
+    // F70 scope: only fail on targets that subscribe to the `coc` tier
+    // (where the schema lives per F67's tier choice in journal/0161).
+    // Targets not subscribed to coc are out of #379's scope — they
+    // don't receive the substrate hooks' coc-tier siblings either.
+    // F70's regression-lock binds the schema's distribution to the
+    // tier-subscriptions that ARE supposed to ship it; widening the
+    // scope to every target would re-open a different architectural
+    // question (do base/prism need the substrate?) that F67 explicitly
+    // scoped out.
+    const subs =
+      plan && plan.plan && Array.isArray(plan.plan.tier_subscriptions)
+        ? plan.plan.tier_subscriptions
+        : [];
+    if (!subs.includes("coc")) {
+      // Target does not subscribe to coc tier — out of F70 scope.
+      // Documented as advisory note so the operator sees the skip.
+      continue;
+    }
+    const schemaEntry = files.find((f) => f && f.path === SCHEMA_PLAN_PATH);
+    if (!schemaEntry) {
+      failures.push(
+        `V17 (F70 end-to-end): sync-tier-aware --target ${target} --dry-run --json ` +
+          `plan does NOT include ${SCHEMA_PLAN_PATH} at all. ` +
+          `The tier declaration in sync-manifest.yaml passed the text check but the resolved ` +
+          `distribution plan silently dropped the schema. Inspect the manifest's tier_subscriptions ` +
+          `for target=${target}, any future per-entry markers (e.g. \`disabled: true\`), or recent ` +
+          `changes to sync-tier-aware.mjs's filtering logic.`,
+      );
+      continue;
+    }
+    if (schemaEntry.action !== "copy") {
+      failures.push(
+        `V17 (F70 end-to-end): sync-tier-aware --target ${target} --dry-run --json ` +
+          `plan includes ${SCHEMA_PLAN_PATH} but action="${schemaEntry.action}" (reason="${schemaEntry.reason}"). ` +
+          `Expected action="copy" so the schema actually ships with the substrate. The substrate's ` +
+          `hook consumers (roster-schema-validate.js, genesis-anchor-guard.js) ship without their ` +
+          `runtime data otherwise — every commit in target=${target} consumer repos will fail-close.`,
+      );
+    }
+  }
+
+  return { pass: failures.length === 0, failures };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1209,6 +1526,33 @@ function main() {
     process.exit(1);
   }
 
+  // Validator 18 — cli_delivery lane-declaration contract (#408 AC#5-a/b).
+  // Runs AFTER V14 (frontmatter validated) AND V16 (manifest YAML validated):
+  // V18 reads BOTH rule frontmatter AND the cli_emit_exclusions manifest stanza
+  // (via the shared loadExclusions), so — like V15 — it must sit behind the
+  // strict-YAML gate (a malformed manifest must not silently flip a cc-only
+  // rule to skill-channel). Every rule's non-CC delivery lane MUST be declared
+  // or smart-defaulted; a path-scoped rule with no resolvable lane is the silent
+  // Codex/Gemini drop this contract closes. The skill-channel rules are now
+  // DELIVERED (AC#5-b) by emit-cli-artifacts.mjs::emitRulesReferenceSkill, which
+  // resolves the SAME lane set through the shared cli-delivery parser — the count
+  // below provably equals the rule count in the emitted rules-reference index.
+  const v18 = validateCliDelivery();
+  console.log(
+    `[validator-18] cli-delivery: ${v18.pass ? "PASS" : "FAIL"} ` +
+      `(baseline:${v18.report.baseline.length} ` +
+      `skill-channel:${v18.report["skill-channel"].length} → rules-reference skill ` +
+      `cc-only:${v18.report["cc-only"].length} ` +
+      `n/a-skill-embedded:${v18.report["n/a-skill-embedded"].length})`,
+  );
+  if (!v18.pass) {
+    overallPass = false;
+    process.stderr.write(
+      `VALIDATOR 18 FAIL (cli_delivery contract, #408 AC#5-a):\n${v18.failures.map((l) => "  " + l).join("\n")}\n`,
+    );
+    process.exit(1);
+  }
+
   // Validator 15 — manifest tier-completeness (journal 0078). Runs
   // alongside V14 (structural, pre-emission): a rule absent from every
   // tier is silently excluded from the subscription sync, so block
@@ -1219,6 +1563,23 @@ function main() {
     overallPass = false;
     process.stderr.write(
       `VALIDATOR 15 FAIL (sync-manifest tier-completeness, journal 0078):\n${v15.failures.map((l) => "  " + l).join("\n")}\n`,
+    );
+    process.exit(1);
+  }
+
+  // Validator 17 — multi-operator substrate hook ⇔ data coupling (F67
+  // 2026-05-28, journal 0161, GH #379). The roster schema is data the
+  // substrate's hooks read at runtime; shipping the hooks without the
+  // schema fail-closes every consumer commit. Regression-lock makes
+  // future tier-set drift structurally impossible.
+  const v17 = validateRosterSchemaCoupling();
+  console.log(
+    `[validator-17] roster-schema-coupling: ${v17.pass ? "PASS" : "FAIL"}`,
+  );
+  if (!v17.pass) {
+    overallPass = false;
+    process.stderr.write(
+      `VALIDATOR 17 FAIL (multi-operator substrate hook⇔data coupling, F67 / GH #379 / journal 0161):\n${v17.failures.map((l) => "  " + l).join("\n")}\n`,
     );
     process.exit(1);
   }
@@ -1314,6 +1675,20 @@ function main() {
       if (args.strictHeadroom) {
         overallPass = false;
       }
+    }
+    // #423 AC#4 — binding-token regression guard (hard BLOCK, NOT strict-gated;
+    // a Ruby code fence in the always-on baseline is always a defect — Ruby
+    // belongs in the on-demand 28-ruby-bindings skill per the rb→rs collapse).
+    if (
+      result.binding_token_violations &&
+      result.binding_token_violations.length > 0
+    ) {
+      const b = result.binding_token_violations[0];
+      process.stderr.write(
+        `[${b.cli}${b.lang ? " " + b.lang : ""}] binding-token BLOCK (#423): ` +
+          `${b.message} (line ${b.line}, fence \`\`\`${b.token})\n`,
+      );
+      overallPass = false;
     }
   }
 

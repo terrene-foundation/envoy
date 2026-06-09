@@ -170,5 +170,5 @@ When adding new skills:
 5. Update this README
 
 ## Related Documentation
-- **Skills Directory**: `.claude/skills/3-patterns/cheatsheets/`
+- **Skills Directory**: `.gemini/skills/3-patterns/cheatsheets/`
 - **Taxonomy**: See skills taxonomy document for complete skill hierarchy

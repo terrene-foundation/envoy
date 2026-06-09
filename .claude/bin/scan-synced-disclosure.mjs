@@ -146,7 +146,17 @@ function isNeverSynced(relPath, base, segs) {
   if (base === "sync-manifest.yaml") return true;
   if (base === "VERSION") return true;
   if (base === "CLAUDE.md") return true;
-  if (base === "settings.json") return true;
+  // F77 (#386): settings.json IS synced to USE templates as committed
+  // content. Operator-PII paths smuggled via `permissions.allow` /
+  // `permissions.deny` entries — e.g. `Edit(/Users/<op>/repos/loom/**)` —
+  // are correlatable across 30+ downstream consumers exactly like the
+  // prose-level leaks the rest of the SHAPES catch. The scanner MUST
+  // walk settings.json so the `operator-home-path` shape fires on those
+  // `(/Users|/home)/<op>/` tokens regardless of whether they sit inside
+  // a tool-call matcher (`Edit(...)`, `Write(...)`, `Read(...)`) or in
+  // prose. `settings.local.json` REMAINS never-synced — that file is
+  // gitignored per `permissions.deny` convention and carries genuine
+  // per-operator local overrides.
   if (base === "settings.local.json") return true;
   if (base === ".coc-sync-marker") return true;
   if (base === "scheduled_tasks.lock") return true;
@@ -176,6 +186,12 @@ function isExcluded(relPath) {
   if (segs[0] === ".git" || segs.includes(".git")) return true;
   if (path.resolve(REPO_ROOT_ACTIVE, relPath) === SCRIPT_PATH) return true;
   if (base === "scan-synced-disclosure.mjs") return true;
+  // The loom-only tenant denylist (journal/0214) carries the literal
+  // customer-identity tokens the `customer-identity-token` shape flags.
+  // It MUST NOT be scanned-as-content (its own tokens would self-flag) and
+  // it is never synced (sync-manifest.yaml `loom_only:`). Same self-exclude
+  // pattern as the scanner's own file above.
+  if (base === "disclosure-tenant-denylist.json") return true;
 
   // This scanner's OWN audit fixtures intentionally embed SYNTHETIC
   // disclosure shapes (invented `acme-*` / `Fakename-*` / `fakeuser`
@@ -678,7 +694,7 @@ const SHAPES = [
     // suppressed by the anchored ALLOWLIST, identical to the other
     // four alternatives. Disposition: CLOSED (not documented-residual).
     id: "nonfoundation-org-slug",
-    rx: /\b[a-z][a-z0-9-]*-enterprise(?:-[a-z0-9]+)*\b|(?:git@github\.com:|github\.com[:/]|gh api repos\/|--repo\s+)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)[a-z0-9._-]*(?:#\d+)?|gh api orgs\/[a-z][a-z0-9-]{2,}\b|(?<![\w./-])(?!(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier|repos|agents|skills|commands|rules|bin|lib|hooks|guides|variants|specs|chore|csq|workspaces|feat|fix|docs|test|refactor|style|src|packages|pkg|pkgs|tests|crates|cmd|internal|node_modules|dist|build|target|bindings|ffi|python|java|deployment|localhost|service|statefulset|daemonset|pod|svc|refs(?=\/))\b)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)(?:#\d+)?\b|(?:\b(?:chore|feat|fix|release|docs|test|refactor|style)\/|[a-z][a-z0-9+.-]*:\/\/)(?!(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier|repos|agents|skills|commands|rules|bin|lib|hooks|guides|variants|specs|chore|csq|workspaces|feat|fix|docs|test|refactor|style|src|packages|pkg|pkgs|tests|crates|cmd|internal|node_modules|dist|build|target|bindings|ffi|python|java|deployment|localhost|service|statefulset|daemonset|pod|svc|refs(?=\/))\b)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)(?:#\d+)?\b/g,
+    rx: /\b[a-z][a-z0-9-]*-enterprise(?:-[a-z0-9]+)*\b|(?:git@github\.com:|github\.com[:/]|gh api repos\/|--repo\s+)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)[a-z0-9._-]*(?:#\d+)?|gh api orgs\/[a-z][a-z0-9-]{2,}\b|(?<![\w./-])(?!(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier|repos|agents|skills|commands|rules|bin|lib|hooks|guides|variants|specs|chore|csq|workspaces|feat|fix|docs|test|refactor|style|src|packages|pkg|pkgs|tests|crates|ext|cmd|internal|node_modules|dist|build|target|bindings|ffi|python|java|deployment|localhost|service|statefulset|daemonset|pod|svc|refs(?=\/))\b)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)(?:#\d+)?\b|(?:\b(?:chore|feat|fix|release|docs|test|refactor|style)\/|[a-z][a-z0-9+.-]*:\/\/)(?!(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier|repos|agents|skills|commands|rules|bin|lib|hooks|guides|variants|specs|chore|csq|workspaces|feat|fix|docs|test|refactor|style|src|packages|pkg|pkgs|tests|crates|ext|cmd|internal|node_modules|dist|build|target|bindings|ffi|python|java|deployment|localhost|service|statefulset|daemonset|pod|svc|refs(?=\/))\b)[a-z][a-z0-9-]{2,}\/(?:loom|kailash[a-z0-9-]*|coc[a-z0-9-]*|atelier)(?:#\d+)?\b/g,
   },
   {
     // R2 detection-completeness hardening (#263): the prior arch
@@ -709,7 +725,88 @@ const SHAPES = [
     id: "operator-service-label",
     rx: /\bcom\.(?!example\b)[a-z0-9]+\.(?:runner|actions)[a-z0-9.-]*\b/g,
   },
+  {
+    // F77 (#386): synced settings.json `permissions.allow` / `permissions.deny`
+    // matcher entries of the form `Edit(/<absolute-path>/...)`,
+    // `Write(/<absolute-path>/...)`, `Read(/<absolute-path>/...)` (and the
+    // sibling `Bash`/`MultiEdit`/`Glob`/`Grep` tool-name forms) carry a
+    // structural defect distinct from the prose `/Users/<op>/` leak class:
+    // the matcher itself encodes a runtime authorization scope keyed to an
+    // absolute filesystem path, so every downstream consumer's session
+    // inherits a matcher that ONLY ever fires against the maintainer's
+    // own checkout layout. This shape flags the matcher form regardless
+    // of which operator's path it carries — even an Option-1-allowlisted
+    // `/Users/esperie/` is wrong INSIDE a `permissions.*` matcher in a
+    // synced settings.json (the matcher should be relative or
+    // `$CLAUDE_PROJECT_DIR`-rooted). The shape deliberately does NOT
+    // intersect the allowlist (allowlistCovers is keyed to the matched
+    // SPAN, and the span here is the WHOLE matcher token; no
+    // Option-1 allowlist entry covers a tool-call-matcher span).
+    // Foundation-public placeholder `$CLAUDE_PROJECT_DIR` and relative
+    // paths do not match the shape's leading `(/` anchor — they stay
+    // clean.
+    id: "settings-permission-absolute-path",
+    rx: /"(?:Edit|Write|Read|Bash|MultiEdit|Glob|Grep|NotebookEdit)\((\/(?:Users|home)\/[^"\)]+)\)"/g,
+  },
 ];
+
+// ────────────────────────────────────────────────────────────────
+// CUSTOMER-IDENTITY TENANT DENYLIST (loom-only; journal/0214, loom#411)
+// ────────────────────────────────────────────────────────────────
+//
+// The customer-identity token list lives in a LOOM-ONLY file
+// (`.claude/disclosure-tenant-denylist.json` — a TOP-LEVEL .claude/ file,
+// NOT under bin/**, so it sits outside every synced-tier glob and the
+// `loom_only:` declaration passes the loom-only-mutual-exclusion
+// validator; /sync NEVER ships it). The scanner
+// reads it RELATIVE TO THE SCANNED ROOT and builds a flag-shape from it:
+//   • loom Gate-2 (root = loom): real tokens load → a SYNCED artifact
+//     naming a customer flags BEFORE it can ship.
+//   • a consumer / a fixture without the file: the shape is INERT (the
+//     token list never synced down → the customer-identity surface is
+//     empty). Each repo populates its OWN tenant tokens.
+//   • a fixture WITH its own synthetic denylist: synthetic tokens load,
+//     proving the mechanism without committing a real token to the
+//     (synced) fixture surface.
+// The literal tokens are therefore NEVER embedded in this synced scanner
+// file — inlining a real customer token here would re-create the very leak
+// the shape prevents (a consumer greps the synced scanner source). The denylist
+// file is excluded from the scan (isExcluded) so its own tokens do not
+// self-flag. Only the GENERIC concept terms (`works-council` /
+// `co-determination`) are safe in synced prose — they identify no
+// customer and are deliberately NOT tokens.
+const TENANT_DENYLIST_REL = path.join(
+  ".claude",
+  "disclosure-tenant-denylist.json",
+);
+
+function escapeForRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Build the `customer-identity-token` SHAPE from the loom-only tenant
+// denylist at `rootActive`, or return null when the file is absent / empty
+// (the inert consumer/fixture case). A PRESENT-but-unparseable file throws
+// — a guard that silently disables itself on a typo is worse than no guard.
+function loadCustomerIdentityShape(rootActive) {
+  const p = path.join(rootActive, TENANT_DENYLIST_REL);
+  if (!fs.existsSync(p)) return null; // inert: no tenant list at this root
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch (e) {
+    throw new Error(
+      `disclosure-tenant-denylist.json present but unparseable at ${p}: ` +
+        `${e.message} (refusing to run a silently-disabled tenant guard)`,
+    );
+  }
+  const tokens = Array.isArray(parsed && parsed.tokens)
+    ? parsed.tokens.filter((t) => typeof t === "string" && t.trim())
+    : [];
+  if (tokens.length === 0) return null; // inert: empty list
+  const alt = tokens.map((t) => `\\b${escapeForRegex(t)}\\b`).join("|");
+  return { id: "customer-identity-token", rx: new RegExp(alt, "gi") };
+}
 
 // ────────────────────────────────────────────────────────────────
 // Scan
@@ -727,7 +824,7 @@ function redactContext(line, matchStart, matchText) {
     .trim();
 }
 
-function scanFile(file, findings) {
+function scanFile(file, findings, shapes) {
   let buf;
   try {
     buf = fs.readFileSync(file);
@@ -741,13 +838,27 @@ function scanFile(file, findings) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
-    for (const shape of SHAPES) {
+    for (const shape of shapes) {
       shape.rx.lastIndex = 0;
       let m;
       while ((m = shape.rx.exec(line)) !== null) {
         const matchText = m[0];
         if (m.index === shape.rx.lastIndex) shape.rx.lastIndex++;
-        if (allowlistCovers(matchText)) continue;
+        // F77 (#386): the settings-permission-absolute-path shape is
+        // INTRINSICALLY wrong regardless of which operator's path it
+        // wraps — a tool-call matcher in a synced settings.json's
+        // `permissions.*` array MUST NOT carry an absolute filesystem
+        // path even if the path's operator-stem is the maintainer's own
+        // Option-1 self-coordinate. Skip the allowlist suppression for
+        // this shape so own-coordinate `/Users/esperie/` tokens inside
+        // an `Edit(...)` matcher still flag. Every other shape retains
+        // the Option-1 allowlist semantics unchanged.
+        if (
+          shape.id !== "settings-permission-absolute-path" &&
+          shape.id !== "customer-identity-token" &&
+          allowlistCovers(matchText)
+        )
+          continue;
         findings.push({
           path: rel,
           line: i + 1,
@@ -769,9 +880,20 @@ if (args.help) {
 }
 
 const root = args.root ? path.resolve(args.root) : REPO_ROOT;
-const files = collectFiles(root);
+const files = collectFiles(root); // sets REPO_ROOT_ACTIVE
+// Build the loom-only customer-identity shape from the tenant denylist at
+// the SCANNED root (inert when absent; throws loud on a malformed file so
+// the guard never silently disables itself).
+let customerShape;
+try {
+  customerShape = loadCustomerIdentityShape(REPO_ROOT_ACTIVE);
+} catch (e) {
+  console.error(`scan-synced-disclosure: ${e.message}`);
+  process.exit(2);
+}
+const activeShapes = customerShape ? [...SHAPES, customerShape] : SHAPES;
 const findings = [];
-for (const f of files) scanFile(f, findings);
+for (const f of files) scanFile(f, findings, activeShapes);
 
 if (args.mode === "check") {
   if (findings.length > 0) {
