@@ -202,6 +202,27 @@ durable pending-grant sub-store is the rendezvous AUTHORITY:
    a fresh SQLite connection (WAL), so a concurrent committed write is visible
    on the next tick — no stale snapshot.
 
+**Resolution authenticity (fail-closed).** A resolution row crosses an OS-process
+boundary, so before `await_decision` treats it as the user's decision the row's
+detached signature MUST verify. `resolve_pending_grant` signs the resolution at
+the write boundary: the answering process signs `resolution_signing_payload(
+request_id, resolution_json)` — a sorted-key JSON envelope binding the
+`request_id` to the canonical resolution — with the session signing key
+(`SESSION_SIGNING_KEY_ID`), persisting the hex signature in the `resolution_sig`
+column alongside `resolution_json` in the same atomic UPDATE. On read,
+`_poll_store_for_resolution` calls `SessionRouter.verify_resolution_signature`
+and raises `GrantMomentResolutionUnauthenticatedError` (fail-closed) on a
+missing, malformed, invalid, or tampered signature, or one whose `request_id`
+binding does not match — so a resolution written by direct sqlite tampering or
+by a process lacking the session key is REFUSED, never executed. The `request_id`
+binding defeats replay of a captured signature onto a different pending row. The
+same-process fast-path (a `post_decision` that sets the in-process future) needs
+no verification: it was produced in-process by the adapter and is trusted by
+construction. The signature authenticates that the resolution came from a holder
+of the session signing key; distinguishing a distinct _answerer principal_ by a
+separate co-signing key is out of this spec's scope (the cross-principal
+dual-signature surface is owned by `specs/grant-moment.md`).
+
 The in-process `asyncio.Future` survives ONLY as a same-process fast-path cache
 OVER the store (a same-process `post_decision` short-circuits the poll), never
 as the cross-process rendezvous. Local IPC-signal is a per-platform optimization
