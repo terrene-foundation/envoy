@@ -50,26 +50,26 @@
  * without a central coordinator.
  *
  * --------------------------------------------------------------------------
- * GitHub ruleset (CONF-2 verdict, 2026-05-20)
+ * refs/coc/** server-side protection: N/A on github.com (CONF-2 REFUTED — GH #367)
  * --------------------------------------------------------------------------
  *
- * Server-side protection MUST be provisioned for `refs/coc/**` at M9.3:
+ * The journal/0125 CONF-2 "provision a refs/coc/** ruleset" verdict was
+ * REFUTED 2026-06-07 (journal/0233): github.com rulesets reject a custom-ref
+ * target pattern. Live: POST repos/{owner}/{repo}/rulesets with
+ * conditions.ref_name.include: ["refs/coc/**"] -> 422 "Invalid target
+ * patterns: 'refs/coc/**'". github.com rulesets + branch protection target
+ * refs/heads/** and refs/tags/** ONLY; there is NO server-side mechanism to
+ * restrict creation/deletion of refs/coc/**. The F48 "seed-first" precondition
+ * was a misdiagnosis (the 422 is "Invalid target patterns", not empty-
+ * namespace) and is withdrawn. Do NOT attempt the POST — it 422s.
  *
- *   target: ref
- *   ref_name:
- *     include: ["refs/coc/**"]
- *   rules:
- *     - type: creation         # un-co-signed new-ref push BLOCKED
- *     - type: deletion         # archive-ref deletion BLOCKED
- *     - type: non_fast_forward # existing protection on -genN updates
- *   bypass_actors:
- *     - actor_type: RepositoryRole
- *       actor_id: <owner-role-id>
- *       bypass_mode: always
- *
- * Full spec lives at workspaces/multi-operator-coc/02-plans/ref-protection-spec.md
- * (gitignored — workspace-local) for Shard F to author into
- * `multi-operator-coordination.md` at M8.
+ * The equivocation-parity defense is therefore CLIENT-SIDE (the PRIMARY
+ * defense, not defense-in-depth): the F51 archive-tip-pin verification —
+ * verifyArchiveTipPin (archive-ref.js) invoked from fold-rule-9b.js against
+ * the observed refs/coc/archive-genN tip read through readArchiveRefTip below.
+ * A GitHub ENTERPRISE (GHES) pre-receive hook MAY add server-side custom-ref
+ * protection where available — an Enterprise-only second layer, never a
+ * github.com mandate. See multi-operator-coordination.md MUST-5 + journal/0233.
  *
  * --------------------------------------------------------------------------
  * Style: CommonJS, zero-dep beyond child_process + crypto. No production
@@ -520,8 +520,91 @@ function createGitRefTransport(opts) {
   };
 }
 
+/**
+ * Read the live tip SHA of an archive ref (refs/coc/archive-genN) from
+ * the local repository. F51: this is the live-API primitive that backs
+ * `archive-ref.js::verifyArchiveTipPin` invocation at fold time —
+ * `verify-resource-existence.md` MUST-2 shape (live read against the
+ * same surface the failing operation targets, NOT a documentation grep).
+ *
+ * Implementation: `git for-each-ref --format=%(objectname) <refName>` via
+ * `execFileSync` arg-array form per `rules/security.md` § "No eval()".
+ * No shell expansion; refName is passed directly to git as an argument.
+ *
+ * Returns `{ ok: true, tipSha }` when the ref exists and resolves to a
+ * 40-char SHA; `{ ok: false, reason }` otherwise. NEVER throws — typed
+ * error per `rules/zero-tolerance.md` Rule 3 (no silent fallbacks; typed
+ * errors only). Callers fold the reason into a halt-and-report advisory
+ * per `rules/observability.md` Rule 5.
+ *
+ * @param {string} repoDir   absolute path to the local git checkout
+ * @param {string} refName   full ref name (e.g. "refs/coc/archive-gen0").
+ *   MUST start with "refs/coc/" — the substrate's archive-ref namespace.
+ *   Other ref namespaces are protected by sibling rulesets and MUST NOT
+ *   be readable through this helper (refName-allowlist mirror of
+ *   `createGitRefTransport` MUST-prefix check above).
+ * @returns {{ok: true, tipSha: string} | {ok: false, reason: string}}
+ */
+function readArchiveRefTip(repoDir, refName) {
+  if (typeof repoDir !== "string" || !repoDir) {
+    return { ok: false, reason: "readArchiveRefTip: repoDir required" };
+  }
+  if (typeof refName !== "string" || !refName) {
+    return { ok: false, reason: "readArchiveRefTip: refName required" };
+  }
+  // refName allowlist: archive refs ONLY. The transport's constructor
+  // enforces the same predicate for coordination-log refs; mirroring it
+  // here keeps the helper from being repurposed to read arbitrary refs
+  // (which other tooling protects via server-side rulesets per CONF-2).
+  if (!refName.startsWith("refs/coc/")) {
+    return {
+      ok: false,
+      reason: `readArchiveRefTip: refName must start with refs/coc/ (got: ${refName})`,
+    };
+  }
+  if (!fs.existsSync(repoDir)) {
+    return {
+      ok: false,
+      reason: `readArchiveRefTip: repoDir does not exist: ${repoDir}`,
+    };
+  }
+  let out;
+  try {
+    out = execFileSync(
+      "git",
+      ["-C", repoDir, "for-each-ref", "--format=%(objectname)", refName],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    const stderr = err && err.stderr ? err.stderr.toString() : "";
+    return {
+      ok: false,
+      reason: `readArchiveRefTip: git for-each-ref failed: ${stderr || err.message}`,
+    };
+  }
+  const tipSha = (out || "").trim();
+  // for-each-ref emits empty output (NOT an error) when the ref is absent.
+  // That is the canonical "ref does not exist" signal — fail-loud per
+  // `verify-resource-existence.md` MUST-3 (default disposition on
+  // existence-check empty is surface-the-reason, never silent-default).
+  if (!tipSha) {
+    return {
+      ok: false,
+      reason: `readArchiveRefTip: archive ref '${refName}' not found (git for-each-ref returned empty)`,
+    };
+  }
+  if (!/^[0-9a-f]{40}$/.test(tipSha)) {
+    return {
+      ok: false,
+      reason: `readArchiveRefTip: unexpected tip SHA shape for '${refName}': ${tipSha}`,
+    };
+  }
+  return { ok: true, tipSha };
+}
+
 module.exports = {
   createGitRefTransport,
+  readArchiveRefTip,
   // Constants exposed for downstream use (archive-ref.js uses
   // LOG_BLOB_FILENAME when verifying the cold archive's tip).
   LOG_BLOB_FILENAME,

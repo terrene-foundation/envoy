@@ -2,6 +2,27 @@
 
 This directory contains an MCP server that enforces the same policies as `.claude/hooks/*.js`, emitted as a **fallback path** when the Codex CLI's native `hooks.json` binding is marked `under_development`.
 
+## Installation
+
+The guard depends on `@modelcontextprotocol/sdk` (declared in `package.json`; pinned via `package-lock.json`). On a fresh USE-template install — or after a `/sync` that refreshes this directory — run:
+
+```bash
+cd .codex-mcp-guard && npm ci
+```
+
+`npm ci` (not `npm install`) is required: it installs the exact versions declared in `package-lock.json` and refuses to mutate the lockfile. This is the **reproducible** install path — every Codex consumer of every USE template gets the same SDK build that loom audited at lockfile-commit time. Running `npm install` instead would silently re-resolve the dependency tree against npm's latest matching versions, breaking the audit chain.
+
+This installs the SDK into `.codex-mcp-guard/node_modules/` so `server.js` can lazy-load it on Codex startup. Without this step, Codex emits:
+
+```
+codex-mcp-guard: @modelcontextprotocol/sdk not installed (...).
+Install via the USE template's package.json before running stdio mode.
+```
+
+…and `MCP client for 'codex-mcp-guard' failed to start: handshaking with MCP server failed: connection closed: initialize response`. This is the **fail-closed** mode (per `zero-tolerance.md` Rule 2) — the guard refuses to start rather than running fail-open. The fix is one `npm install`; the gap is not silent corruption.
+
+`engines.node >= 18` per `package.json`. The package itself is `private: true` — it is never published to npm; only consumed in-place via the USE template's `.codex-mcp-guard/` directory.
+
 ## Why this exists
 
 Codex's native hook mechanism (`hooks.json`) is flagged `codex_hooks = under_development` in Codex 0.122. Shipping `hooks.json` to a user running that version would either silently fail (the hook file is ignored) or fail loudly on schema validation — neither is acceptable for a guardrail layer.
@@ -44,11 +65,15 @@ Users on the fallback path WILL observe slightly higher tool-call latency. This 
 
 The `POLICIES` table is generated from the hooks/\*.js AST + the project's `settings.json` matcher map by `extract-policies.mjs --write-policies`, which emits a sibling `policies.json`. `server.js` loads `policies.json` at startup; `POLICIES_POPULATED` flips true iff at least one wrapped Codex tool has ≥1 policy entry. Do NOT edit `policies.json` by hand — it is regenerated on every `/sync` from the single source of truth in `.claude/hooks/`.
 
+### apply_patch edit-gate lane (the `@coc-codex-edit-gate` marker) — FF-AC6-1
+
+`apply_patch` is the Codex file-edit primitive. A CC hook registered under the edit matcher (`Edit|Write|MultiEdit|NotebookEdit`) fans out to the `apply_patch` policy lane **only when its source carries the `@coc-codex-edit-gate` JSDoc marker**. The marker declares the hook a STATELESS trust gate (posture / 4-eyes / signing) safe to replay against a non-enrolled Codex consumer's file-edits. It is the CONSUMER-AVAILABLE selectivity signal: it lives in the synced hook source because `sync-manifest.yaml`'s `mcp-guard` lane is NOT synced to consumers where the extractor regenerates `policies.json`. The cc-only coordination guards (`adjacency-leasecheck`, `journal-write-guard`, `integrity-guard`) deliberately OMIT the marker — they require the multi-operator roster/claim/journal-slot substrate a consumer lacks and would halt every Codex edit. Default is fail-safe-for-functionality: a new edit hook with no marker is EXCLUDED (so a forgotten coordination guard never halts Codex). Adding/auditing a marker on any of the 3 gates fires the `self-referential-codify.md` multi-agent gate. The marker contract lives at `extract-policies.mjs::CODEX_APPLY_PATCH_GATE_MARKER`.
+
 ### Policy execution model
 
 When the MCP server receives an `apply_patch` / `unified_exec` / `shell` invocation:
 
-1. Synthesize a CC-shaped PreToolUse JSON payload (`{ tool_name, tool_input, hook_event_name, cwd, session_id }`).
+1. Synthesize a CC-shaped PreToolUse JSON payload (`{ tool_name, tool_input, hook_event_name, cwd, session_id }`). The Codex tool name is translated to the CC-native name the hooks classify by (`shell`/`unified_exec` → `Bash`, `apply_patch` → `Edit`) via `CODEX_TO_CC_TOOL`, and the input is FIELDED-projected (`synthesizePolicyInputs`) to a LIST of CC shapes — one `{ file_path }` per `apply_patch` V4A target (so multi-file patches are gated per-target), `{ command }` for the Bash lane. The projection drops raw patch content (secrets fence, mirroring `synthesizeCaptureInput`).
 2. For each policy entry registered for that Codex tool, spawn the underlying hook script as a Node subprocess (`node ../hooks/<source_file>`) with the payload on stdin and a 5-second timeout (`cc-artifacts.md` Rule 7).
 3. Read the subprocess exit code:
    - `0` → allow this policy; continue to the next.
