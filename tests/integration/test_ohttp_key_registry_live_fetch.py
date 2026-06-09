@@ -35,6 +35,23 @@ async def _steward(km: InMemoryKeyManager, key_id: str, ch: str) -> tuple[str, s
     return pub, km.sign_with_key(key_id, ch.encode("utf-8"))
 
 
+@pytest.fixture
+def build_nexus():  # type: ignore[no-untyped-def]
+    """Build OHTTP Nexus apps and close every one at teardown — a Nexus binds
+    transport resources, so an unclosed app leaks sockets (ResourceWarning).
+    Teardown runs even when an assertion fails mid-test."""
+    apps = []
+
+    def _build(*args, **kwargs):  # type: ignore[no-untyped-def]
+        app = build_ohttp_nexus(*args, **kwargs)
+        apps.append(app)
+        return app
+
+    yield _build
+    for app in apps:
+        app.close()
+
+
 class TestKeyRegistryLiveFetch:
     async def _publish_signed(
         self, server: OhttpKeyConfigServerHandlers, expires_at: str
@@ -52,14 +69,14 @@ class TestKeyRegistryLiveFetch:
         server.publish_config(config)
         return config, km, [pub_a, pub_b]
 
-    async def test_live_fetch_returns_signature_valid_nonexpired_config(self) -> None:
+    async def test_live_fetch_returns_signature_valid_nonexpired_config(self, build_nexus) -> None:
         server = OhttpKeyConfigServerHandlers()
         config, km, pinned = await self._publish_signed(
             server, expires_at="2099-01-01T00:00:00+00:00"
         )
         # Wire through the REAL Nexus-registered handler.
         relay = OhttpRelayHandlers()
-        app = build_ohttp_nexus(server, relay, api_port=18950, mcp_port=18951)
+        app = build_nexus(server, relay, api_port=18950, mcp_port=18951)
         handler = app._handler_registry["ohttp.key_config"]["handler"]
 
         wire = handler(key_id=11)
@@ -83,10 +100,10 @@ class TestKeyRegistryLiveFetch:
         # Non-expired.
         assert server.assert_not_expired(key_id=11) is True
 
-    async def test_empty_registry_returns_none(self) -> None:
+    async def test_empty_registry_returns_none(self, build_nexus) -> None:
         server = OhttpKeyConfigServerHandlers()
         relay = OhttpRelayHandlers()
-        app = build_ohttp_nexus(server, relay, api_port=18952, mcp_port=18953)
+        app = build_nexus(server, relay, api_port=18952, mcp_port=18953)
         handler = app._handler_registry["ohttp.key_config"]["handler"]
         # Existence check against an unprovisioned registry returns None — the
         # client maps this to the existence-check-failed path, NOT a 403 loop.
