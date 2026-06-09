@@ -34,6 +34,7 @@ __all__ = [
     "ApproveWithModificationResolution",
     "resolution_to_json",
     "resolution_from_json",
+    "resolution_signing_payload",
 ]
 
 
@@ -180,3 +181,26 @@ def resolution_from_json(blob: str) -> ResolutionShape:
             modify_payload=data.get("modify_payload", {}),
         )
     raise ValueError(f"resolution blob has unknown shape discriminator: {shape!r}")
+
+
+def resolution_signing_payload(request_id: str, resolution_json: str) -> str:
+    """Canonical signing input the cross-process resolution signature covers (S4r).
+
+    Binds the ``request_id`` to the serialized resolution so the detached
+    signature authenticates BOTH which decision was made AND which pending row
+    it answers. The ``request_id`` binding defeats replay: a signature captured
+    for one request cannot be lifted onto a different pending row whose shape
+    happens to match. Sorted keys + no whitespace so the signer (the answering
+    process, in ``SessionRouter.resolve_pending_grant``) and the verifier (the
+    requesting process's poll, via ``SessionRouter.verify_resolution_signature``)
+    produce byte-identical input. ``resolution_json`` is already the canonical
+    ``resolution_to_json`` form, embedded here as an opaque string. Returned as a
+    ``str`` (not bytes) to match the key manager's ``sign_with_key(key_id, str)``
+    / ``verify(str, sig, pubkey)`` surface; the manager encodes it identically on
+    both halves.
+    """
+    return json.dumps(
+        {"request_id": request_id, "resolution": resolution_json},
+        sort_keys=True,
+        separators=(",", ":"),
+    )

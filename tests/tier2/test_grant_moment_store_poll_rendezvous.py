@@ -33,6 +33,7 @@ sub-store; the resolution is a real serialized ``ResolutionShape``.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -43,11 +44,14 @@ from envoy.grant_moment import (
     ApproveResolution,
     DeclineResolution,
     GrantMomentExpiredError,
+    GrantMomentResolutionUnauthenticatedError,
     GrantMomentState,
     resolution_from_json,
     resolution_to_json,
 )
+from envoy.grant_moment.resolution import resolution_signing_payload
 from envoy.runtime import SessionRouter
+from envoy.runtime.session import SESSION_SIGNING_KEY_ID, session_db_path
 from tests.helpers.grant_moment_harness import (
     DEFAULT_PRINCIPAL_ID,
     _list_events,
@@ -423,3 +427,118 @@ class TestResolutionCodec:
         read boundary rather than mis-reconstructing into a wrong decision."""
         with pytest.raises(ValueError, match="unknown shape discriminator"):
             resolution_from_json('{"shape":"bogus","decided_by_principal_genesis_id":"p"}')
+
+
+@pytest.mark.asyncio
+class TestResolutionAuthenticity:
+    """S4r security H1: a cross-process resolution row is consumed only after
+    its detached signature verifies against the session signing key. A row a
+    same-UID process forged by writing the vault sqlite directly (no valid
+    signature), a tampered resolution, or a signature replayed from a different
+    request_id are all REFUSED fail-closed — the human-authority grant gate
+    never executes a decision it cannot attribute to a session-key holder.
+    """
+
+    async def test_forged_directly_written_row_is_refused_fail_closed(
+        self, vault_path: Path, backend: _MemBackend, router_a: SessionRouter
+    ) -> None:
+        """A resolved row written DIRECTLY to the sqlite file (bypassing
+        resolve_pending_grant, so carrying a bogus signature) is refused —
+        await_decision raises GrantMomentResolutionUnauthenticatedError, NOT
+        the forged ApproveResolution. This is the literal H1 exploit: a
+        same-UID process flips a pending grant to a forged APPROVE."""
+        runtime, *_ = await make_runtime(session_router=router_a, default_timeout_seconds=10)
+        request = await runtime.issue_grant_moment(**make_issue_kwargs())
+
+        forged = resolution_to_json(
+            ApproveResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+        )
+        # Direct sqlite write — the attacker has filesystem access to the vault
+        # db but produces no valid session-key signature.
+        conn = sqlite3.connect(session_db_path(vault_path))
+        try:
+            conn.execute(
+                "UPDATE pending_grant SET state='resolved', resolution_json=?, "
+                "resolution_sig=?, version=version + 1 WHERE request_id=?",
+                (forged, "00" * 64, request.request_id),  # bogus 64-byte sig
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(GrantMomentResolutionUnauthenticatedError):
+            await runtime.await_decision(request.request_id, timeout_seconds=10)
+
+    async def test_null_signature_row_is_refused(
+        self, vault_path: Path, backend: _MemBackend, router_a: SessionRouter
+    ) -> None:
+        """A resolved row with a NULL signature (e.g. a pre-H1 row, or a writer
+        that skipped signing) is refused fail-closed."""
+        runtime, *_ = await make_runtime(session_router=router_a, default_timeout_seconds=10)
+        request = await runtime.issue_grant_moment(**make_issue_kwargs())
+        forged = resolution_to_json(
+            ApproveResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+        )
+        conn = sqlite3.connect(session_db_path(vault_path))
+        try:
+            conn.execute(
+                "UPDATE pending_grant SET state='resolved', resolution_json=?, "
+                "resolution_sig=NULL, version=version + 1 WHERE request_id=?",
+                (forged, request.request_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with pytest.raises(GrantMomentResolutionUnauthenticatedError):
+            await runtime.await_decision(request.request_id, timeout_seconds=10)
+
+    async def test_verify_rejects_tamper_replay_and_absent_signature(
+        self, vault_path: Path, backend: _MemBackend
+    ) -> None:
+        """verify_resolution_signature is fail-closed on every non-authentic
+        input: a valid signature verifies; the SAME signature is rejected when
+        the request_id changes (replay binding) or the resolution_json is
+        tampered; an absent signature is rejected."""
+        router = await _open_router(vault_path, backend)
+        try:
+            approve_json = resolution_to_json(
+                ApproveResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+            )
+            # A real signature over request "X"'s resolution, signed with the
+            # session key (the same surface resolve_pending_grant uses).
+            sig_for_x = router._key_manager.sign_with_key(  # type: ignore[union-attr]
+                SESSION_SIGNING_KEY_ID, resolution_signing_payload("req-X", approve_json)
+            )
+            # Valid for X.
+            assert (
+                await router.verify_resolution_signature(
+                    request_id="req-X", resolution_json=approve_json, resolution_sig=sig_for_x
+                )
+                is True
+            )
+            # Replay onto a DIFFERENT request_id is rejected (request_id binding).
+            assert (
+                await router.verify_resolution_signature(
+                    request_id="req-Y", resolution_json=approve_json, resolution_sig=sig_for_x
+                )
+                is False
+            )
+            # A tampered resolution (Approve → Decline) under the same sig fails.
+            tampered = resolution_to_json(
+                DeclineResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+            )
+            assert (
+                await router.verify_resolution_signature(
+                    request_id="req-X", resolution_json=tampered, resolution_sig=sig_for_x
+                )
+                is False
+            )
+            # An absent signature is rejected.
+            assert (
+                await router.verify_resolution_signature(
+                    request_id="req-X", resolution_json=approve_json, resolution_sig=None
+                )
+                is False
+            )
+        finally:
+            await router.close()

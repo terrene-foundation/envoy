@@ -71,6 +71,7 @@ from typing import Any
 
 from kailash.trust.key_manager import InMemoryKeyManager
 
+from envoy.grant_moment.resolution import resolution_signing_payload
 from envoy.ledger.keystore import load_or_create_ledger_key_manager
 from envoy.trust.sqlite_perms import chmod_sqlite_family
 
@@ -153,6 +154,10 @@ class PendingGrantRow:
     created_at: str
     updated_at: str
     resolution_json: str | None = None
+    # Detached Ed25519 signature (hex) over ``resolution_signing_payload`` —
+    # the cross-process authenticity anchor verified before a resolution is
+    # treated as a decision (S4r). NULL on an unresolved (``pending``) row.
+    resolution_sig: str | None = None
 
 
 class SessionRouter:
@@ -204,6 +209,7 @@ class SessionRouter:
         state          TEXT NOT NULL CHECK (state IN ('pending','resolved','expired')),
         request_json   TEXT NOT NULL,
         resolution_json TEXT,
+        resolution_sig TEXT,
         version        INTEGER NOT NULL DEFAULT 1,
         ttl_expires_at TEXT NOT NULL,
         created_at     TEXT NOT NULL,
@@ -425,14 +431,15 @@ class SessionRouter:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             resolution_json=row["resolution_json"],
+            resolution_sig=row["resolution_sig"],
         )
 
     def _sync_get_pending_grant(self, request_id: str) -> sqlite3.Row | None:
         conn = self._connect()
         try:
             cur = conn.execute(
-                "SELECT request_id, state, request_json, resolution_json, version, "
-                "created_at, updated_at "
+                "SELECT request_id, state, request_json, resolution_json, "
+                "resolution_sig, version, created_at, updated_at "
                 "FROM pending_grant WHERE request_id = ?",
                 (request_id,),
             )
@@ -475,9 +482,29 @@ class SessionRouter:
                 f"resolve_pending_grant state must be 'resolved' or 'expired' (got {state!r})"
             )
         _require_json_object(resolution_json, field="resolution_json")
+        # Authenticate the resolution at the write boundary (S4r): the answering
+        # process signs the request_id-bound canonical payload with the session
+        # signing key, so the requesting process's poll can REFUSE a row that
+        # was not produced by a session-key holder (forge / tamper / replay
+        # defense — verified in SessionRouter.verify_resolution_signature). A
+        # session row can only be resolved by a process that opened the same
+        # keystore-backed session key; a direct sqlite write is rejected on read.
+        if self._key_manager is None:
+            raise RuntimeError(
+                "resolve_pending_grant requires the session signing key; call open() first"
+            )
+        resolution_sig = self._key_manager.sign_with_key(
+            SESSION_SIGNING_KEY_ID,
+            resolution_signing_payload(request_id, resolution_json),
+        )
         now = _now_iso()
         new_version = await asyncio.to_thread(
-            self._sync_resolve_pending_grant, request_id, resolution_json, state, now
+            self._sync_resolve_pending_grant,
+            request_id,
+            resolution_json,
+            resolution_sig,
+            state,
+            now,
         )
         return new_version
 
@@ -485,6 +512,7 @@ class SessionRouter:
         self,
         request_id: str,
         resolution_json: str,
+        resolution_sig: str,
         state: str,
         now: str,
     ) -> int:
@@ -494,14 +522,17 @@ class SessionRouter:
             # the cross-process compare-and-set. Two writers racing the same row
             # leave exactly one with rowcount=1 (it flipped pending→terminal);
             # the loser sees rowcount=0 and raises below — no lost write, no
-            # silent double-resolve.
+            # silent double-resolve. ``resolution_sig`` lands atomically with
+            # ``resolution_json`` so a resolved row never carries a payload
+            # without its authenticating signature.
             cur = conn.execute(
                 """
                 UPDATE pending_grant
-                   SET state=?, resolution_json=?, version=version + 1, updated_at=?
+                   SET state=?, resolution_json=?, resolution_sig=?,
+                       version=version + 1, updated_at=?
                  WHERE request_id=? AND state='pending'
                 """,
-                (state, resolution_json, now, request_id),
+                (state, resolution_json, resolution_sig, now, request_id),
             )
             if cur.rowcount != 1:
                 conn.rollback()
@@ -528,6 +559,52 @@ class SessionRouter:
             return int(new_version_row["version"])
         finally:
             conn.close()
+
+    async def verify_resolution_signature(
+        self,
+        *,
+        request_id: str,
+        resolution_json: str,
+        resolution_sig: str | None,
+    ) -> bool:
+        """Fail-closed authenticity check for a cross-process resolution row (S4r).
+
+        Verifies the detached Ed25519 ``resolution_sig`` over the
+        ``request_id``-bound canonical payload against the session signing key's
+        public key. Returns ``False`` on a missing signature, an unopened key
+        manager, OR a signature that does not verify — the caller (the requesting
+        process's poll in ``GrantMomentRuntime._poll_store_for_resolution``)
+        REFUSES the resolution on ``False`` rather than executing a row it cannot
+        attribute to a session-key holder. This rejects a resolution written by
+        direct sqlite tampering or by a process lacking the keystore-backed
+        session key, and the ``request_id`` binding rejects a signature captured
+        for a different pending row. Cross-PRINCIPAL co-signature verification (a
+        distinct answerer key) remains Phase-03 scope.
+        """
+        self._require_open()
+        if not resolution_sig or self._key_manager is None:
+            return False
+        public_key = self._key_manager.get_public_key(SESSION_SIGNING_KEY_ID)
+        if not public_key:
+            return False
+        try:
+            return await self._key_manager.verify(
+                resolution_signing_payload(request_id, resolution_json),
+                resolution_sig,
+                public_key,
+            )
+        except Exception:
+            # A malformed / wrong-length / non-decodable signature is exactly the
+            # forge case this gate exists to reject — the key manager RAISES on
+            # garbage signature bytes rather than returning False. Fail closed:
+            # any verification error is treated as NOT authentic, so the caller
+            # refuses the row. This is a definitive security refusal, not
+            # error-hiding (the resolution is rejected, never executed).
+            logger.debug(
+                "session.resolution_signature_verify_failed",
+                extra={"request_id": request_id},
+            )
+            return False
 
     async def count_pending_grants(self) -> int:
         """Count rows still in ``state=pending`` for this principal.

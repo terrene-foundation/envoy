@@ -89,6 +89,7 @@ __all__ = [
     "NotPrimaryChannelError",
     "VelocityRaiseCoolingOffError",
     "GrantMomentReplayError",
+    "GrantMomentResolutionUnauthenticatedError",
     "VisibleSecretMismatchError",
     "NoveltyFrictionRequiredError",
     "BackPressureQueueFullError",
@@ -247,6 +248,31 @@ class GrantMomentReplayError(GrantMomentError):
             message = (
                 "We've already seen this request before. Refusing to "
                 "process it again as a safety measure."
+            )
+        super().__init__(message)
+
+
+class GrantMomentResolutionUnauthenticatedError(GrantMomentError):
+    """A cross-process resolution row failed signature verification (fail-closed).
+
+    The store-poll rendezvous (S4r) reads a resolution another OS process wrote
+    to the durable sub-store. Before that row is treated as the user's decision,
+    its detached Ed25519 signature — over the ``request_id``-bound canonical
+    payload, produced with the session signing key — MUST verify. A missing or
+    invalid signature means the row was NOT produced by a holder of the session
+    key (a forged / tampered decision, or a signature captured for a different
+    request and replayed here), so the human-authority grant gate REFUSES it
+    rather than executing it. Carries only ``request_id`` — never the resolution
+    content. Cross-PRINCIPAL co-signature verification (a distinct answerer key)
+    remains Phase-03 scope; this gate closes the unauthenticated-trust hole.
+    """
+
+    def __init__(self, *, request_id: str, message: str | None = None) -> None:
+        self.request_id = request_id
+        if message is None:
+            message = (
+                "We could not verify who answered this permission request, so "
+                "we're refusing it as a safety measure."
             )
         super().__init__(message)
 

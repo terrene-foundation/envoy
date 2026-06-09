@@ -119,6 +119,7 @@ from envoy.grant_moment.errors import (
     DualSignatureRequiredError,
     GrantMomentExpiredError,
     GrantMomentReplayError,
+    GrantMomentResolutionUnauthenticatedError,
     GrantMomentTimeoutError,
     InvalidGrantMomentTransitionError,
     NotPrimaryChannelError,
@@ -290,6 +291,9 @@ class _PendingGrantRowShape(Protocol):
     state: str
     version: int
     resolution_json: str | None
+    # The detached signature authenticating ``resolution_json`` — verified
+    # fail-closed before the row is treated as a decision (S4r authenticity).
+    resolution_sig: str | None
 
 
 class _SessionRouterProtocol(Protocol):
@@ -318,6 +322,10 @@ class _SessionRouterProtocol(Protocol):
     async def resolve_pending_grant(
         self, *, request_id: str, resolution_json: str, state: str = ...
     ) -> int: ...
+
+    async def verify_resolution_signature(
+        self, *, request_id: str, resolution_json: str, resolution_sig: str | None
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -875,7 +883,19 @@ class EnvoyGrantMomentRuntime:
                 request_id=request_id, timeout_seconds=effective_timeout
             ) from None
 
-        assert isinstance(resolution_or_timeout, ResolutionShape)
+        # Fail-closed structural gate (M3): NOT an `assert` — `python -O` strips
+        # asserts, which would remove the last type check on the most
+        # security-sensitive return value in the module. A non-ResolutionShape
+        # reaching here is an internal invariant violation; refuse rather than
+        # return an unvalidated object as a decision.
+        if not isinstance(resolution_or_timeout, ResolutionShape):
+            raise GrantMomentResolutionUnauthenticatedError(
+                request_id=request_id,
+                message=(
+                    "Internal error: the resolution rendezvous returned a value "
+                    "that is not a decision; refusing it as a safety measure."
+                ),
+            )
         pending.state = next_state(pending.state, GrantMomentEvent.DECISION_RECEIVED)
         return resolution_or_timeout
 
@@ -937,6 +957,24 @@ class EnvoyGrantMomentRuntime:
                         "resolution_json is NULL — store corruption (a resolved row "
                         "MUST carry the serialized ResolutionShape)"
                     )
+                # Fail-closed authenticity gate (S4r security H1): this row was
+                # written by ANOTHER OS process to the durable sub-store; verify
+                # its detached signature against the session key BEFORE treating
+                # it as the user's decision. A forged row (written by direct
+                # sqlite tampering or a process lacking the session key), a
+                # tampered resolution_json, or a signature captured for a
+                # different request_id all fail verification and are REFUSED —
+                # the human-authority grant gate never executes a decision it
+                # cannot attribute to a session-key holder. (The same-process
+                # decision_future fast-path above needs no check: it was set in
+                # THIS process by the in-process adapter, trusted by construction.)
+                authentic = await self._session_router.verify_resolution_signature(
+                    request_id=request_id,
+                    resolution_json=row.resolution_json,
+                    resolution_sig=row.resolution_sig,
+                )
+                if not authentic:
+                    raise GrantMomentResolutionUnauthenticatedError(request_id=request_id)
                 return resolution_from_json(row.resolution_json)
 
             remaining = deadline - loop.time()

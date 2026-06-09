@@ -239,16 +239,28 @@ def decapsulate_request(
     Inverse of ``encapsulate_to_config``. ``encapsulated`` is ``enc || ct``.
 
     Raises:
-        ValueError: malformed encapsulated message (too short to carry ``enc``).
+        ValueError: malformed encapsulated message (too short to carry ``enc``),
+            OR the config advertises a ciphersuite other than the pinned
+            RFC-9458 default (symmetric with ``encapsulate_to_config`` — the
+            recipient MUST NOT open under a downgraded/negotiated suite either).
         cryptography.exceptions.InvalidTag: AEAD authentication failed (tamper).
     """
+    suite = config.ciphersuite
+    if (suite.kem_id, suite.kdf_id, suite.aead_id) != (
+        RFC9458_CIPHERSUITE.kem_id,
+        RFC9458_CIPHERSUITE.kdf_id,
+        RFC9458_CIPHERSUITE.aead_id,
+    ):
+        raise ValueError(
+            "key config advertises a non-default HPKE ciphersuite; the recipient "
+            "refuses to decapsulate under a downgraded suite (pinned RFC-9458)"
+        )
     if len(encapsulated) < _NENC:
         raise ValueError(
             f"encapsulated request too short: {len(encapsulated)} bytes < "
             f"Nenc={_NENC} (cannot contain the KEM encapsulated key)"
         )
     enc, ct = encapsulated[:_NENC], encapsulated[_NENC:]
-    suite = config.ciphersuite
     shared_secret = _decap(enc, private_key, suite)
     key, base_nonce = _key_schedule(shared_secret, info, suite)
     return AESGCM(key).decrypt(base_nonce, ct, aad)
