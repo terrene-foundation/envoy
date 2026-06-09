@@ -109,6 +109,14 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
+    # Upstream kailash SDK advisory from kailash/nodes/handler.py: emitted when the
+    # framework-first `@app.handler` decorator registers a Nexus handler (S8 Envelope
+    # Library FV registry). NOT envoy code — envoy uses the documented framework-first
+    # Nexus API; the advisory is the SDK's internal instance-vs-class add_node detail.
+    # Scoped by message+category so it never masks an envoy-originated UserWarning.
+    # Upstream-file candidate (human-gated per upstream-issue-hygiene.md) — tracked in
+    # workspaces/phase-02-distribution journal.
+    "ignore:Instance-based API usage detected:UserWarning",
 ]
 markers = [
     "regression: Permanent regression tests reproducing fixed bugs (rules/testing.md § Regression Testing); never deleted",
