@@ -7,10 +7,8 @@ to provide comprehensive fixing of common issues found in SDK examples.
 """
 
 import argparse
-import os
 import re
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 # Get project root
 project_root = Path(__file__).parent.parent.parent
@@ -84,13 +82,13 @@ def should_skip_file(path: Path) -> bool:
     return any(skip in str(path) for skip in SKIP_FILES)
 
 
-def fix_file(file_path: Path, verbose: bool = False) -> Tuple[bool, List[str]]:
+def fix_file(file_path: Path, verbose: bool = False) -> tuple[bool, list[str]]:
     """Fix common issues in a single file."""
     if should_skip_file(file_path):
         return False, []
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
     except Exception as e:
         return False, [f"Error reading: {e}"]
@@ -137,10 +135,10 @@ def fix_file(file_path: Path, verbose: bool = False) -> Tuple[bool, List[str]]:
     return False, []
 
 
-def fix_duplicate_imports(content: str) -> Tuple[str, List[str]]:
+def fix_duplicate_imports(content: str) -> tuple[str, list[str]]:
     """Fix duplicate imports in content."""
     lines = content.split("\n")
-    seen_imports: Set[str] = set()
+    seen_imports: set[str] = set()
     fixed_lines = []
     changes = []
 
@@ -245,7 +243,7 @@ Examples:
         if args.dry_run:
             # For dry run, read and process but don't write
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     content = f.read()
                 original_content = content
 

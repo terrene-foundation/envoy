@@ -65,7 +65,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 # Module-scope import (security-reviewer F-5): the prior local-import inside
 # the divergence branch was unnecessary defensive — `score.py` does NOT import
@@ -562,7 +562,7 @@ class _LedgerProtocol(Protocol):
         *,
         entry_type: str,
         content: dict[str, Any],
-        intent_id: Optional[str] = None,
+        intent_id: str | None = None,
         content_trust_level: str = "system",
     ) -> str: ...
 
@@ -710,7 +710,7 @@ class _PostureCarryingEnvelope(Protocol):
     @property
     def prior_posture_level(self) -> str: ...
 
-    def mutate_for_posture_level(self, new_level: "PostureLevel") -> _PostureMutationResult: ...
+    def mutate_for_posture_level(self, new_level: PostureLevel) -> _PostureMutationResult: ...
 
 
 # ---------------------------------------------------------------------------
@@ -767,7 +767,7 @@ class PostureGate:
         *,
         ledger: _LedgerProtocol,
         revoke_hook: _RevokeHook,
-        bet12_emitter: "BET12CadenceEmitter",
+        bet12_emitter: BET12CadenceEmitter,
     ) -> None:
         if ledger is None:
             raise ValueError("ledger is required (no None default)")
@@ -789,7 +789,7 @@ class PostureGate:
         trigger: str = "user_request",
         revoke_on_demotion: tuple[str, ...] = (),
         days_at_current_posture: float = 0.0,
-        envelope: Optional[_PostureCarryingEnvelope] = None,
+        envelope: _PostureCarryingEnvelope | None = None,
     ) -> PostureChangeResult:
         """Request a posture transition; raises on any failed gate.
 
@@ -1001,7 +1001,7 @@ class PostureGate:
         # mid-pair) are a different bug class and require Ledger-level
         # transactional support; tracked at the F-001 follow-up issue.
         mutation = None
-        envelope_edit_content: Optional[dict[str, Any]] = None
+        envelope_edit_content: dict[str, Any] | None = None
         if target > current:
             # MyPy narrows `envelope` to non-None via the Step 3e raise.
             assert envelope is not None  # nosec — narrowing assertion, Step 3e enforces

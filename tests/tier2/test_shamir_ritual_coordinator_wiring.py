@@ -51,7 +51,6 @@ from envoy.shamir import (
 from envoy.shamir.paper import PaperShardRenderer
 from envoy.trust.vault import TrustVault
 
-
 # ---------------------------------------------------------------------------
 # Real-collaborator fixtures — no mocks; storage-only binder fake captures the
 # coordinator's commitments for the recovery side.

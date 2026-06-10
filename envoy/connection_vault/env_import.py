@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from envoy.connection_vault.adapter import ConnectionVault
 from envoy.connection_vault.schema import CredentialType, RotationPolicy
@@ -68,7 +67,7 @@ def import_credentials_from_env(
     skipped: list[str] = []
     entry_ids: list[str] = []
     for spec in specs:
-        raw: Optional[str] = os.environ.get(spec.env_var_name)
+        raw: str | None = os.environ.get(spec.env_var_name)
         # Skip-reason granularity per security-reviewer L3 (2026-05-24):
         # operator needs to distinguish "didn't paste" from "pasted whitespace".
         if raw is None:

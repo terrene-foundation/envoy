@@ -29,7 +29,6 @@ import pytest
 
 from envoy.model import EnvoyProviderRiskAnnotator
 
-
 _ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 _ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL")
 

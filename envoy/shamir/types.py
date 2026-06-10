@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-
 # ---------------------------------------------------------------------------
 # Protocols — collaborator slots for the 6-step ritual
 # ---------------------------------------------------------------------------

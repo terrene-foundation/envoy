@@ -26,7 +26,7 @@ Phase 02 entry:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
@@ -34,7 +34,7 @@ from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
 from envoy.runtime.protocol import KailashRuntime
 
 
-def get_runtime(family: Optional[str] = None, **kwargs: Any) -> KailashRuntime:
+def get_runtime(family: str | None = None, **kwargs: Any) -> KailashRuntime:
     """Return a KailashRuntime-compatible adapter.
 
     Phase 01: `family` defaults to `"kailash-py"`. Any other value while

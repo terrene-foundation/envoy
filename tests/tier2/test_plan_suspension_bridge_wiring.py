@@ -32,7 +32,6 @@ from envoy.grant_moment.plan_suspension_bridge import (
     PlanSuspensionEventKind,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers — real subscriber factories (no unittest.mock anywhere)
 # ---------------------------------------------------------------------------

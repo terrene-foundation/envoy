@@ -40,7 +40,6 @@ versa).
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import hashlib
 from dataclasses import dataclass, field
@@ -69,7 +68,6 @@ from envoy.envelope import (
     content_hash,
 )
 from envoy.ledger import EnvoyLedger
-
 
 # ---------------------------------------------------------------------------
 # Tier 2 adapters — real-collaborator shims that keep the test file

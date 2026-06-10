@@ -50,7 +50,6 @@ from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.types import VisibleSecret
 from envoy.trust.vault import TrustVault
 
-
 PRINCIPAL = "alice@example"
 
 # Canonical per-state extractions — identical to the schedule pinned in

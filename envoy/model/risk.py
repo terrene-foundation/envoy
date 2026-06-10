@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Literal, Optional
+from typing import Any, ClassVar, Literal
 
 from kaizen.llm.deployment import LlmDeployment
 
@@ -88,7 +88,7 @@ class ProviderRisk:
     jurisdiction: str
     data_retention_policy_url: str
     annotated_at: str
-    foundation_attestation_signature_hex: Optional[str]
+    foundation_attestation_signature_hex: str | None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the spec § Provider-risk annotation wire form.

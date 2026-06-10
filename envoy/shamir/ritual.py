@@ -104,7 +104,7 @@ def _make_ritual_id(threshold: int, total_shards: int, created_at: datetime) -> 
     hex output preserves the wire form).
     """
     salt = secrets.token_bytes(8)
-    seed = f"{threshold}:{total_shards}:{created_at.isoformat()}".encode("utf-8") + salt
+    seed = f"{threshold}:{total_shards}:{created_at.isoformat()}".encode() + salt
     return hashlib.sha256(seed).hexdigest()
 
 

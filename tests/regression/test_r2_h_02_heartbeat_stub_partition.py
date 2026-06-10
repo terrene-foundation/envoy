@@ -74,7 +74,6 @@ from envoy.heartbeat.payload import (
     _validate_payload_schema,
 )
 
-
 # Repository root resolved from this file's path; the test runs from any cwd
 # (per ``rules/python-environment.md`` MUST Rule 1 the test resolves cwd
 # through ``Path(__file__)``, not ``process.cwd()`` or relative paths).
@@ -364,8 +363,7 @@ class TestR2H02PublicFacadeContract:
                     eager_imports.add(name)
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "__all__":
-                        if isinstance(node.value, ast.List):
+                    if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List):
                             for elt in node.value.elts:
                                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                                     declared_all.add(elt.value)

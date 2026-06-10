@@ -62,7 +62,6 @@ from tests.helpers.grant_moment_harness import (
     make_issue_kwargs,
 )
 
-
 # A unique phrase that could ONLY appear in the rendered output if the real
 # stored secret reached the render path — never a stub default.
 _REAL_PHRASE = "tide-pool-lantern-quartz-2026"

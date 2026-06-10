@@ -31,7 +31,6 @@ import pytest
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.types import BoundaryConversationStateRow, VisibleSecret
 
-
 PRINCIPAL = "alice@example"
 
 

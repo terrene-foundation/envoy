@@ -16,14 +16,13 @@ Cross-references:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from envoy.heartbeat.errors import (
     DuressFlagLeakageRefusedError,
     PayloadSchemaDriftError,
 )
-
 
 # 21 boolean flags per ``specs/foundation-health-heartbeat.md`` line 29.
 # Order preserved verbatim from the spec to make any drift visible in diff.

@@ -37,14 +37,12 @@ from __future__ import annotations
 import os
 import socket
 import threading
-from typing import Optional
 
 import pytest
 from kaizen.llm.client import LlmClient
 from kaizen.llm.presets import ollama_default_preset
 
-from envoy.model import EnvoyModelRouter, EnvoyProviderRiskAnnotator
-
+from envoy.model import EnvoyProviderRiskAnnotator
 
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_MODEL_ENV = "OLLAMA_DEFAULT_MODEL"
@@ -72,7 +70,7 @@ def _ollama_reachable(host: str = _OLLAMA_HOST) -> bool:
         return False
 
 
-def _pick_ollama_model() -> Optional[str]:
+def _pick_ollama_model() -> str | None:
     """Read the Ollama model name from env (NEVER hardcoded per
     ``rules/env-models.md``).
 
@@ -121,9 +119,9 @@ pytestmark = [
     pytest.mark.skipif(
         _OLLAMA_MODEL is None,
         reason=(
-            f"requires OLLAMA_DEFAULT_MODEL / OLLAMA_PROD_MODEL / OLLAMA_MODEL "
-            f"env var (pulled via `ollama pull <model>` first); "
-            f"ACCEPTABLE skip per rules/testing.md test-skip triage"
+            "requires OLLAMA_DEFAULT_MODEL / OLLAMA_PROD_MODEL / OLLAMA_MODEL "
+            "env var (pulled via `ollama pull <model>` first); "
+            "ACCEPTABLE skip per rules/testing.md test-skip triage"
         ),
     ),
 ]

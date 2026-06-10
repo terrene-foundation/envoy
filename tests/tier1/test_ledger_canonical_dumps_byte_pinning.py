@@ -31,7 +31,6 @@ from envoy.ledger import (
     canonical_dumps,
 )
 
-
 VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 
 
@@ -135,7 +134,8 @@ class TestCanonicalDumpsTimestampMicrosecondPadding:
             canonical_dumps({"t": naive})
 
     def test_non_utc_timezone_converted_to_utc(self) -> None:
-        from datetime import timedelta, timezone as tz
+        from datetime import timedelta
+        from datetime import timezone as tz
 
         plus_eight = tz(timedelta(hours=8))
         ts = datetime(2026, 5, 6, 22, 23, 45, tzinfo=plus_eight)

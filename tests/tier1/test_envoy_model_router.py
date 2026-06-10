@@ -33,7 +33,6 @@ from kaizen.llm.presets import ollama_default_preset, openai_compatible_preset
 
 from envoy.model import EnvoyModelRouter, ProviderSwitchRefusedByEnvelopeError
 
-
 _ENV_LOCK = threading.Lock()
 
 

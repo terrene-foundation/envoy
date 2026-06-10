@@ -78,12 +78,6 @@ from envoy.grant_moment.resolution import (
     resolution_from_json,
     resolution_to_json,
 )
-from envoy.grant_moment.signed_consent import (
-    ConsequencePreview,
-    GrantMomentRequest,
-    GrantMomentResult,
-    SignedConsentBuilder,
-)
 from envoy.grant_moment.runtime import (
     FRICTION_TOKEN_CROSS_CHANNEL_CONFIRM,
     FRICTION_TOKEN_DOUBLE_TAP,
@@ -91,6 +85,12 @@ from envoy.grant_moment.runtime import (
     EnvoyGrantMomentRuntime,
     GrantMomentOutcome,
 )  # noqa: F401  — runtime + friction tokens land via __all__
+from envoy.grant_moment.signed_consent import (
+    ConsequencePreview,
+    GrantMomentRequest,
+    GrantMomentResult,
+    SignedConsentBuilder,
+)
 from envoy.grant_moment.state_machine import (
     GRANT_MOMENT_TRANSITIONS,
     GrantMomentEvent,

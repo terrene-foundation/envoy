@@ -36,20 +36,20 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-from envoy.envelope.canonical_bytes import canonical_bytes as _canonical_bytes
-from envoy.envelope.canonical_bytes import content_hash as _content_hash
-from envoy.envelope.errors import (
+from envoy.envelope.canonical_bytes import canonical_bytes as _canonical_bytes  # noqa: E402
+from envoy.envelope.canonical_bytes import content_hash as _content_hash  # noqa: E402
+from envoy.envelope.errors import (  # noqa: E402
     EnvelopeCompilationError,
     EnvelopeValidationError,
     MonotonicTighteningError,
     SchemaVersionMismatchError,
 )
-from envoy.envelope.template_resolver import (
+from envoy.envelope.template_resolver import (  # noqa: E402
     EnvelopeTemplate,
     EnvelopeTemplateResolver,
     TemplateRef,
 )
-from envoy.envelope.types import (
+from envoy.envelope.types import (  # noqa: E402
     AlgorithmIdentifier,
     AuthoredConstraint,
     EnvelopeConfig,

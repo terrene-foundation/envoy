@@ -274,7 +274,7 @@ def refactor_file(file_path: Path) -> bool:
             # Format with black
             try:
                 new_source = black.format_str(new_source, mode=black.FileMode())
-            except:
+            except Exception:
                 print("  Warning: black formatting failed")
 
         # Write back

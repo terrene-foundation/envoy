@@ -25,7 +25,7 @@ async def _list_events(audit_store: InMemoryAuditStore) -> list:
     return await audit_store.query(AuditFilter())
 
 
-from envoy.grant_moment import (
+from envoy.grant_moment import (  # noqa: E402
     CascadeRevocationOrchestrator,
     ChannelHandoff,
     ConsequencePreview,
@@ -35,7 +35,7 @@ from envoy.grant_moment import (
     NoveltySignals,
     PlanSuspensionBridge,
 )
-from envoy.ledger import EnvoyLedger
+from envoy.ledger import EnvoyLedger  # noqa: E402
 
 DEFAULT_PRINCIPAL_ID = "sha256:test-principal-genesis-id"
 DEFAULT_DEVICE_ID = "device-test"

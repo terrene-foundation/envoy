@@ -177,14 +177,15 @@ class TestEC8CascadeRevocation:
         # If the runtime was built without a CascadeRevocationOrchestrator
         # (Phase 01 narrow scope), revoke_prior_grant raises ValueError
         # rather than silently no-op'ing.
+        from kailash.trust.audit_store import InMemoryAuditStore
+        from kailash.trust.key_manager import InMemoryKeyManager
+
         from envoy.grant_moment import (
             ChannelHandoff,
             EnvoyGrantMomentRuntime,
             NoveltyClassifier,
         )
         from envoy.ledger import EnvoyLedger
-        from kailash.trust.audit_store import InMemoryAuditStore
-        from kailash.trust.key_manager import InMemoryKeyManager
         from tests.helpers.grant_moment_harness import (
             DEFAULT_ALGO_ID,
             DEFAULT_DELEGATION_KEY,

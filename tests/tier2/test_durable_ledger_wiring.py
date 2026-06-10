@@ -34,7 +34,6 @@ from kailash.trust.key_manager import InMemoryKeyManager
 from envoy.ledger import ExportBundle, canonical_dumps, compute_receipt_hash
 from envoy.ledger.bootstrap import DurableLedger, audit_db_path, open_durable_ledger
 
-
 SIGNING_KEY_ID = "envoy-durable-signing-key"
 DEVICE_ID = "device-durable-test"
 VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}

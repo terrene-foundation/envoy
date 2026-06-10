@@ -31,9 +31,9 @@ from envoy.connection_vault import (
     ConnectionVault,
     CorruptedRecordError,
     CredentialType,
-    EnvCredentialSpec,
     EntryExpiredError,
     EntryNotFoundError,
+    EnvCredentialSpec,
     EnvelopeScopeMismatchError,
     InvalidServiceIdentifierError,
     KeychainUnavailableError,
@@ -70,15 +70,14 @@ def principal_id() -> str:
     return _PRINCIPAL_ALPHA
 
 
-from envoy.connection_vault.adapter import _deserialize_record, _serialize_record
-from envoy.connection_vault.schema import CredentialEntry
-from envoy.envelope import (
+from envoy.connection_vault.adapter import _deserialize_record, _serialize_record  # noqa: E402
+from envoy.connection_vault.schema import CredentialEntry  # noqa: E402
+from envoy.envelope import (  # noqa: E402
     CommunicationDimension,
     EnvelopeConfigInput,
     EnvelopeScopeRef,
     OperationalDimension,
 )
-
 
 # ---------------------------------------------------------------------------
 # In-memory keyring backend fixture
@@ -833,10 +832,10 @@ class TestCorruptedRecord:
             _deserialize_record('["list", "not", "object"]')
 
     def test_missing_required_key_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         # Missing entry_id — should raise CorruptedRecordError, not KeyError
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps(
             {
@@ -858,9 +857,9 @@ class TestCorruptedRecord:
             _deserialize_record(malformed)
 
     def test_secret_field_wrong_type_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps(
             {
@@ -882,9 +881,9 @@ class TestCorruptedRecord:
             _deserialize_record(malformed)
 
     def test_unknown_schema_version_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps({"schema_version": 999, "anything": "else"})
         with pytest.raises(RecordSchemaVersionError, match="unsupported"):
@@ -959,9 +958,9 @@ class TestSchemaVersionMismatch:
     def test_get_on_future_version_raises_schema_version_error(
         self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
     ) -> None:
-        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
-
         import json as _json
+
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
 
         backend = _MemBackend()
         vault = ConnectionVault(
@@ -984,7 +983,11 @@ class TestSchemaVersionMismatch:
         """The two errors carry distinct user-action contracts and MUST not collapse."""
         from envoy.connection_vault import (
             ConnectionVaultError,
+        )
+        from envoy.connection_vault import (
             EntryNotFoundError as _Missing,
+        )
+        from envoy.connection_vault import (
             RecordSchemaVersionError as _Version,
         )
 
@@ -1028,9 +1031,8 @@ class TestObservability:
     ) -> None:
 
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(EntryNotFoundError):
-                vault.get(uuid4())
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(EntryNotFoundError):
+            vault.get(uuid4())
         warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any("connection_vault.get.error" in r.message for r in warning_records)
         assert any(getattr(r, "reason", None) == "entry_not_found" for r in warning_records)
@@ -1346,14 +1348,13 @@ class TestSetErrorObservability:
 
         scope = EnvelopeScopeRef(service_identifier="openai")
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(InvalidServiceIdentifierError):
-                vault.set(
-                    credential_type=CredentialType.API_KEY,
-                    service_identifier="UPPERCASE-rejected",
-                    entry_envelope_scope=scope,
-                    secret="sk-test",
-                )
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(InvalidServiceIdentifierError):
+            vault.set(
+                credential_type=CredentialType.API_KEY,
+                service_identifier="UPPERCASE-rejected",
+                entry_envelope_scope=scope,
+                secret="sk-test",
+            )
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "invalid_service_identifier" for r in warns)
 
@@ -1371,14 +1372,13 @@ class TestSetErrorObservability:
         )
         scope = EnvelopeScopeRef(service_identifier="openai")
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(KeychainUnavailableError):
-                vault.set(
-                    credential_type=CredentialType.API_KEY,
-                    service_identifier="openai",
-                    entry_envelope_scope=scope,
-                    secret="sk-test",
-                )
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(KeychainUnavailableError):
+            vault.set(
+                credential_type=CredentialType.API_KEY,
+                service_identifier="openai",
+                entry_envelope_scope=scope,
+                secret="sk-test",
+            )
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "keychain_unavailable" for r in warns)
 
@@ -1403,9 +1403,8 @@ class TestListByPrincipalErrorObservability:
         )
         backend.set_password(KEYRING_SERVICE_NAMESPACE, f"__index__:{principal_id}", "{not json")
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(CorruptedRecordError):
-                vault.list_by_principal()
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(CorruptedRecordError):
+            vault.list_by_principal()
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "corrupted_index" for r in warns)
 
@@ -1483,9 +1482,8 @@ class TestGetErrorObservabilityBranches:
             keyring_backend=_backend,
         )
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(EnvelopeScopeMismatchError):
-                vault_no_env.get(entry.entry_id)
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(EnvelopeScopeMismatchError):
+            vault_no_env.get(entry.entry_id)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "no_active_envelope" for r in warns)
 
@@ -1500,9 +1498,8 @@ class TestGetErrorObservabilityBranches:
         vault, entry, _backend = self._setup_with_entry(principal_id, envelope_openai_cli)
         vault_tg = vault.with_active_envelope(envelope_telegram)
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(EnvelopeScopeMismatchError):
-                vault_tg.get(entry.entry_id)
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(EnvelopeScopeMismatchError):
+            vault_tg.get(entry.entry_id)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "envelope_scope_mismatch" for r in warns)
 
@@ -1518,9 +1515,8 @@ class TestGetErrorObservabilityBranches:
             principal_id, envelope_openai_cli, expires_at=past
         )
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(EntryExpiredError):
-                vault.get(entry.entry_id)
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(EntryExpiredError):
+            vault.get(entry.entry_id)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "entry_expired" for r in warns)
 
@@ -1595,9 +1591,8 @@ class TestGetErrorObservabilityBranches:
             _serialize_record(ceiling_entry, "sk-overflow"),
         )
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"):
-            with pytest.raises(UsageCounterOverflowError):
-                vault.get(eid)
+        with caplog.at_level(logging.WARNING, logger="envoy.connection_vault"), pytest.raises(UsageCounterOverflowError):
+            vault.get(eid)
         warns = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(getattr(r, "reason", None) == "usage_counter_overflow" for r in warns)
 

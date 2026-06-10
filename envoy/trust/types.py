@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-
 # `PrincipalId` is the canonical envoy alias for kailash-py's "agent_id" (which
 # kailash-py uses generically). The envoy spec uses "principal_id" everywhere
 # for `rules/tenant-isolation.md` consistency. We expose both names so callers

@@ -13,7 +13,6 @@ Requirements:
     - .env file with required API keys
 """
 
-import os
 import sys
 
 # Filter pure Python SDK to use Rust-backed binding
@@ -27,7 +26,7 @@ try:
 except ImportError:
     pass
 
-import kailash
+import kailash  # noqa: E402
 
 # Test tracking
 tests_passed = 0

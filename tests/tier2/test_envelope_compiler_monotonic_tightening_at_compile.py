@@ -42,7 +42,6 @@ from envoy.boundary_conversation.envelope_assembler import EnvelopeConfigInputAs
 from envoy.envelope import EnvelopeCompiler, EnvelopeConfig, LocalTemplateResolver
 from envoy.envelope.types import EnvelopeMetadata
 
-
 # The compiler mints a random envelope_id when none is supplied; pinning the id
 # isolates the assembler+compiler determinism from the uuid mint. The metadata
 # shape mirrors what the runtime's S9 path constructs (ritual-stable per

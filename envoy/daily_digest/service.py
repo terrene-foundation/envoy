@@ -23,8 +23,8 @@ fan-out lives in `PerChannelFanout` (T-04-82), wrapped behind the
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from envoy.daily_digest.errors import (

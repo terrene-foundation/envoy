@@ -30,7 +30,6 @@ from envoy.grant_moment.novelty import (
     NoveltySignals,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helper — explicit constructor so each test names exactly what it sets.
 # ---------------------------------------------------------------------------

@@ -39,7 +39,6 @@ import pytest
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.types import DelegationRequest, GenesisSeed
 
-
 # "Day-1" root principal — the original grant, established on the CLI channel.
 ROOT_PRINCIPAL = "alice-day1-root@example"
 # "Day-6" child grants, each delegated from the root on a DIFFERENT channel.

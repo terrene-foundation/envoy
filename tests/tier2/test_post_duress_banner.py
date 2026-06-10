@@ -47,7 +47,6 @@ from envoy.shamir.paper import PaperShardRenderer
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.vault import TrustVault
 
-
 PRINCIPAL = "alice@example"
 
 # Canonical per-state extractions — identical to the schedule pinned in

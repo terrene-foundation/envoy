@@ -67,7 +67,7 @@ class TestCanonicalBytesSeparators:
     def test_unicode_passes_through_as_utf8_not_escaped(self) -> None:
         out = canonical_bytes({"name": "café"})
         # ensure_ascii=False per RFC 8785 — UTF-8 bytes, not \uXXXX escapes
-        assert "café".encode("utf-8") in out
+        assert "café".encode() in out
 
 
 class TestContentHash:

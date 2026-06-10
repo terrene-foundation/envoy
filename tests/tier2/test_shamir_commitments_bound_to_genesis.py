@@ -17,13 +17,11 @@ This is THE security test for `specs/shamir-recovery.md` line 41
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from pathlib import Path
 
 import pytest
 from kailash.trust.vault.shamir import ShamirRitual, generate
 
 from envoy.shamir import (
-    DEFAULT_THRESHOLD,
     PresentedShard,
     ShamirRitualCoordinator,
     TrustVaultChecklistPersister,

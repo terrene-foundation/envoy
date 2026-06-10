@@ -14,9 +14,9 @@ from __future__ import annotations
 import pytest
 
 from envoy.grant_moment import (
+    FRICTION_TOKEN_READ_DELAY_COMPLETE,
     ApproveResolution,
     CrossChannelConfirmFailedError,
-    FRICTION_TOKEN_READ_DELAY_COMPLETE,
 )
 from tests.helpers.grant_moment_harness import (
     DEFAULT_PRINCIPAL_ID,

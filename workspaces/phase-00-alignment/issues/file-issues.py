@@ -11,7 +11,6 @@ Output: workspaces/phase-00-alignment/issues/manifest.md (ISS-XX -> repo#N)
 """
 
 import subprocess
-import json
 from pathlib import Path
 from textwrap import dedent
 
@@ -812,7 +811,7 @@ def run():
     lines = [
         "# GitHub Issues Manifest — Envoy Phase 00 Filing",
         "",
-        f"**Filed:** 2026-04-21 (direct via `gh issue create`)",
+        "**Filed:** 2026-04-21 (direct via `gh issue create`)",
         f"**Total:** {len(ISSUES)} issues across 3 repos",
         "",
         "| ISS | Repo | Number | Title |",

@@ -34,8 +34,9 @@ class TestEnvoyModelRouterFacadeWiring:
         monkeypatch.setenv("OPENAI_PROD_MODEL", "gpt-structural-only")
 
         try:
-            from envoy.model import EnvoyModelRouter
             from kaizen.llm.client import LlmClient
+
+            from envoy.model import EnvoyModelRouter
         except ImportError as exc:
             pytest.skip(f"kaizen unavailable: {exc}")
 

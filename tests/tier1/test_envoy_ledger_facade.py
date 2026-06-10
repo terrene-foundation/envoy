@@ -35,7 +35,6 @@ from envoy.ledger import (
     VerificationReport,
 )
 
-
 VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 DEVICE_ID = "device-test-01"
 SIGNING_KEY_ID = "envoy-signing-key"

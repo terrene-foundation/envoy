@@ -18,6 +18,7 @@ distribution does not differ by an attacker-actionable margin.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import statistics
 import time
 
@@ -112,17 +113,17 @@ class TestRealVsHoneypotLatencyParity:
         # success), an attacker could probe whether a target's primary
         # channel is responsive. The runtime drops the in-flight tracking
         # only AFTER the dispatch result is recorded.
-        from tests.helpers.grant_moment_harness import RecordingChannelAdapter
-        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime
-        from envoy.ledger import EnvoyLedger
-        from envoy.grant_moment import NoveltyClassifier
         from kailash.trust.audit_store import InMemoryAuditStore
         from kailash.trust.key_manager import InMemoryKeyManager
+
+        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime, NoveltyClassifier
+        from envoy.ledger import EnvoyLedger
         from tests.helpers.grant_moment_harness import (
-            DEFAULT_DELEGATION_KEY,
-            DEFAULT_LEDGER_SIGNING_KEY,
-            DEFAULT_DEVICE_ID,
             DEFAULT_ALGO_ID,
+            DEFAULT_DELEGATION_KEY,
+            DEFAULT_DEVICE_ID,
+            DEFAULT_LEDGER_SIGNING_KEY,
+            RecordingChannelAdapter,
         )
 
         # Build a runtime whose only adapter raises — exercises the dispatch
@@ -159,13 +160,11 @@ class TestRealVsHoneypotLatencyParity:
         failure_samples = []
         for _ in range(6):
             t0 = time.perf_counter()
-            try:
+            with contextlib.suppress(GrantMomentTimeoutError):
                 await runtime_fail.issue_grant_moment(**make_issue_kwargs())
-            except GrantMomentTimeoutError:
-                pass
             failure_samples.append(time.perf_counter() - t0)
 
-        success_samples = [await _measure_full_path_latency(decline=False) for _ in range(6)]
+        _ = [await _measure_full_path_latency(decline=False) for _ in range(6)]
         # Failure path is partial M0+M1; success is full M0→M4. We do NOT
         # expect identical medians — we DO expect the failure path NOT to
         # short-circuit to ~0 (which would distinguish it via timing).

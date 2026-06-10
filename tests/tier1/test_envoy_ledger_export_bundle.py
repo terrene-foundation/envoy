@@ -34,7 +34,6 @@ from envoy.ledger import (
     compute_receipt_hash,
 )
 
-
 VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 DEVICE_ID = "device-test-export"
 SIGNING_KEY_ID = "envoy-export-key"

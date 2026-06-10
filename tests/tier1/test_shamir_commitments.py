@@ -18,7 +18,6 @@ import pytest
 
 from envoy.shamir import compute_commitment, verify_commitment
 
-
 # Realistic SLIP-0039 mnemonic-shaped sample. The real generator emits
 # 24-word lists from a fixed dictionary; these stand-ins exercise the
 # shape only — the commitment function does not validate dictionary
