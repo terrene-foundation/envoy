@@ -71,6 +71,12 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0.0",
     "structlog>=23.1.0",
+    # SKILL.md frontmatter + ENVELOPE.md companion YAML (skill_ingest — S9a).
+    # envoy.skill_ingest.skill_md / envelope_md import `yaml` directly, so it
+    # MUST be a first-class dep per rules/dependencies.md § "Declared = Imported"
+    # (kailash transitively pulls PyYAML today; the explicit declaration insulates
+    # against an upstream extras rename).
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -88,6 +94,8 @@ dev = [
     "isort>=5.12.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    # Stubs for PyYAML (skill_ingest ENVELOPE.md companion serialisation).
+    "types-PyYAML>=6.0",
     # Type-check parity with CI: pyright runs against the project venv (so
     # imports resolve) via `uv run pyright envoy/` both locally and in
     # `.github/workflows/tests.yml`. Pinned-by-lock in uv.lock for reproducibility.

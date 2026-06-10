@@ -41,12 +41,14 @@ EnterpriseDeploymentRecord schema + verifier + disablement flow with cryptograph
 
 ## Verification (at envelope-import time)
 
-1. org_genesis_hash resolves to known org Trust Lineage root.
-2. `deploying_principal.signature` valid against org Trust Lineage.
-3. `affected_employee_signature` valid against employee's Genesis.
-4. `scope` in closed enum.
-5. `enabled_at` within 365 days (annual re-attestation).
-6. `verification_algorithm` current-session-compatible OR migration-compatible.
+1. org_genesis_hash resolves to known org Trust Lineage root (injected `known_org_roots` map: `org_genesis_hash → org_trust_lineage_root_pubkey_hex`).
+2. `org_admin_signature_hex` (the deploying principal's signature) valid against the RESOLVED org Trust Lineage root public key from step 1 — NOT against the record-supplied `deploying_principal.public_key_hex` (verifying against a record-supplied key would let any principal claim org authority).
+3. `affected_employee_signature_hex` valid against the employee's Genesis key (`affected_employee_principal.public_key_hex` — the Genesis key identifies the principal; employee consent is anchored by the dual-sign gate).
+4. `scope` in closed enum (enforced at parse time, before any signature math — a malformed scope surfaces as `EnterpriseScopeMismatchError`, never a signature error; the dual-sign gate is likewise a parse-time structural check).
+5. `enabled_at` within 365 days (annual re-attestation; clock injected for determinism). The window is TWO-SIDED: a future-dated `enabled_at` (beyond the documented 5-minute `FUTURE_DATED_SKEW_TOLERANCE`) raises `EnterpriseDeploymentRecordInvalidError` — a future-dated record was never validly attested.
+6. `verification_algorithm` current-session-compatible OR migration-compatible (defaults: current = `{ed25519}`, migration set injected).
+
+Both signatures are Ed25519 over the record's **canonical signing payload** (`EnterpriseDeploymentRecord.signing_payload()`): sha256 over the RFC-8785 canonical bytes (via the shared `envoy/envelope/canonical_bytes.py` pipeline) of the FULL security-relevant field set — type, schema_version, org_genesis_hash, org_id, both principals (address + public_key_hex), template_envelope_hash, template_envelope_ref, enabled_at, scope, verification_algorithm — everything except the `signatures` block. Binding the full record (not `template_envelope_hash` alone) closes the signature-transplant vector: a signature pair from one EDR cannot be replayed onto a record with a mutated scope, employee, or org (regression: `tests/regression/test_t024_enterprise_delegation_upward.py::TestT024SignatureTransplant`). Signature verification routes through the shared `envoy/registry/steward_quorum.py::verify_steward_quorum` primitive (1-of-1 quorum per key) — no parallel verifier.
 
 ## Disablement (T-024 R2-H5)
 

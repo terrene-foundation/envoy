@@ -26,11 +26,14 @@ Foundation-curated registry `envoy-registry:permission-to-pact-dimension:v1`. Ma
 - `file-read:*` → Data Access.
 - `file-write:*` → Operational.
 - `http-post:<domain>` → Communication.
+- `http-get:<domain>` → Communication (GET-surface reaches — `requests.get`/`httpx.get`/`urlopen` — inferred by the CO validator's AST walk).
 - `mcp:<server>` → Operational + Communication (+ MCP governance middleware).
-- `oauth:<service>` → Connection Vault.
+- `oauth:<service>` → Connection Vault. In the ENVELOPE.md `requested_permissions` (which carries the five axes financial/operational/temporal/data_access/communication and no dedicated connection-vault axis), `oauth:` permissions surface under `operational` with the full pattern string retained so the vault target is not lost.
 - `exec:<pattern>` → Operational (HIGH severity).
 
 Unknown → `UnknownPermissionPatternError`.
+
+SKILL.md ingest never populates the `financial` or `temporal` axes — no documented SKILL.md permission pattern maps to them. The companion ships fixed-shape (all five axes always present; those two are empty for SKILL.md-sourced skills).
 
 ## CO validator
 
@@ -44,6 +47,8 @@ Checks at install:
 6. Publisher signature verifies.
 
 Score thresholds: ≥0.8 pass; 0.5–0.8 pass with warnings; <0.5 fail (requires `force_install=True`).
+
+Step 3 (Phase-02 automated, `envoy/skill_ingest/inference.py` + `comparison.py`) uses a CONSERVATIVE Python `ast` static walk (literal-call-only; never executes skill code) plus an import-graph second opinion that can only WARN, never auto-reject. The asymmetric routing: an AST-proven literal call to an undeclared capability (including literal `getattr`/`eval`/`importlib` dynamic-dispatch constructs) scores <0.5 → reject; an import-graph-only extra scores in the 0.5–0.8 warning band; declared ⊃ inferred (over-declaration) routes to step 4's `OverPrivilegeWarning`, not a reject. Unparseable skill code fails closed (`SkillCodeUnparseableError`). Step 5 is shipped as a typed pending surface (`AdversarialCheckPending`) until the classifier-ensemble substrate lands (S9b).
 
 ## `force_install=True` (doc 00 v3 §4.1 item 16)
 

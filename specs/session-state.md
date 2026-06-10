@@ -14,7 +14,7 @@ Owning spec for ephemeral session-scoped state: `SessionObservedState` (tool-cal
 
 A session is bounded by:
 
-- **Start:** user unlock ceremony (specs/boundary-conversation.md §S1) OR explicit `envoy session start` CLI OR first message in a channel-adapter session (specs/channel-adapters.md).
+- **Start:** user unlock ceremony (specs/boundary-conversation.md §S1) OR explicit `envoy session start` CLI OR first message in a channel-adapter session (specs/channel-adapters.md). The install-time genesis ceremony is `envoy init run` (S4i) — it produces the write-once genesis `SessionObservedState` keyed `genesis:<principal_id>` per `specs/session-runtime.md` § Genesis write (distinct from a future non-genesis `session start`).
 - **End:** explicit `envoy session end` OR 24h idle timeout OR user lock (keyboard/CLI) OR channel-adapter disconnect.
 
 Session boundary emits a `session_boundary_crossed` Ledger entry (producer-owning spec: this spec). Entry signed by runtime device key.

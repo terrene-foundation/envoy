@@ -70,7 +70,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Canonical CLI surface per ``specs/mvp-build-sequence.md`` line 128
 # (shard 19 § 3.4, reconciled in Round 4 per the R1-M-01 disposition). This
 # SUPERSEDES the pre-reconciliation draft list in
@@ -99,13 +98,14 @@ CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
 #   - ``connection`` — F5.2 Shard 2 (Connection Vault CLI, PR #65)
 #   - ``model`` — F5.2 Shard 3 (BYOM picker, PR #66)
 #   - ``ledger`` — EC-4/EC-9 durable-export shard C (`envoy ledger export`)
-# ``init`` / ``chat`` / ``grant`` remain Phase 02 per ``specs/mvp-build-sequence.md``
+#   - ``init`` — Phase-02 WS-6 shard S4i (Boundary-Conversation bootstrap)
+# ``chat`` / ``grant`` remain Phase 02 per ``specs/mvp-build-sequence.md``
 # line 128 + Phase-02 hooks item 9. When a shard wires a subcommand, append it
 # here — the xfail in the parametrized test flips to PASSED on the next run,
 # surfacing the Milestone-5 progress signal (strict xfail forces this update in
 # the SAME PR that wires the subcommand).
 REGISTERED_AS_OF_F5: frozenset[str] = frozenset(
-    {"shamir", "digest", "posture", "version", "connection", "model", "ledger"}
+    {"shamir", "digest", "posture", "version", "connection", "model", "ledger", "init"}
 )
 
 
