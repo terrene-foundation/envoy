@@ -43,7 +43,6 @@ from envoy.envelope.types import (
     TemporalDimension,
 )
 
-
 DIMENSION_CLASSES = [
     FinancialDimension,
     OperationalDimension,

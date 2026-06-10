@@ -80,9 +80,7 @@ from envoy.shamir import ShamirRitualCoordinator, TrustVaultChecklistPersister
 from envoy.shamir.paper import PaperShardRenderer
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.vault import TrustVault
-
 from tests.helpers.deterministic_llm_provider import DeterministicModelRouter
-
 
 # Phase-01 de-scope-#1 channel set per `01-analysis/02-mvp-objectives.md` line 171.
 _FIVE_CHANNELS = ("cli", "web", "telegram", "slack", "discord")

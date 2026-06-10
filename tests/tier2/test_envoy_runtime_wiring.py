@@ -36,7 +36,6 @@ from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.runtime.adapters.kailash_rs_bindings import KailashRsBindingsRuntime
 from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — real keypair + real adapter + real Ledger
 # ---------------------------------------------------------------------------

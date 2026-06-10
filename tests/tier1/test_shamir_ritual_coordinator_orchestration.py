@@ -44,7 +44,6 @@ from envoy.shamir import (
     ShamirRitualError,
 )
 
-
 # Cryptographically random default test secret per L-1 reviewer finding —
 # avoids `b"\x42" * 32` recognizable byte patterns that produce false
 # positives in heap-dump forensics or grep audits looking for known-test

@@ -35,7 +35,6 @@ from envoy.model import (
     TokenBudgetFilter,
 )
 
-
 VALID_ALGO_ID = {"sig": "ed25519", "hash": "sha256", "shamir": "slip39"}
 DEVICE_ID = "device-tbf-22"
 SIGNING_KEY_ID = "envoy-tbf-key"

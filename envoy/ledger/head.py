@@ -64,7 +64,7 @@ class HeadCommitment:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HeadCommitment":
+    def from_dict(cls, data: dict[str, Any]) -> HeadCommitment:
         return cls(
             head_sequence=data["head_sequence"],
             head_entry_id=data["head_entry_id"],
@@ -123,7 +123,7 @@ class RuntimeIdentity:
         device_id: str,
         signing_key_id: str,
         algorithm_identifier: dict[str, Any],
-    ) -> "RuntimeIdentity":
+    ) -> RuntimeIdentity:
         """Construct from the runtime's live state. Sorts algorithm_identifier
         items by key so the canonical-dump is stable across runs."""
         return cls(

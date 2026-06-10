@@ -15,7 +15,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 from uuid import UUID
 
 from envoy.envelope.types import EnvelopeScopeRef
@@ -137,7 +136,7 @@ class CredentialEntry:
     entry_envelope_scope: EnvelopeScopeRef
     created_at: datetime
     last_used_at: datetime
-    expires_at: Optional[datetime]
+    expires_at: datetime | None
     usage_counter: int
     rotation_policy: RotationPolicy = field(default=RotationPolicy.NEVER)
 

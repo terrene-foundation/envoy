@@ -32,7 +32,6 @@ from kailash.trust.key_manager import InMemoryKeyManager
 from envoy.ledger import EnvoyLedger
 from envoy.trust.vault import TrustVault
 
-
 SIGNING_KEY_ID = "envoy-tier3-signing-key"
 DEVICE_ID = "device-tier3-acceptance"
 PASSPHRASE = "tier3-acceptance-passphrase-with-entropy"

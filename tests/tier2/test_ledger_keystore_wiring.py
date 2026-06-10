@@ -32,7 +32,6 @@ from envoy.ledger.keystore import (
     principal_genesis_id,
 )
 
-
 SIGNING_KEY_ID = "envoy-digest-signing-key"
 PRINCIPAL = "alice@example.com"
 PAYLOAD = b"canonical-entry-bytes"

@@ -70,7 +70,6 @@ from typing import Any
 from envoy.ledger.canonical import canonical_dumps
 from envoy.ledger.head import HeadCommitment
 
-
 # Phase 01 segment-boundary 4-key algorithm_identifier per
 # specs/independent-verifier.md L35 R3-M-02 carry-forward. Strict superset
 # of the trust-lineage 3-key form `{sig, hash, shamir}`; adds
@@ -166,7 +165,7 @@ class SegmentBoundary:
         from_sequence: int,
         to_sequence: int,
         trust_lineage_form: dict[str, str],
-    ) -> "SegmentBoundary":
+    ) -> SegmentBoundary:
         """Promote the 3-key trust-lineage form to the 4-key segment-
         boundary form by adding the `canonical_json: jcs-rfc8785` key.
         Phase 01 producer-side helper for `EnvoyLedger.export()`."""

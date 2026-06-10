@@ -36,7 +36,6 @@ import pytest
 
 from envoy.model import EnvoyProviderRiskAnnotator
 
-
 _DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 _DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL") or os.environ.get("DEEPSEEK_PROD_MODEL")
 

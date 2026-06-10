@@ -47,6 +47,9 @@ class TestT018VisibleSecretMismatch:
         # adapters rendered cleanly. The spoof-detection contract is what
         # we pin, NOT a manual raise-then-catch tautology (reviewer-R1
         # HIGH-3).
+        from kailash.trust.audit_store import InMemoryAuditStore
+        from kailash.trust.key_manager import InMemoryKeyManager
+
         from envoy.grant_moment import (
             ChannelHandoff,
             EnvoyGrantMomentRuntime,
@@ -54,8 +57,6 @@ class TestT018VisibleSecretMismatch:
             NoveltyClassifier,
         )
         from envoy.ledger import EnvoyLedger
-        from kailash.trust.audit_store import InMemoryAuditStore
-        from kailash.trust.key_manager import InMemoryKeyManager
         from tests.helpers.grant_moment_harness import (
             DEFAULT_ALGO_ID,
             DEFAULT_DELEGATION_KEY,

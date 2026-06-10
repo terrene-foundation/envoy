@@ -112,17 +112,17 @@ class TestRealVsHoneypotLatencyParity:
         # success), an attacker could probe whether a target's primary
         # channel is responsive. The runtime drops the in-flight tracking
         # only AFTER the dispatch result is recorded.
-        from tests.helpers.grant_moment_harness import RecordingChannelAdapter
-        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime
-        from envoy.ledger import EnvoyLedger
-        from envoy.grant_moment import NoveltyClassifier
         from kailash.trust.audit_store import InMemoryAuditStore
         from kailash.trust.key_manager import InMemoryKeyManager
+
+        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime, NoveltyClassifier
+        from envoy.ledger import EnvoyLedger
         from tests.helpers.grant_moment_harness import (
-            DEFAULT_DELEGATION_KEY,
-            DEFAULT_LEDGER_SIGNING_KEY,
-            DEFAULT_DEVICE_ID,
             DEFAULT_ALGO_ID,
+            DEFAULT_DELEGATION_KEY,
+            DEFAULT_DEVICE_ID,
+            DEFAULT_LEDGER_SIGNING_KEY,
+            RecordingChannelAdapter,
         )
 
         # Build a runtime whose only adapter raises — exercises the dispatch

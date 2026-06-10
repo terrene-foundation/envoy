@@ -31,9 +31,9 @@ from envoy.connection_vault import (
     ConnectionVault,
     CorruptedRecordError,
     CredentialType,
-    EnvCredentialSpec,
     EntryExpiredError,
     EntryNotFoundError,
+    EnvCredentialSpec,
     EnvelopeScopeMismatchError,
     InvalidServiceIdentifierError,
     KeychainUnavailableError,
@@ -78,7 +78,6 @@ from envoy.envelope import (
     EnvelopeScopeRef,
     OperationalDimension,
 )
-
 
 # ---------------------------------------------------------------------------
 # In-memory keyring backend fixture
@@ -833,10 +832,10 @@ class TestCorruptedRecord:
             _deserialize_record('["list", "not", "object"]')
 
     def test_missing_required_key_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         # Missing entry_id — should raise CorruptedRecordError, not KeyError
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps(
             {
@@ -858,9 +857,9 @@ class TestCorruptedRecord:
             _deserialize_record(malformed)
 
     def test_secret_field_wrong_type_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps(
             {
@@ -882,9 +881,9 @@ class TestCorruptedRecord:
             _deserialize_record(malformed)
 
     def test_unknown_schema_version_raises_typed(self) -> None:
-        from envoy.connection_vault.adapter import _deserialize_record
-
         import json as _json
+
+        from envoy.connection_vault.adapter import _deserialize_record
 
         malformed = _json.dumps({"schema_version": 999, "anything": "else"})
         with pytest.raises(RecordSchemaVersionError, match="unsupported"):
@@ -959,9 +958,9 @@ class TestSchemaVersionMismatch:
     def test_get_on_future_version_raises_schema_version_error(
         self, principal_id: str, envelope_openai_cli: EnvelopeConfigInput
     ) -> None:
-        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
-
         import json as _json
+
+        from envoy.connection_vault.adapter import KEYRING_SERVICE_NAMESPACE
 
         backend = _MemBackend()
         vault = ConnectionVault(
@@ -984,7 +983,11 @@ class TestSchemaVersionMismatch:
         """The two errors carry distinct user-action contracts and MUST not collapse."""
         from envoy.connection_vault import (
             ConnectionVaultError,
+        )
+        from envoy.connection_vault import (
             EntryNotFoundError as _Missing,
+        )
+        from envoy.connection_vault import (
             RecordSchemaVersionError as _Version,
         )
 

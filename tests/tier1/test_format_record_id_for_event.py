@@ -19,8 +19,6 @@ this test exercises the runtime behavior on representative inputs.
 
 from __future__ import annotations
 
-import pytest
-
 # Verify the helper exists at the cited import path.
 from dataflow.classification.event_payload import format_record_id_for_event
 

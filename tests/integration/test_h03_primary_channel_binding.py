@@ -14,8 +14,8 @@ from __future__ import annotations
 import pytest
 
 from envoy.grant_moment import (
-    ApproveResolution,
     FRICTION_TOKEN_READ_DELAY_COMPLETE,
+    ApproveResolution,
     NotPrimaryChannelError,
 )
 from tests.helpers.grant_moment_harness import (

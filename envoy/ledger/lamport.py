@@ -61,7 +61,7 @@ class LamportClock:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LamportClock":
+    def from_dict(cls, data: dict[str, Any]) -> LamportClock:
         return cls(
             lamport_time=data["lamport_time"],
             device_id=data["device_id"],

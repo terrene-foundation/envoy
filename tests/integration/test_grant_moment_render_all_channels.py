@@ -16,10 +16,10 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers.grant_moment_harness import (
+    StubTrustStore,
     make_high_stakes_signals,
     make_issue_kwargs,
     make_runtime,
-    StubTrustStore,
 )
 
 

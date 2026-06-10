@@ -28,7 +28,6 @@ from envoy.shamir import (
 )
 from envoy.trust.vault import TrustVault
 
-
 _PASSPHRASE = "phase-01-test-passphrase"
 
 

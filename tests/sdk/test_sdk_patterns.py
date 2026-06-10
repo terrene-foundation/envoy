@@ -13,7 +13,6 @@ Requirements:
     - .env file with required API keys
 """
 
-import os
 import sys
 
 # Filter pure Python SDK to use Rust-backed binding

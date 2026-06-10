@@ -55,12 +55,12 @@ class TestM0Construct:
         # Constructor-time refusal — proven in tier-1 inspect; here we
         # verify the facade flags an invalid configuration before any
         # ledger writes happen.
-        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime, NoveltyClassifier
         from kailash.trust.key_manager import InMemoryKeyManager
+
+        from envoy.grant_moment import ChannelHandoff, EnvoyGrantMomentRuntime, NoveltyClassifier
         from tests.helpers.grant_moment_harness import (
-            RecordingChannelAdapter,
-            StubTrustRuntime,
             DEFAULT_DEVICE_ID,
+            RecordingChannelAdapter,
         )
 
         km = InMemoryKeyManager()

@@ -50,7 +50,6 @@ from envoy.envelope import (
     LocalTemplateResolver,
 )
 
-
 # Repo root resolution: this file lives at <repo>/tests/tier2/test_*.py;
 # the structural probes target source files relative to the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]

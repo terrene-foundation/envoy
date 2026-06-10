@@ -29,7 +29,6 @@ from envoy.trust.errors import (
 )
 from envoy.trust.vault import DEFAULT_IDLE_TTL_SECONDS, TrustVault
 
-
 PASSPHRASE = "test-passphrase-with-enough-entropy-r2-m-02"
 PAYLOAD = b"phase-01 trust-vault test payload"
 

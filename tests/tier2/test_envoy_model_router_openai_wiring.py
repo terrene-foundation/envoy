@@ -28,7 +28,6 @@ import pytest
 
 from envoy.model import EnvoyProviderRiskAnnotator
 
-
 _OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 # Resolution order per rules/env-models.md guidance — OPENAI_PROD_MODEL is
 # the canonical Kailash env-key; OPENAI_MODEL is the second-choice; the

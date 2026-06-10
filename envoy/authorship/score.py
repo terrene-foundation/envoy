@@ -105,7 +105,7 @@ class AuthorshipCounters:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "AuthorshipCounters":
+    def from_dict(cls, payload: dict[str, Any]) -> AuthorshipCounters:
         """Parse spec-canonical wire shape into the frozen value-type.
 
         Reverse of `to_dict()`. Raises `KeyError` on a malformed payload (no

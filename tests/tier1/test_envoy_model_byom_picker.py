@@ -35,10 +35,9 @@ from envoy.connection_vault import ConnectionVault
 from envoy.envelope import (
     CommunicationDimension,
     EnvelopeConfigInput,
-    EnvelopeScopeRef,
     OperationalDimension,
 )
-from envoy.model import PickResult, SUPPORTED_CHOICES, byom_pick
+from envoy.model import SUPPORTED_CHOICES, PickResult, byom_pick
 
 
 class _MemBackend:
@@ -155,9 +154,9 @@ class TestSupportedChoicesContract:
     """Pin the 5 enumerated choices per ADR-0006."""
 
     def test_five_canonical_choices(self) -> None:
-        assert SUPPORTED_CHOICES == frozenset(
+        assert frozenset(
             {"ollama", "anthropic", "openai", "deepseek", "openai_compatible"}
-        )
+        ) == SUPPORTED_CHOICES
 
 
 class TestOllamaChoice:

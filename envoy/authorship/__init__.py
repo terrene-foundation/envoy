@@ -25,6 +25,11 @@ from envoy.authorship.bet12_emitter import (
     BET12CadencePayload,
     BET12Sink,
 )
+from envoy.authorship.novelty import (
+    NoveltyChecker,
+    NoveltyFeedbackBlockError,
+    NoveltyResult,
+)
 from envoy.authorship.posture_gate import (
     PostureAuthorshipInsufficientError,
     PostureChangeResult,
@@ -39,11 +44,6 @@ from envoy.authorship.posture_gate import (
     PostureMode,
     PostureNoopError,
     PostureRatchetEnvelopeMissingError,
-)
-from envoy.authorship.novelty import (
-    NoveltyChecker,
-    NoveltyFeedbackBlockError,
-    NoveltyResult,
 )
 from envoy.authorship.score import (
     AuthorshipCounters,

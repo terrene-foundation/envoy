@@ -31,7 +31,6 @@ import threading
 
 import pytest
 
-
 _OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 _OPENAI_MODEL = (
     os.environ.get("OPENAI_PROD_MODEL")

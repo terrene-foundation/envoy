@@ -40,7 +40,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final
 from urllib.parse import urlparse
 
 from envoy.connection_vault import (
@@ -109,15 +109,15 @@ class PickResult:
 
     choice: str
     env_keys_written: tuple[str, ...]
-    vault_import_result: Optional[ImportResult]
+    vault_import_result: ImportResult | None
 
 
 def byom_pick(
     *,
     choice: str,
     model_name: str,
-    api_key: Optional[str],
-    custom_base_url: Optional[str],
+    api_key: str | None,
+    custom_base_url: str | None,
     env_path: str,
     vault: ConnectionVault,
 ) -> PickResult:

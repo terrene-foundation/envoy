@@ -24,8 +24,7 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-from kailash.trust.audit_store import AuditFilter, InMemoryAuditStore
+from kailash.trust.audit_store import InMemoryAuditStore
 from kailash.trust.key_manager import InMemoryKeyManager
 
 from envoy.ledger import (
@@ -35,7 +34,6 @@ from envoy.ledger import (
     compute_receipt_hash,
 )
 from envoy.trust.vault import TrustVault
-
 
 # ---------------------------------------------------------------------------
 # E2E #1: Full pipeline round-trip (the EC-4 acceptance gate at Tier 2)

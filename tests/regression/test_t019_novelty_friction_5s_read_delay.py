@@ -15,9 +15,9 @@ import asyncio
 import pytest
 
 from envoy.grant_moment import (
-    ApproveResolution,
     FRICTION_TOKEN_DOUBLE_TAP,
     FRICTION_TOKEN_READ_DELAY_COMPLETE,
+    ApproveResolution,
     NoveltyFrictionRequiredError,
 )
 from tests.helpers.grant_moment_harness import (

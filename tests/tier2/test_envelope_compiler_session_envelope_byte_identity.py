@@ -41,7 +41,6 @@ from envoy.boundary_conversation.envelope_assembler import EnvelopeConfigInputAs
 from envoy.envelope import EnvelopeCompiler, EnvelopeConfig, LocalTemplateResolver
 from envoy.envelope.types import AlgorithmIdentifier, EnvelopeMetadata
 
-
 _FIXED_ENVELOPE_ID = "envelope-ec8-cross-channel-fixture"
 PRINCIPAL = "alice@example"
 

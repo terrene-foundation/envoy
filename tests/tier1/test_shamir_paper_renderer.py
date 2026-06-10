@@ -21,7 +21,6 @@ from envoy.shamir import (
     PaperShardRenderer,
 )
 
-
 # A representative 24-word SLIP-0039 mnemonic shape. The renderer treats
 # the words as opaque strings — dictionary membership is enforced by the
 # kailash.trust.vault.shamir layer.

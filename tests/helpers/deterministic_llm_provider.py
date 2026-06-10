@@ -61,7 +61,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
 # Fingerprint table — maps a unique output-field-name (or combination) from
 # each S1..S9 signature's JSON-schema rendering to the canned extraction
 # that signature expects.  The runtime's `_build_structured_prompt` emits

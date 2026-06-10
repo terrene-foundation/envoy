@@ -32,7 +32,6 @@ from envoy.grant_moment.out_of_envelope import (
     ToolDispatch,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: a baseline EnvelopeContext + a baseline ToolDispatch
 # ---------------------------------------------------------------------------

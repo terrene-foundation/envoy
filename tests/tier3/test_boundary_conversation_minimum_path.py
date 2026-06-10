@@ -51,7 +51,6 @@ from envoy.shamir.paper import PaperShardRenderer
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.vault import TrustVault
 
-
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # 8-min minimum-path ceiling per `journal/0005` Disposition #3.

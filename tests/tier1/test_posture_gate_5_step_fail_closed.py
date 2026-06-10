@@ -50,7 +50,6 @@ from envoy.authorship.posture_gate import (
 )
 from envoy.authorship.score import AuthorshipScoreDivergenceError
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

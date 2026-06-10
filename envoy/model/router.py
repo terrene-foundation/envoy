@@ -35,10 +35,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar
 
 from kaizen.llm.client import LlmClient
-from kaizen.llm.deployment import LlmDeployment
 
 from envoy.model.errors import ProviderSwitchRefusedByEnvelopeError
 
@@ -71,7 +70,7 @@ class EnvoyModelRouter:
     #: model override per shard 13 § 3.2. The four canonical primitives
     #: are Boundary Conversation, Daily Digest, Grant Moment Summary, and
     #: the catch-all default.
-    PRIMITIVE_MODEL_ENV_KEYS: ClassVar[Dict[str, str]] = {
+    PRIMITIVE_MODEL_ENV_KEYS: ClassVar[dict[str, str]] = {
         "boundary_conversation": "ENVOY_BOUNDARY_MODEL",
         "daily_digest": "ENVOY_DIGEST_MODEL",
         "grant_moment_summary": "ENVOY_GRANT_MOMENT_MODEL",
@@ -90,17 +89,17 @@ class EnvoyModelRouter:
     #: * ``grant_moment_summary`` — no tools required; pure text
     #:   summarization per shard 10 § 5.3.
     #: * ``default`` — no requirements (general-purpose fallback).
-    _PRIMITIVE_REQUIRED_CAPS: ClassVar[Dict[str, Dict[str, bool]]] = {
+    _PRIMITIVE_REQUIRED_CAPS: ClassVar[dict[str, dict[str, bool]]] = {
         "boundary_conversation": {"tools": True},
         "daily_digest": {},
         "grant_moment_summary": {},
         "default": {},
     }
 
-    def __init__(self, *, classification_policy: Optional[object] = None) -> None:
+    def __init__(self, *, classification_policy: object | None = None) -> None:
         self._classification_policy = classification_policy
 
-    def required_capabilities(self, primitive: str) -> Dict[str, bool]:
+    def required_capabilities(self, primitive: str) -> dict[str, bool]:
         """Return the capability-requirement vector for ``primitive``.
 
         Returns the matching entry from :attr:`_PRIMITIVE_REQUIRED_CAPS`,

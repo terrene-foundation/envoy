@@ -25,7 +25,7 @@ import json
 import logging
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Optional, cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import keyring
@@ -200,7 +200,7 @@ class ConnectionVault:
     def __init__(
         self,
         principal_genesis_id: str,
-        active_envelope: Optional[ActiveEnvelope] = None,
+        active_envelope: ActiveEnvelope | None = None,
         *,
         keyring_backend: Any = None,
     ) -> None:
@@ -210,7 +210,7 @@ class ConnectionVault:
         # with the `__index__:{principal}` convention.
         validate_principal_genesis_id(principal_genesis_id)
         self._principal_genesis_id = principal_genesis_id
-        self._active_envelope: Optional[ActiveEnvelope] = active_envelope
+        self._active_envelope: ActiveEnvelope | None = active_envelope
         # Allow dependency-injection of a custom backend (tests use the
         # `keyrings.alt` file-backed backend; default is keyring's
         # auto-selected best backend).
@@ -224,10 +224,10 @@ class ConnectionVault:
         return self._principal_genesis_id
 
     @property
-    def active_envelope(self) -> Optional[ActiveEnvelope]:
+    def active_envelope(self) -> ActiveEnvelope | None:
         return self._active_envelope
 
-    def with_active_envelope(self, envelope: ActiveEnvelope) -> "ConnectionVault":
+    def with_active_envelope(self, envelope: ActiveEnvelope) -> ConnectionVault:
         """Return a new vault bound to ``envelope`` (no in-place mutation).
 
         The vault holds the active envelope as a discriminator for the
@@ -255,13 +255,13 @@ class ConnectionVault:
                 f"OS keychain unavailable for set_password: {exc}"
             ) from exc
 
-    def _get_password(self, entry_id: UUID) -> Optional[str]:
+    def _get_password(self, entry_id: UUID) -> str | None:
         try:
             if self._keyring_backend is not None:
                 # Injected backend is duck-typed (tests use keyrings.alt);
                 # its get_password contractually returns Optional[str].
                 return cast(
-                    Optional[str],
+                    str | None,
                     self._keyring_backend.get_password(KEYRING_SERVICE_NAMESPACE, str(entry_id)),
                 )
             return keyring.get_password(KEYRING_SERVICE_NAMESPACE, str(entry_id))
@@ -380,7 +380,7 @@ class ConnectionVault:
         service_identifier: str,
         entry_envelope_scope: EnvelopeScopeRef,
         secret: str,
-        expires_at: Optional[datetime] = None,
+        expires_at: datetime | None = None,
         rotation_policy: RotationPolicy = RotationPolicy.NEVER,
     ) -> CredentialEntry:
         """Write a new credential entry per `specs/connection-vault.md`.

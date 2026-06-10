@@ -74,7 +74,6 @@ from envoy.heartbeat.payload import (
     _validate_payload_schema,
 )
 
-
 # Repository root resolved from this file's path; the test runs from any cwd
 # (per ``rules/python-environment.md`` MUST Rule 1 the test resolves cwd
 # through ``Path(__file__)``, not ``process.cwd()`` or relative paths).

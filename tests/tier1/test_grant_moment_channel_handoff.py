@@ -34,7 +34,6 @@ from envoy.grant_moment.signed_consent import (
     GrantMomentRequest,
 )
 
-
 # ---------------------------------------------------------------------------
 # Stub channel adapter — records dispatch calls; can be configured to raise
 # ---------------------------------------------------------------------------

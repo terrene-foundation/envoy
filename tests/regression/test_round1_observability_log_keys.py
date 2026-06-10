@@ -35,7 +35,6 @@ from envoy.envelope.compiler import EnvelopeCompiler
 from envoy.envelope.template_resolver import LocalTemplateResolver
 from envoy.trust.vault import TrustVault
 
-
 PASSPHRASE = "regression-r2-observability-passphrase-with-entropy"
 
 

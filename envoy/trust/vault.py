@@ -320,7 +320,7 @@ class TrustVault:
         # Phase 02 will copy payload into a `bytearray` for explicit zeroize.
         self._payload = None
 
-    async def __aenter__(self) -> "TrustVault":
+    async def __aenter__(self) -> TrustVault:
         # NOTE: this enters an ALREADY-UNLOCKED vault (caller called unlock()
         # before entering). `unlocked()` is the convenience wrapper that
         # unlocks on entry.
@@ -336,7 +336,7 @@ class TrustVault:
     ) -> None:
         await self.lock()
 
-    def unlocked(self, passphrase: str) -> "_UnlockedVaultCM":
+    def unlocked(self, passphrase: str) -> _UnlockedVaultCM:
         """Return a context manager that unlocks on entry + locks on exit.
 
         Usage:
