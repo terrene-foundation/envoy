@@ -174,6 +174,32 @@ S4s stores + returns the `state_json` verbatim. The fingerprint /
 first-time-action gate / goal-reconfirmation semantics that DERIVE the blob are
 owned by S5o (`specs/session-state.md` § Algorithm), which consumes this region.
 
+### Genesis write (`envoy init` — S4i)
+
+The install-time genesis ceremony (`envoy init run`,
+`envoy/boundary_conversation/init_runtime.py::BoundaryConversationInitRuntime`)
+writes a write-once genesis `SessionObservedState` into this region:
+
+- **Key convention:** the genesis row is keyed `genesis:<principal_id>` in
+  `session_observed_state.session_id` — deterministic, principal-scoped, no
+  cross-principal bleed. Downstream shards (S4r/S4g/S5o) read the genesis row
+  through the same `load_observed_state("genesis:<principal_id>")` call.
+- **Write-once contract:** a keyed read BEFORE driving the ritual detects an
+  initialized vault; present → `VaultAlreadyInitializedError`
+  (`envoy/boundary_conversation/errors.py`), mapped by the CLI to a clean
+  exit code 30 with a plain-language message. The genesis row is never
+  overwritten; re-running `init` never re-drives the ritual.
+- **Genesis blob:** `session-state/1.0` `SessionObservedState` with
+  `envelope_version_at_session_start: 1` and
+  `posture_at_session_start: "PSEUDO"`.
+- **Trust-anchor co-emission:** the ceremony emits `trust-anchor.json`
+  (`envoy-trust-anchor/1.0`: `principal_genesis_id`,
+  `principal_genesis_pubkey_hex` via
+  `envoy/trust/store.py::genesis_public_key_hex`, empty
+  `device_attestation_chain`, `anchor_minted_at`) per
+  `specs/independent-verifier.md` § Trust-anchor resolution channel #1 —
+  public material only, file mode owner-only (0o600).
+
 ## Cross-process decision rendezvous (S4r)
 
 The `grant` flow issues a Grant Moment in one CLI invocation and answers it in
@@ -306,7 +332,6 @@ runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
   back-pressure ceiling + cross-process nonce dedup (S4g). S4r ships the
   rendezvous codec + poll + the `resolve_pending_grant` write primitive the
   `grant` CLI drives; the CLI subcommand + its UX are S4g.
-- `init` / Boundary-Conversation genesis write (S4i).
 - SessionObservedState first-time-action gate + reset-on-boundary writes (S5o).
 - Multi-device materialized-index rebuild-from-replay (`specs/data-model.md:99`,
   Phase-02+).
