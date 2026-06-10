@@ -1,46 +1,45 @@
-# Session Notes — 2026-06-09 (phase-02-distribution)
+# Session Notes — 2026-06-10
 
 ## Where we are
 
-Phase-02 (Distribution + channels + runtime pluggability): `/analyze` CONVERGED → `/todos` APPROVED →
-**`/implement` Wave 1 COMPLETE.** S1 (WS-1 conformance harness) + S4s (WS-6 store substrate) + S8
-(WS-4 steward quorum + FV registry) implemented, reviewed (both gates APPROVE 0C/0H), and **landed on
-`main`** (PR after the integration branch `feat/phase-02-wave-1`). Full suite **1758 passed / 0 failed**.
+P8 kailash upgrade (2.13.4 → 2.29.3, whole family) DONE + `/redteam` converged
+(L5, 0 CRIT/HIGH, 2 clean rounds). Three open PRs await merge: **#90** (upgrade),
+**#91** (codify/journals), **#92** (pre-existing ruff lint). Upstream issue
+terrene-foundation/kailash-py#1285 filed. Next: merge the PRs (CI-gated), then Wave-2 batch-2.
 
 ## Read first
 
-1. `journal/0010-DECISION-implement-wave1-complete.md` — Wave-1 verification records + review verdicts + dispositions.
-2. `journal/0009-DISCOVERY-implement-baseline-green-uv-env.md` — **the `uv run pytest` env requirement** (critical).
-3. `todos/active/_index.md` — the 47-todo roadmap; Wave-1 status + Wave-2 next-shards.
-4. `02-plans/01-architecture.md` — the 31-shard DAG + build sequence (the `/implement` source of truth).
+1. `workspaces/kailash-upgrade/04-validate/redteam-convergence.md` — upgrade outcome + convergence + the post-convergence accuracy correction. Start here.
+2. `workspaces/phase-02-distribution/journal/0012` + `0013` — upgrade DECISION + the correction (the 23 ResourceWarnings PRE-EXISTED on 2.13.4, not upgrade-introduced).
+3. `todos/active/_index.md` — Wave-2 batch-2 next shards.
+4. `journal/0009` — the `uv run pytest` env requirement (critical).
 
-## Next action: `/implement` Wave 2
+## In-flight state
 
-Per the DAG (`02-plans/01-architecture.md`), Wave-2 eligible shards (deps now satisfied by Wave 1):
-- **S2a** — kailash-rs-bindings adapter behind the frozen interface (deps S1). Critical path.
-- **S4r** — decision-rendezvous: replace `asyncio.Future` with store-poll + monotonic-version (deps S4s). WS-6 long pole.
-- **S4i** — `init`/Boundary-Conversation bootstrap (deps S4s).
-- **S8e** — EnterpriseDeploymentRecord verifier (deps S8); **S9a** — CO validator steps 1-4,6 (deps S8).
-- **S10** — WS-5 OHTTP key-config server + relay (root, independent).
+- 3 open PRs, none merged (shared-state — left for human): #90 `chore/kailash-upgrade`, #91 `codify/jack-hong-2026-06-10` (doc-only → CI short-circuits), #92 `fix/store-ruff-lint`. #90 + #92 both touch store.py at non-overlapping lines (122/129/856 vs 297-417) → merge clean; **merge #90 first** (it carries the corrected lazy-init comment).
+- Venv may be on main's deps (2.13.4) from the #92 ruff-branch work — run `uv sync --extra dev` on the upgraded branch / post-#90-merge main to restore 2.29.3.
 
-WS-6 shards are SAME-class serialized (most touch `runtime.py`/the store) — do NOT worktree-parallelize them.
+## Outstanding ledger (forest)
 
-## Critical env + process facts (DON'T re-discover)
+| ID  | Item                                                                          | Value-anchor (MUST-1 source)                              | Status                          |
+| --- | ----------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------- |
+| P1  | WS-2 distribution RELEASE (binary/brew/winget)                                | `ROADMAP.md:74`; brief §WS-2                              | BLOCKED — external legal gates  |
+| P2  | ADR-0009 runtime-pluggability board endorsement                               | brief § external-gate blocker                            | BLOCKED — board/human gate      |
+| P3  | Flagged `/todos` design decisions (N4 scoring, SPAKE2-vs-Noise, ADR-0006)     | `todos/active/_index.md` open Qs                         | queued                          |
+| P4  | S8 registry persistence: in-proc dict → DataFlow `@db.model`                  | `journal/0010` reviewer MED                              | DEFERRED-by-design              |
+| P5  | WhatsApp channel PUBLIC launch                                                | brief §WS-3 / `ROADMAP.md:94`                            | BLOCKED — business pricing gate |
+| P7  | S10 security deferrals M2/L1/L2 → S11 (EC-S11.8/9/10)                          | `journal/0011`; `threat-model.md:52`                     | queued — land with S11          |
+| P9  | `sqlite_perms` WAL/SHM transient-perms window on the 3 TrustStoreAdapter sibling stores | `journal/0012` redteam LOW; `trust-plane-security.md` MUST-6 (0o600) | queued — trust-store hardening  |
 
-- **Tests:** `uv run pytest` or `.venv/bin/python -m pytest` (Python 3.13 `.venv` with `dataflow`/`pytest`/`nexus`).
-  Bare `python -m pytest` uses the global pyenv (no `dataflow` extra) → false-red collection. Per `python-environment.md`.
-- **envoy is an APPLICATION repo** (the product), NOT a PyPI BUILD repo → no `/release`; `main` + `/deploy` is the path.
-- **kailash 2.13.4** in `.venv`; `nexus` is the top-level import (`from nexus import Nexus`), NOT `kailash.nexus`.
-- **Worktree test env gotcha:** a fresh worktree `.venv` may lack pytest/the extras; agents should use the MAIN
-  checkout's `.venv/bin/python` or `uv run` from the worktree after `uv sync`.
-- **`/implement` post-merge gate:** the agents' green slice-tests are NOT sufficient — run the FULL suite via the
-  complete `.venv` over the merged tree (it caught the T-020 regression from the S8 MED-1 hardening).
-- **Upstream-file candidate (human-gated):** kailash `Instance-based API usage` UserWarning from `@app.handler`
-  (scope-suppressed in pyproject; SDK-internal, not envoy code).
+Closed this session: `P6` → terrene-foundation/kailash-py#1285 (AsyncLocalRuntime filed) + PR #90 (F3 `@app.handler` suppression dropped). `P8` → PR #90 + journal/0012 (upgrade landed + converged).
 
-## Open / deferred (tracked)
+## Traps
 
-- S8 `ContentAddressedStore` is an in-process dict (reviewer MED, deferred-by-design — Foundation registry-server
-  state; DataFlow `@db.model` swap before the registry is multi-process/network-exposed).
-- Flagged `/todos` open questions still pending decisions: N4 scoring metric, SPAKE2-vs-Noise (S13), store-poll
-  interval (S4r), ADR-0006 degraded-mode scope (S17).
+- Tests: `uv run pytest` ONLY (bare `python` = global pyenv → false-red). envoy = APPLICATION repo (no `/release`; `main`+`/deploy`).
+- CI: `main` ruleset EMPTY bypass — even `--admin` can't merge over red CI. #90/#92 fire the full py3.11+3.13 matrix; #91 is doc-only (short-circuits).
+- `journal/` is append-only + codify-branch-only (integrity-guard) — corrections need a NEW entry (see 0013), can't edit 0012.
+
+## Open questions for the human
+
+- Authorize merge of #90/#91/#92 (CI-gated), merge order #90 first.
+- Wave-2 batch-2 value-rank: WS-4 S8e/S9a vs M1 conformance families (S2b/c/S3a/b) vs `init` S4i.
