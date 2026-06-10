@@ -158,13 +158,20 @@ def init_run(
             if bootstrap.vault.is_unlocked:
                 await bootstrap.vault.lock()
 
-    logger.info("envoy.init.run.start", extra={"principal_id_prefix": pid[:8]})
+    cli_session_id = (click.get_current_context().obj or {}).get("cli_session_id", "")
+    log_extra = {"principal_id_prefix": pid[:8], "cli_session_id": cli_session_id}
+    logger.info("envoy.init.run.start", extra=log_extra)
     try:
         exit_code = asyncio.run(_run())
     except VaultAlreadyInitializedError as exc:
         # Clean, typed already-initialized path — NEVER a silent overwrite.
+        logger.warning("envoy.init.run.already_initialized", extra=log_extra)
         click.echo(f"\n{exc}\n", err=True)
         raise SystemExit(EXIT_ALREADY_INITIALIZED) from exc
+    except Exception:
+        logger.exception("envoy.init.run.error", extra=log_extra)
+        raise
+    logger.info("envoy.init.run.ok", extra=log_extra)
     raise SystemExit(exit_code)
 
 

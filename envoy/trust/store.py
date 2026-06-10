@@ -22,6 +22,7 @@ would crash inside any pytest-asyncio / Kaizen agent / Nexus handler).
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -646,8 +647,6 @@ class TrustStoreAdapter:
         # kailash-py InMemoryKeyManager stores the Ed25519 public key base64;
         # the trust-anchor wire form is hex. Decode → re-encode (a lossless
         # transform; both encode the SAME 32 public-key bytes).
-        import base64
-
         return base64.b64decode(public_key_b64).hex()
 
     async def store_chain(self, chain: TrustLineageChain) -> None:
