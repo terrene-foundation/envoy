@@ -29,7 +29,17 @@ dependencies = [
     # (envoy/runtime/protocol.py); Phase 02 adds the Rust-backed binding via
     # the runtime adapter slot per `11-phase-02-handoff.md` T-11-04.
     # Apache 2.0; Foundation-stewarded; install via `pipx install envoy-agent`.
-    "kailash[nexus,kaizen,dataflow,pact,shamir]>=2.13.4",
+    # `trust` extra carries kailash's trust-substrate crypto deps. kailash 2.29.3
+    # carved `pynacl` (Ed25519 signing for `InMemoryKeyManager`) + `cryptography`
+    # out of the default install into the `[trust]` extra (in 2.13.4 they shipped
+    # by default). envoy is built on `kailash.trust.*` (signing, audit, posture,
+    # key_manager) and does NOT import `nacl` directly, so `[trust]` is the
+    # declared provider for `pynacl` per rules/dependencies.md § "Declared =
+    # Imported". (`cryptography` is ALSO declared first-class below — envoy imports
+    # it directly in the OHTTP/vault HPKE path — so that direct dep is the
+    # load-bearing provider for `cryptography`; the extra just keeps kailash's own
+    # crypto path satisfied.)
+    "kailash[nexus,kaizen,dataflow,pact,shamir,trust]>=2.29.3",
     # SLIP-0039 per-card BIP-39 checksum decode (L-03 fix) — imported
     # directly in envoy.shamir.recover._validate_card_checksum so it
     # MUST be a first-class dep per rules/dependencies.md § "Declared =
@@ -109,23 +119,24 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 filterwarnings = [
     "ignore::DeprecationWarning",
-    # Upstream kailash SDK advisory from kailash/nodes/handler.py: emitted when the
-    # framework-first `@app.handler` decorator registers a Nexus handler (S8 Envelope
-    # Library FV registry). NOT envoy code — envoy uses the documented framework-first
-    # Nexus API; the advisory is the SDK's internal instance-vs-class add_node detail.
-    # Scoped by message+category so it never masks an envoy-originated UserWarning.
-    # Upstream-file candidate (human-gated per upstream-issue-hygiene.md) — tracked in
-    # workspaces/phase-02-distribution journal.
-    "ignore:Instance-based API usage detected:UserWarning",
+    # (The `Instance-based API usage detected` UserWarning suppression was REMOVED
+    # during the kailash 2.13.4 → 2.29.3 upgrade: that advisory is FIXED upstream
+    # on 2.29.3 — verified by surfacing all warnings on the S8/S10 Nexus-building
+    # tests with `-o filterwarnings=default`, zero occurrences. Carrying a
+    # suppression for a fixed issue is BLOCKED per rules/zero-tolerance.md Rule 1.)
+    #
     # Upstream kailash SDK resource leak: `nexus.Nexus.close()` does not cascade
     # to close the internal `AsyncLocalRuntime` it constructs, so a GC-time
     # ResourceWarning surfaces for every test that builds a Nexus app (the S8
     # Envelope Library FV registry tests and the S10 OHTTP server tests). envoy
     # IS closing every Nexus app it owns (the `build_nexus` test fixtures call
     # `app.close()`); the residual leak is inside kailash and unfixable from this
-    # application repo. Scoped by message+category so it never masks an
-    # envoy-originated ResourceWarning. Upstream-file candidate (human-gated per
-    # upstream-issue-hygiene.md) — tracked in workspaces/phase-02-distribution.
+    # application repo. STILL PRESENT on kailash 2.29.3 — verified during the
+    # 2026-06-10 upgrade (1 occurrence surfaced on the S8 `build_library_nexus`
+    # path with `-o filterwarnings=default`). Scoped by message+category so it
+    # never masks an envoy-originated ResourceWarning. Upstream-file candidate
+    # (human-gated per upstream-issue-hygiene.md) — tracked in
+    # workspaces/phase-02-distribution journal.
     "ignore:Unclosed AsyncLocalRuntime:ResourceWarning",
 ]
 markers = [

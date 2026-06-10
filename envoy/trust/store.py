@@ -297,7 +297,20 @@ class TrustStoreAdapter:
         self._digest_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.digest.db")
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
-        self._posture_store = SQLitePostureStore(db_path=posture_db)
+        # Posture sub-store is constructed lazily in `initialize()`, NOT here:
+        # kailash's `SQLitePostureStore.__init__` opens a SQLite connection
+        # eagerly (verified on BOTH 2.13.4 and 2.29.3 — `__init__` calls
+        # `_get_connection()`). Eager construction here opens an I/O handle during
+        # `__init__` and leaks that connection for any caller that constructs an
+        # adapter without initializing it (e.g. the principal_id-validation
+        # regression tests) — a PRE-EXISTING leak (23 GC ResourceWarnings on both
+        # versions) that the kailash-2.29.3 upgrade's full-suite run surfaced, not
+        # one the upgrade introduced. Deferring construction to `initialize()`
+        # keeps `__init__` I/O-free, restores the documented "no I/O until
+        # `initialize()`" contract, and closes the leak at root; the handle's
+        # lifecycle is then owned entirely by `initialize()` / `close()`.
+        self._posture_db = posture_db
+        self._posture_store: SQLitePostureStore | None = None
         self._key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
         self._authority_registry: AuthorityRegistryProtocol = _InMemoryAuthorityRegistry()
         # InMemoryKeyManager extends KeyManagerInterface (ABC) rather than
@@ -332,6 +345,8 @@ class TrustStoreAdapter:
         """Idempotently set up SQLite tables + authority registry."""
         if self._initialized:
             return
+        if self._posture_store is None:
+            self._posture_store = SQLitePostureStore(db_path=self._posture_db)
         await self._chain_store.initialize()
         await self._authority_registry.initialize()
         await asyncio.to_thread(self._sync_init_bc_store)
@@ -352,9 +367,12 @@ class TrustStoreAdapter:
         residence window in the meantime.
         """
         await self._chain_store.close()
-        # SQLitePostureStore.close is sync per kailash 2.13.4
-        if hasattr(self._posture_store, "close"):
+        # SQLitePostureStore.close is sync (kailash 2.13.4–2.29.3). Close only if
+        # it was actually constructed (lazy — see `initialize()`); reset to None
+        # so a subsequent `initialize()` re-opens a fresh handle after re-use.
+        if self._posture_store is not None:
             self._posture_store.close()
+            self._posture_store = None
         # Best-effort zeroize of the key manager's in-memory store. The
         # InMemoryKeyManager exposes a private `_keys` dict in kailash-py
         # 2.13.4; `clear()` reduces the residency window for the eventual
@@ -394,6 +412,15 @@ class TrustStoreAdapter:
         """
         if not self._initialized:
             await self.initialize()
+        # Typed guard per rules/zero-tolerance.md Rule 3a: `_posture_store` is a
+        # lazily-assigned backing object (constructed in `initialize()`), so the
+        # forward MUST raise a typed error rather than let a bare `AttributeError`
+        # propagate from `None.get_posture(...)`. `initialize()` above always
+        # constructs it, so this branch is defensive-unreachable in practice.
+        if self._posture_store is None:  # pragma: no cover — initialize() guarantees non-None
+            raise RuntimeError(
+                "posture store not initialized — call `await initialize()` before reading posture",
+            )
         return self._posture_store.get_posture(_posture_store_agent_id(self._principal_id))
 
     async def seed_genesis(self, seed: GenesisSeed) -> SeedResult:
