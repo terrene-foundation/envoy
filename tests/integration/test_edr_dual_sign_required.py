@@ -33,25 +33,25 @@ async def _verifier(keys):
 class TestDualSignRequired:
     async def test_org_admin_only_signature_raises_dual_sign_missing(self) -> None:
         # Org admin signed; employee did NOT → dual-sign gate refuses.
-        keys = await mint_edr_keys(sign_employee=False)
+        keys = await mint_edr_keys()
         verifier = await _verifier(keys)
-        edr = build_edr(keys, affected_employee_signature_hex="")
+        edr = build_edr(keys, sign_employee=False)
         with pytest.raises(EnterpriseDualSignMissingError):
             await verifier.verify(edr)
 
     async def test_employee_only_signature_raises_dual_sign_missing(self) -> None:
         # Employee signed; org admin did NOT → dual-sign gate refuses.
-        keys = await mint_edr_keys(sign_org_admin=False)
+        keys = await mint_edr_keys()
         verifier = await _verifier(keys)
-        edr = build_edr(keys, org_admin_signature_hex="")
+        edr = build_edr(keys, sign_org_admin=False)
         with pytest.raises(EnterpriseDualSignMissingError):
             await verifier.verify(edr)
 
     async def test_neither_signature_raises_dual_sign_missing(self) -> None:
         # No signature at all is also a dual-sign failure (neither party attested).
-        keys = await mint_edr_keys(sign_org_admin=False, sign_employee=False)
+        keys = await mint_edr_keys()
         verifier = await _verifier(keys)
-        edr = build_edr(keys, org_admin_signature_hex="", affected_employee_signature_hex="")
+        edr = build_edr(keys, sign_org_admin=False, sign_employee=False)
         with pytest.raises(EnterpriseDualSignMissingError):
             await verifier.verify(edr)
 
