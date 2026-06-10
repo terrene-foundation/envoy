@@ -56,6 +56,15 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 
 **Capacity check:** load-bearing logic ≈ the 6-step verifier + dual-sign gate (~200-250 LOC); schema is declarative. Invariants: 6 verifier steps each fail-closed + dual-sign-required + reuse-shared-verifier + Phase-03-scope-exclusion = within the 5-10 band. Live loop (deterministic signature round-trip). One shard. Three sentences: "Build the EDR schema with closed scope enum; build the 6-step import-time verifier reusing S8's quorum primitive; enforce the dual-sign gate. Disablement is Phase-03."
 
+**Status: ✅ COMPLETE** (2026-06-10, `feat/wave2-batch2`).
+
+## Verification (S8e)
+
+- Plan reference re-checked: `02-plans/01-architecture.md` S8e row + `specs/enterprise-deployment.md` §19-49 — schema fields, closed scope enum, 6 steps, dual-sign all match line-by-line.
+- EC-S8e.1 ✅ `tests/integration/test_edr_verifier_six_steps.py` (13 tests: green path + each targeted single-step failure → mapped error). EC-S8e.2 ✅ `test_edr_dual_sign_required.py` (4 tests). EC-S8e.3 ✅ `tests/regression/test_t024_enterprise_delegation_upward.py` (`@pytest.mark.regression`, 2 tests). EC-S8e.4 ✅ single-verifier AST gate green (`test_steward_quorum_single_helper.py`; EDR verify routes through `verify_steward_quorum` 1-of-1 at `envoy/enterprise/verifier.py`). EC-S8e.5 ✅ `find tests -name 'test_edr_disablement*' -o -name 'test_enterprise_n5*'` empty.
+- Wiring: signature math via kailash `InMemoryKeyManager.verify` (real crypto, Tier 2 no-mocking); `known_org_roots` + migration-algorithm set + clock injected (deterministic).
+- Spec deviation reconciled in same branch: step-2 wording now names `org_admin_signature_hex` + the resolved-org-root anchor (`specs/enterprise-deployment.md` § Verification).
+
 ---
 
 ## S9a — SKILL→envelope translator + CO validator steps 1-4,6 (AST inference + score-band)
@@ -80,6 +89,15 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 - EC-S9a.6: the corpus (100 benign + 3 adversarial fixtures) is authored at `tests/acceptance/phase_02/co_validator_corpus/` as a deliverable (`specs/skill-ingest.md:109-110`); the step-5 surface emits a typed "pending ensemble" marker (not a silent pass).
 
 **Capacity check:** load-bearing logic ≈ the AST inference walk + asymmetric comparison/score-band router (~350-450 LOC — the literal-call AST visitor is the dense part). Invariants: conservative-literal-only inference + asymmetric-routing (REJECT vs WARNING band) + 0-false-reject-on-benign + AST-visible-dynamic-dispatch-direct-reject + step-2/4/6 wiring = within the 5-10 band. Live loop (the corpus IS the deterministic feedback harness — write inference engine, run against 103 fixtures, iterate). One shard. Three sentences: "Build the conservative AST permission-inference walk + import-graph advisory; build the asymmetric score-band comparison that routes literal-undeclared-call to REJECT and import-only-extra to WARNING; wire steps 1/2/4/6 and the corpus. Accountable for the 2 AST-catchable adversarial samples + any AST-visible dynamic-dispatch construct; step-5 is S9b."
+
+**Status: ✅ COMPLETE** (2026-06-10, `feat/wave2-batch2`).
+
+## Verification (S9a)
+
+- Plan reference re-checked: `specs/skill-ingest.md` §13-46, 69, 78-85 — parser, generator, mapping table, steps 1/2/3/4/6, thresholds, install-flow taxonomy all match.
+- EC-S9a.1 ✅ permission-escalation + exfiltration samples → score 0.3 (<0.5) + `COValidatorRefusedError` (`test_co_validator_3_adversarial_corpus.py`). EC-S9a.2 ✅ literal `getattr`/`eval`/`importlib` dynamic-dispatch construct rejected DIRECTLY by the AST walk (no S9b dependency for AST-visible cases). EC-S9a.3 ✅ **100/100 benign accepted, zero `COValidatorRefusedError`** (75 clean ≥0.8, 25 warning band — `test_co_validator_100_benign_corpus.py`). EC-S9a.4 ✅ over-declaration → `OverPrivilegeWarning`, NOT a reject (`test_co_validator_six_steps.py`). EC-S9a.5 ✅ all 7 documented patterns map (+ `http-get` added, spec'd); unknown → `UnknownPermissionPatternError`; step-6 → `PublisherSignatureInvalidError` (incl. malformed-sig crypto exception mapped fail-closed); hash mismatch → `SkillSourceHashMismatchError`. EC-S9a.6 ✅ 103-fixture corpus at `tests/acceptance/phase_02/co_validator_corpus/`; step-5 emits typed `AdversarialCheckPending` (structural assert).
+- Wiring: step-2 via real `resolve_permission` registry surface (pinned table transcribed from spec, fail-closed on miss); step-6 reuses the S8 Ed25519 `key_manager.verify` primitive (no second verifier); static `ast.parse` only — validator never executes skill code; 131 tests green incl. `-W error` re-run.
+- Spec updates landed same branch: `http-get` mapping, oauth→operational axis placement, empty financial/temporal note, step-3 asymmetric-routing § (`specs/skill-ingest.md`).
 
 ---
 

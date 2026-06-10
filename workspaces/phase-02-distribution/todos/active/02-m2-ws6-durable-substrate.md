@@ -98,6 +98,18 @@ Per the `/todos` contract every data-consuming/producing component carries a **B
 - Idempotency: re-running `init` on an initialized vault surfaces a typed "already initialized" path, not a silent overwrite.
   **Capacity check:** Invariants ≤5 (write-once genesis, BC ritual ordering, trust-anchor co-emission, store-only independence from S4r, idempotent re-init). Call-graph hops ≤3. ~300 LOC load-bearing. Loop: **live**.
 
+**Status: ✅ COMPLETE** (2026-06-10, `feat/wave2-batch2`).
+
+## Verification (S4i)
+
+- Plan reference re-checked: `specs/session-state.md` § Session definition + `specs/independent-verifier.md` channel #1 + the S4s store surface — all match; genesis convention recorded at `specs/session-runtime.md` § Genesis write (same branch).
+- Build ✅ Tier-3 full-path test (`tests/tier3/test_init_bootstrap_full_path.py`): S1..S9 ritual → durable genesis; FRESH SessionRouter instance reads it back (read-back assert). Wire ✅ real sqlite-backed S4s store; wire-gate grep zero hits in `envoy/cli/` + `envoy/boundary_conversation/` non-test code.
+- trust-anchor.json ✅ `envoy-trust-anchor/1.0` — public material only (test asserts: 32-byte hex ed25519 pubkey matching `trust_store.genesis_public_key_hex`; no private/secret/passphrase substrings; mode 0o600 with no world-readable window). `envoy/trust/store.py::genesis_public_key_hex` accessor added (read-only, public half only — load-bearing, kept).
+- Idempotency ✅ second run → `VaultAlreadyInitializedError` → clean exit 30; genesis bytes unchanged (byte-identity assert); ritual never re-driven.
+- CLI ✅ `init` registered in `envoy/cli/main.py` (8th of 10); user-flow walk receipt captured (verbatim `envoy --help` lists init with plain-language one-liner; no-principal path → plain-language error, exit 1, no stack trace). Strict-xfail tripwire flipped → `init` added to `REGISTERED_AS_OF_F5` same branch.
+- Journal constraint honored: did NOT touch `envoy/grant_moment/runtime.py` (S4r ownership); store-only independence from S4r preserved.
+- Environment discovery: kailash 2.29.3 Signature breaks on Python 3.14.3 (`__annotate_func__` PEP-749 rename vs `__annotate__` lookup) — `.python-version` pinned to 3.13 same branch; upstream filing recommendation pending human gate.
+
 ---
 
 ## S4g-1 — `grant` interactive answer-in-later-command (core cross-process flow)
