@@ -105,9 +105,8 @@ def _class_has_frozen_dataclass_decorator(cls_node: ast.ClassDef) -> bool:
 def _annotated_field(cls_node: ast.ClassDef, field_name: str) -> ast.AnnAssign | None:
     """Return the AnnAssign node for `<field_name>: <annotation>` or None."""
     for stmt in cls_node.body:
-        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            if stmt.target.id == field_name:
-                return stmt
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == field_name:
+            return stmt
     return None
 
 
@@ -363,9 +362,8 @@ class TestEnvelopeHashesAreMintTimeCached:
 
         for node in ast.walk(request_transition):
             # ast.Attribute reads on a Name("envelope")
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                if node.value.id == "envelope" and node.attr in stored_attribute_names:
-                    attribute_reads.append((node.lineno, node.attr))
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "envelope" and node.attr in stored_attribute_names:
+                attribute_reads.append((node.lineno, node.attr))
             # ast.Call where the function is an Attribute on Name("envelope")
             # — i.e., envelope.<method>(...) — would be a method invocation.
             # The legitimate one is `envelope.mutate_for_posture_level(target)`,
@@ -374,9 +372,8 @@ class TestEnvelopeHashesAreMintTimeCached:
             # `envelope.recompute_content_hash()` or similar.
             if isinstance(node, ast.Call):
                 func = node.func
-                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                    if func.value.id == "envelope":
-                        method_calls_on_envelope.append((node.lineno, func.attr))
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "envelope":
+                    method_calls_on_envelope.append((node.lineno, func.attr))
 
         # At least one attribute read of each stored field is expected (the
         # gate's trust-boundary checks at posture_gate.py:1032-1063 read

@@ -12,15 +12,13 @@ T-01-10 per envoy/envelope/compiler.py line 296-308).
 
 from __future__ import annotations
 
-from typing import Union
-
 from envoy.envelope.types import EnvelopeConfig, EnvelopeConfigInput, EnvelopeScopeRef
 
 # Canonical alias for "any envelope shape that has operational + communication
 # dimensions". Per code-reviewer MED-5 (2026-05-24): single source of truth so
 # Phase 02's `SessionEnvelope` extension lands in one place. Re-exported from
 # `envoy.envelope.__init__` and consumed by `envoy.connection_vault.adapter`.
-ActiveEnvelope = Union[EnvelopeConfig, EnvelopeConfigInput]
+ActiveEnvelope = EnvelopeConfig | EnvelopeConfigInput
 
 
 def envelope_contains_scope(envelope: ActiveEnvelope, scope: EnvelopeScopeRef) -> bool:

@@ -24,7 +24,7 @@ def find_hardcoded_outputs(project_root):
 
     issues = []
 
-    for root, dirs, files in os.walk(project_root):
+    for root, _dirs, files in os.walk(project_root):
         # Skip certain directories
         if any(
             skip in root

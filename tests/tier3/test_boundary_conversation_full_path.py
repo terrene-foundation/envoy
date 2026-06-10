@@ -32,6 +32,7 @@ triage (infra-conditional). NO mocking — this is the production-LLM path.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import time
@@ -374,10 +375,8 @@ class TestEC1FullPathFirstTimeUser:
                 f"elapsed={elapsed:.2f}s target_15min={target_met}"
             )
         finally:
-            try:
+            with contextlib.suppress(StopAsyncIteration):
                 await agen.__anext__()
-            except StopAsyncIteration:
-                pass
 
 
 class TestEC1FullPathLedgerChainIntegrity:
@@ -419,7 +418,5 @@ class TestEC1FullPathLedgerChainIntegrity:
             # posture_change (the S9 GENESIS_BARE → PSEUDO ratchet).
             assert verification.entries_verified > 0
         finally:
-            try:
+            with contextlib.suppress(StopAsyncIteration):
                 await agen.__anext__()
-            except StopAsyncIteration:
-                pass

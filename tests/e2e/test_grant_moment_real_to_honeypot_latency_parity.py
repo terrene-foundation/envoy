@@ -18,6 +18,7 @@ distribution does not differ by an attacker-actionable margin.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import statistics
 import time
 
@@ -159,13 +160,11 @@ class TestRealVsHoneypotLatencyParity:
         failure_samples = []
         for _ in range(6):
             t0 = time.perf_counter()
-            try:
+            with contextlib.suppress(GrantMomentTimeoutError):
                 await runtime_fail.issue_grant_moment(**make_issue_kwargs())
-            except GrantMomentTimeoutError:
-                pass
             failure_samples.append(time.perf_counter() - t0)
 
-        success_samples = [await _measure_full_path_latency(decline=False) for _ in range(6)]
+        _ = [await _measure_full_path_latency(decline=False) for _ in range(6)]
         # Failure path is partial M0+M1; success is full M0→M4. We do NOT
         # expect identical medians — we DO expect the failure path NOT to
         # short-circuit to ~0 (which would distinguish it via timing).

@@ -22,6 +22,7 @@ the kailash db connection-pool fixture is in place.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 
 from kailash.trust.audit_store import InMemoryAuditStore
@@ -61,7 +62,7 @@ class TestPhase01PipelineRoundTrip:
 
         # Vault round-trip — verifies the full Argon2id + AES-256-GCM
         # path (T-01-13). Producer reads/writes during ritual.
-        original_payload = await unlocked_vault.read()
+        _ = await unlocked_vault.read()
         await unlocked_vault.write(b"after-grant-1")
         assert (await unlocked_vault.read()) == b"after-grant-1"
 
@@ -372,10 +373,8 @@ class TestPhase01AtomicityUnderLoad:
         )
 
         for i in range(6):
-            try:
+            with contextlib.suppress(RuntimeError):
                 await ledger.append(entry_type="action", content={"i": i})
-            except RuntimeError:
-                pass
 
         # The kailash audit_store has all 6 events (every call forwarded
         # first); the envoy ledger advanced its local state for the

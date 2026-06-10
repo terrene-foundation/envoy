@@ -363,8 +363,7 @@ class TestR2H02PublicFacadeContract:
                     eager_imports.add(name)
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "__all__":
-                        if isinstance(node.value, ast.List):
+                    if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, ast.List):
                             for elt in node.value.elts:
                                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                                     declared_all.add(elt.value)

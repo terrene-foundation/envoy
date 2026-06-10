@@ -98,6 +98,7 @@ This module is pure Python; depends on the eight structural primitives in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -1281,16 +1282,14 @@ class EnvoyGrantMomentRuntime:
         # — swallowed here because the answer already landed. The Decline path
         # persists too (the durable row records the deny terminal).
         if self._session_router is not None:
-            try:
+            with contextlib.suppress(KeyError):
+                # Row already terminal (cross-process resolve already landed,
+                # or a prior submit). The answer is durable; nothing to do.
                 await self._session_router.resolve_pending_grant(
                     request_id=request_id,
                     resolution_json=resolution_to_json(resolution),
                     state="resolved",
                 )
-            except KeyError:
-                # Row already terminal (cross-process resolve already landed,
-                # or a prior submit). The answer is durable; nothing to do.
-                pass
 
         # M3 → M4 transition + cleanup. The dedup stores keep the nonce /
         # intent_id (replay safety survives M4 cleanup); only the in-flight
@@ -1501,18 +1500,17 @@ class EnvoyGrantMomentRuntime:
                 ),
                 friction_kind=NoveltyFrictionRequiredError.KIND_READ_DELAY_TOKEN_MISSING,
             )
-        if pending.novelty_class == NoveltyClass.NOVEL:
+        if pending.novelty_class == NoveltyClass.NOVEL and FRICTION_TOKEN_DOUBLE_TAP not in pending.friction_acks:
             # Novel pattern → 5s read-delay + double-tap (high-stakes adds
             # cross-channel confirm; covered separately above).
-            if FRICTION_TOKEN_DOUBLE_TAP not in pending.friction_acks:
-                return NoveltyFrictionRequiredError(
-                    request_id=pending.request.request_id,
-                    required_friction=(
-                        "complete the double-tap confirmation "
-                        f"(call acknowledge_friction({FRICTION_TOKEN_DOUBLE_TAP!r}))"
-                    ),
-                    friction_kind=NoveltyFrictionRequiredError.KIND_DOUBLE_TAP_MISSING,
-                )
+            return NoveltyFrictionRequiredError(
+                request_id=pending.request.request_id,
+                required_friction=(
+                    "complete the double-tap confirmation "
+                    f"(call acknowledge_friction({FRICTION_TOKEN_DOUBLE_TAP!r}))"
+                ),
+                friction_kind=NoveltyFrictionRequiredError.KIND_DOUBLE_TAP_MISSING,
+            )
         return None
 
     def _resolve_delegation_pubkey_hex(self) -> str:

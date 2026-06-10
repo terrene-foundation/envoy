@@ -26,7 +26,7 @@ try:
 except ImportError:
     pass
 
-import kailash
+import kailash  # noqa: E402
 
 # Test tracking
 tests_passed = 0

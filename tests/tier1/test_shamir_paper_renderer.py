@@ -11,6 +11,7 @@ constraint. `render_text` produces plain-language output per
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
@@ -62,7 +63,7 @@ class TestPaperShardCardDataclass:
             transcription_layout="rows-of-6",
             created_at=datetime.now(timezone.utc),
         )
-        with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+        with pytest.raises((FrozenInstanceError, AttributeError)):
             card.slot_label = "slot-2"  # type: ignore[misc]
 
     def test_card_round_trip_dict(self) -> None:

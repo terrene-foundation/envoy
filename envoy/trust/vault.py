@@ -60,6 +60,7 @@ honored at envelope-key level too. Used by T-02-35
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
@@ -695,10 +696,8 @@ class TrustVault:
         self._vault_path.parent.mkdir(parents=True, exist_ok=True)
         # Best-effort cleanup of any orphaned tmp from a prior crash —
         # `O_EXCL` would otherwise refuse the create.
-        try:
+        with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
-        except FileNotFoundError:
-            pass
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -713,10 +712,8 @@ class TrustVault:
             # On any failure (write error, cancellation), unlink the
             # tmp file before propagating so retries do not collide
             # with `O_EXCL`.
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 tmp_path.unlink()
-            except FileNotFoundError:
-                pass
             raise
         os.replace(tmp_path, self._vault_path)
         # Restrictive permissions per
