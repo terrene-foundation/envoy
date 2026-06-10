@@ -409,7 +409,15 @@ class TrustStoreAdapter:
         """
         if not self._initialized:
             await self.initialize()
-        assert self._posture_store is not None  # constructed by initialize()
+        # Typed guard per rules/zero-tolerance.md Rule 3a: `_posture_store` is a
+        # lazily-assigned backing object (constructed in `initialize()`), so the
+        # forward MUST raise a typed error rather than let a bare `AttributeError`
+        # propagate from `None.get_posture(...)`. `initialize()` above always
+        # constructs it, so this branch is defensive-unreachable in practice.
+        if self._posture_store is None:  # pragma: no cover — initialize() guarantees non-None
+            raise RuntimeError(
+                "posture store not initialized — call `await initialize()` before reading posture",
+            )
         return self._posture_store.get_posture(_posture_store_agent_id(self._principal_id))
 
     async def seed_genesis(self, seed: GenesisSeed) -> SeedResult:

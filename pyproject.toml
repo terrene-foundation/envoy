@@ -29,12 +29,16 @@ dependencies = [
     # (envoy/runtime/protocol.py); Phase 02 adds the Rust-backed binding via
     # the runtime adapter slot per `11-phase-02-handoff.md` T-11-04.
     # Apache 2.0; Foundation-stewarded; install via `pipx install envoy-agent`.
-    # `trust` extra carries the trust-substrate crypto deps (pynacl + cryptography):
-    # kailash 2.29.3 carved pynacl/cryptography out of the default install into the
-    # `[trust]` extra (in 2.13.4 they shipped by default). envoy is built on
-    # `kailash.trust.*` (signing, audit, posture, key_manager), so `[trust]` is the
-    # declared provider for that runtime crypto path per rules/dependencies.md
-    # § "Declared = Imported" — envoy does not import `nacl` directly.
+    # `trust` extra carries kailash's trust-substrate crypto deps. kailash 2.29.3
+    # carved `pynacl` (Ed25519 signing for `InMemoryKeyManager`) + `cryptography`
+    # out of the default install into the `[trust]` extra (in 2.13.4 they shipped
+    # by default). envoy is built on `kailash.trust.*` (signing, audit, posture,
+    # key_manager) and does NOT import `nacl` directly, so `[trust]` is the
+    # declared provider for `pynacl` per rules/dependencies.md § "Declared =
+    # Imported". (`cryptography` is ALSO declared first-class below — envoy imports
+    # it directly in the OHTTP/vault HPKE path — so that direct dep is the
+    # load-bearing provider for `cryptography`; the extra just keeps kailash's own
+    # crypto path satisfied.)
     "kailash[nexus,kaizen,dataflow,pact,shamir,trust]>=2.29.3",
     # SLIP-0039 per-card BIP-39 checksum decode (L-03 fix) — imported
     # directly in envoy.shamir.recover._validate_card_checksum so it
