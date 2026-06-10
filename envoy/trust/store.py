@@ -602,6 +602,54 @@ class TrustStoreAdapter:
                 principal_id=principal_id,
             ) from exc
 
+    async def genesis_public_key_hex(self, principal_id: PrincipalId) -> str:
+        """Return the principal's Genesis verification PUBLIC key, hex-encoded.
+
+        The agent signing keypair minted at ``seed_genesis`` lives in the key
+        manager under ``agent:<principal_id>``. This accessor exposes ONLY the
+        PUBLIC half (`rules/trust-plane-security.md` MUST NOT Rule 3 — private
+        key material never leaves the manager), hex-encoded for the
+        ``envoy-trust-anchor/1.0`` trust-anchor file
+        (`specs/independent-verifier.md` § "Trust anchor file format" expects
+        ``principal_genesis_pubkey_hex``). The underlying key manager returns the
+        public key base64-encoded; this method decodes and re-encodes to hex so
+        the anchor's wire form matches the spec.
+
+        Raises ``TrustChainNotFoundError`` when no Genesis has been seeded for
+        ``principal_id`` (no agent key exists yet) — fail-loud, never a silent
+        empty string.
+        """
+        if not principal_id:
+            raise PrincipalRequiredError(
+                "principal_id required for genesis_public_key_hex; no default lookup",
+            )
+        try:
+            _validate_id_safety(principal_id, field="principal_id")
+        except ValueError as exc:
+            raise PrincipalRequiredError(
+                f"principal_id failed identifier safety validation: {exc}",
+            ) from exc
+        if not self._initialized:
+            await self.initialize()
+        agent_key_id = f"agent:{principal_id}"
+        if not self._key_manager.has_key(agent_key_id):
+            raise TrustChainNotFoundError(
+                "no Genesis agent key for principal_id — seed Genesis first",
+                principal_id=principal_id,
+            )
+        public_key_b64 = self._key_manager.get_public_key(agent_key_id)
+        if not public_key_b64:
+            raise TrustChainNotFoundError(
+                "Genesis agent key for principal_id has no public-key material",
+                principal_id=principal_id,
+            )
+        # kailash-py InMemoryKeyManager stores the Ed25519 public key base64;
+        # the trust-anchor wire form is hex. Decode → re-encode (a lossless
+        # transform; both encode the SAME 32 public-key bytes).
+        import base64
+
+        return base64.b64decode(public_key_b64).hex()
+
     async def store_chain(self, chain: TrustLineageChain) -> None:
         """Persist a chain (e.g., after Boundary Conversation seeds it)."""
         if not self._initialized:

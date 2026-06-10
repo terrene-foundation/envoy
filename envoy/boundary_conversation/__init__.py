@@ -28,7 +28,15 @@ from envoy.boundary_conversation.errors import (
     RitualResumeStateMissingError,
     ShamirRitualIncompleteError,
     TemplateNotInLocalCacheError,
+    VaultAlreadyInitializedError,
     VisibleSecretMissingError,
+)
+from envoy.boundary_conversation.init_runtime import (
+    BoundaryConversationInitRuntime,
+    InitResult,
+    build_genesis_session_state,
+    build_trust_anchor,
+    genesis_session_key,
 )
 from envoy.boundary_conversation.resume import ResumedRitual, RitualResumeCoordinator
 from envoy.boundary_conversation.runtime import (
@@ -55,6 +63,12 @@ __all__ = [
     # Runtime
     "BoundaryConversationRuntime",
     "ConversationOutcome",
+    # Init bootstrap (envoy init — S4i)
+    "BoundaryConversationInitRuntime",
+    "InitResult",
+    "genesis_session_key",
+    "build_genesis_session_state",
+    "build_trust_anchor",
     # Assembler
     "EnvelopeConfigInputAssembler",
     # Resume
@@ -84,4 +98,5 @@ __all__ = [
     "NoveltyFeedbackBlockError",
     "VisibleSecretMissingError",
     "DuressBannerUnacknowledgedError",
+    "VaultAlreadyInitializedError",
 ]
