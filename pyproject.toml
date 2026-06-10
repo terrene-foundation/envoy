@@ -71,6 +71,12 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0.0",
     "structlog>=23.1.0",
+    # SKILL.md frontmatter + ENVELOPE.md companion YAML (skill_ingest — S9a).
+    # envoy.skill_ingest.skill_md / envelope_md import `yaml` directly, so it
+    # MUST be a first-class dep per rules/dependencies.md § "Declared = Imported"
+    # (kailash transitively pulls PyYAML today; the explicit declaration insulates
+    # against an upstream extras rename).
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
