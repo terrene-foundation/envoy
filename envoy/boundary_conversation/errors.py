@@ -20,6 +20,7 @@ __all__ = [
     "NoveltyFeedbackBlockError",
     "VisibleSecretMissingError",
     "DuressBannerUnacknowledgedError",
+    "VaultAlreadyInitializedError",
 ]
 
 
@@ -160,5 +161,37 @@ class DuressBannerUnacknowledgedError(BoundaryConversationError):
             message = (
                 "There's an unread emergency alert that needs your attention "
                 "before you continue. Please review it now."
+            )
+        super().__init__(message)
+
+
+class VaultAlreadyInitializedError(BoundaryConversationError):
+    """``envoy init`` ran against a vault that already holds a durable session genesis.
+
+    The Boundary Conversation is a WRITE-ONCE install ritual: the durable
+    session genesis is the cross-process anchor every later session (and every
+    cold-stored ``trust-anchor.json``) re-derives from. Re-running ``init`` MUST
+    NOT silently overwrite it — doing so would orphan the user's existing
+    trust-anchor + Shamir paper shards. Carries the ``principal_id`` and the
+    deterministic ``genesis_store_key`` the existing genesis lives under. User
+    action: nothing — the vault is already set up; recover with the backup cards
+    if the setup is lost (`envoy shamir recover`).
+    """
+
+    def __init__(
+        self,
+        *,
+        principal_id: str,
+        genesis_store_key: str,
+        message: str | None = None,
+    ) -> None:
+        self.principal_id = principal_id
+        self.genesis_store_key = genesis_store_key
+        if message is None:
+            message = (
+                "This vault is already set up — your boundaries and backup were "
+                "created in a previous setup. There's nothing to do. If you've "
+                "lost your setup, recover it with your backup cards "
+                "(`envoy shamir recover`)."
             )
         super().__init__(message)
