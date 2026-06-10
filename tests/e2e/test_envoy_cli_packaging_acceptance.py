@@ -70,7 +70,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Canonical CLI surface per ``specs/mvp-build-sequence.md`` line 128
 # (shard 19 § 3.4, reconciled in Round 4 per the R1-M-01 disposition). This
 # SUPERSEDES the pre-reconciliation draft list in

@@ -52,7 +52,10 @@ from pathlib import Path
 from typing import Any
 
 from envoy.boundary_conversation.errors import VaultAlreadyInitializedError
-from envoy.boundary_conversation.runtime import BoundaryConversationRuntime
+from envoy.boundary_conversation.runtime import (
+    BoundaryConversationRuntime,
+    ConversationOutcome,
+)
 
 __all__ = [
     "BoundaryConversationInitRuntime",
@@ -194,6 +197,18 @@ def build_trust_anchor(
         "device_attestation_chain": [],
         "anchor_minted_at": anchor_minted_at or _now_iso(),
     }
+
+
+def _bc_gate_error(outcome: ConversationOutcome, context: str) -> Exception:
+    """The outcome's typed gate error, or a loud RuntimeError when absent.
+
+    ``ConversationOutcome.error`` is ``Exception | None``; an ERROR outcome
+    always carries one in practice, but the type system cannot prove it —
+    raising ``None`` would mask the gate failure with a TypeError.
+    """
+    if outcome.error is None:
+        return RuntimeError(f"BC outcome ERROR at {context} carried no error object")
+    return outcome.error
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,7 +375,7 @@ class BoundaryConversationInitRuntime:
         for state in forward_states:
             outcome = await self._bc.advance(ritual_id, replies[state])
             if outcome.state == "ERROR":
-                raise outcome.error  # surface the BC gate error loudly
+                raise _bc_gate_error(outcome, state)  # surface the BC gate error loudly
             if outcome.state != "IN_PROGRESS":
                 raise RuntimeError(
                     f"unexpected BC outcome at {state}: {outcome.state} "
@@ -371,7 +386,7 @@ class BoundaryConversationInitRuntime:
         # distribution offline, then resume clears the suspension.
         paused = await self._bc.advance(ritual_id, replies["S8_shamir"])
         if paused.state == "ERROR":
-            raise paused.error
+            raise _bc_gate_error(paused, "S8_shamir")
         if paused.state != "PAUSED" or paused.paused_for != "shamir_ritual":
             raise RuntimeError(
                 f"envoy init expected the S8 Shamir suspension, got {paused.state}/"
@@ -382,7 +397,7 @@ class BoundaryConversationInitRuntime:
         # S9 sign → S10 complete.
         done = await self._bc.advance(ritual_id, replies["S9_review_sign"])
         if done.state == "ERROR":
-            raise done.error
+            raise _bc_gate_error(done, "S9_review_sign")
         if done.state != "COMPLETE" or not done.envelope_id:
             raise RuntimeError(
                 f"envoy init expected S9 sign to complete with an envelope_id, "

@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from envoy.skill_ingest.errors import OverPrivilegeWarning
-from envoy.skill_ingest.inference import InferredPermissionSet
+from envoy.skill_ingest.inference import InferredCapability, InferredPermissionSet
 
 # Score anchors (`specs/skill-ingest.md` § Score thresholds: ≥0.8 pass;
 # 0.5–0.8 warning; <0.5 fail).
@@ -181,7 +181,7 @@ def compare_declared_inferred(
     )
 
 
-def _evidence_for(literal_calls: list, category: str) -> str:
+def _evidence_for(literal_calls: list[InferredCapability], category: str) -> str:
     """The first literal-call evidence string for a category (for the message)."""
     for cap in literal_calls:
         if cap.category == category:

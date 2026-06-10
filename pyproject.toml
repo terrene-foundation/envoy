@@ -94,6 +94,8 @@ dev = [
     "isort>=5.12.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    # Stubs for PyYAML (skill_ingest ENVELOPE.md companion serialisation).
+    "types-PyYAML>=6.0",
     # Type-check parity with CI: pyright runs against the project venv (so
     # imports resolve) via `uv run pyright envoy/` both locally and in
     # `.github/workflows/tests.yml`. Pinned-by-lock in uv.lock for reproducibility.
