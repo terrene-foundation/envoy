@@ -142,9 +142,13 @@ class TestStep3EmployeeSignature:
 class TestStep4ScopeClosedEnum:
     async def test_scope_outside_closed_enum_raises_scope_mismatch(self) -> None:
         # Step 4: scope value outside the closed enum → EnterpriseScopeMismatchError.
+        # An out-of-enum scope is a wire-level corruption: build a valid signed
+        # EDR, then mutate the wire `scope` string to an unsupported value. The
+        # verifier's parse step rejects it before any signature check.
         keys = await mint_edr_keys()
         verifier = await _verifier(keys)
-        edr = build_edr(keys, scope="org-wide-surveillance-overlay")
+        edr = build_edr(keys)
+        edr["scope"] = "org-wide-surveillance-overlay"
         with pytest.raises(EnterpriseScopeMismatchError):
             await verifier.verify(edr)
 
@@ -163,6 +167,37 @@ class TestStep5ReattestationWindow:
         keys = await mint_edr_keys()
         verifier = await _verifier(keys)
         record = await verifier.verify(build_edr(keys, enabled_at=iso_days_ago(365)))
+        assert isinstance(record, EnterpriseDeploymentRecord)
+
+    @pytest.mark.regression
+    async def test_future_dated_enabled_at_raises_record_invalid(self) -> None:
+        # Step 5 lower bound: a FUTURE-dated enabled_at (negative days-ago) yields
+        # a negative age that would silently pass an upper-bound-only check,
+        # letting a forged record post-dating attestation evade expiry. The
+        # two-sided window rejects it as EnterpriseDeploymentRecordInvalidError.
+        keys = await mint_edr_keys()
+        verifier = await _verifier(keys)
+        # 30 days in the future — well beyond the 5-minute skew tolerance.
+        edr = build_edr(keys, enabled_at=iso_days_ago(-30))
+        with pytest.raises(EnterpriseDeploymentRecordInvalidError):
+            await verifier.verify(edr)
+
+    async def test_enabled_at_within_skew_tolerance_passes(self) -> None:
+        # A timestamp a few seconds in the future (benign clock skew) is accepted:
+        # it falls within the documented FUTURE_DATED_SKEW_TOLERANCE.
+        from datetime import timedelta
+
+        from tests.helpers.edr_harness import REFERENCE_NOW
+
+        keys = await mint_edr_keys()
+        verifier = await _verifier(keys)
+        near_future = (
+            (REFERENCE_NOW + timedelta(seconds=30))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        record = await verifier.verify(build_edr(keys, enabled_at=near_future))
         assert isinstance(record, EnterpriseDeploymentRecord)
 
 

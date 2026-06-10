@@ -39,9 +39,23 @@ Injected trust anchors (open design — see module-level constructor docs):
     365-day window in step 5 is deterministic under test — no wall-clock
     assertion per `rules/testing.md`).
 
-The signed payload for BOTH signatures is `template_envelope_hash` — the
-canonical artifact both the org admin and the affected employee attest to
-deploying. Both signatures are Ed25519 over `template_envelope_hash.encode()`,
+The signed payload for BOTH signatures is `record.signing_payload()` — the
+sha256 over the canonical bytes of the FULL security-relevant field set (type,
+schema_version, org_genesis_hash, org_id, BOTH principal blocks, template
+envelope hash + ref, enabled_at, scope, verification_algorithm — everything
+EXCEPT the signatures block). It is NOT the bare `template_envelope_hash`.
+
+Binding the full record is the transplant defense (E-1): if signatures only
+covered `template_envelope_hash`, a malicious IT operator could read a
+legitimately dual-signed EDR-A and construct EDR-B carrying the SAME envelope
+hash + the SAME two signatures but a different `scope` (e.g.
+employee-personal → agent-fleet) or a different affected-employee principal —
+and EDR-B would pass steps 2 and 3, so the employee's signature would attest to
+a deployment they never approved. Because the digest covers scope, principals,
+enabled_at, and every other field, mutating ANY of them changes the digest and
+the transplanted signature no longer verifies. The canonicalization reuses the
+shared `envoy.envelope.canonical_bytes` JCS+NFC pipeline (no parallel
+canonicalization). Both signatures are Ed25519 over `signing_payload()`,
 matching the `verify_steward_quorum` `content_hash` contract.
 """
 
@@ -63,6 +77,13 @@ from envoy.registry.steward_quorum import verify_steward_quorum
 # Annual re-attestation window (`specs/enterprise-deployment.md` § Verification
 # step 5 — `enabled_at` within 365 days).
 REATTESTATION_WINDOW_DAYS = 365
+
+# Clock-skew tolerance for the FUTURE-dated lower bound of the step-5 recency
+# window. "within 365 days" is two-sided; a record whose `enabled_at` is in the
+# future by more than this tolerance is forged/malformed (it would otherwise
+# yield a negative age that silently passes the upper-bound check). 5 minutes
+# absorbs benign signing-host vs verifying-session clock drift.
+FUTURE_DATED_SKEW_TOLERANCE = timedelta(minutes=5)
 
 # Default current-session-compatible algorithm set. The schema declares
 # `verification_algorithm: "ed25519"`, and the shared quorum verifier verifies
@@ -167,10 +188,14 @@ class EnterpriseDeploymentVerifier:
         Verified against the org Trust Lineage ROOT pubkey resolved in step 1 —
         NOT the self-asserted `deploying_principal.public_key_hex` (verifying
         against a record-supplied key would let any principal claim org
-        authority). Routed through the shared 1-of-1 `verify_steward_quorum`.
+        authority). The signed payload is `record.signing_payload()` — the FULL
+        canonical record digest, NOT the bare `template_envelope_hash` — so a
+        signature lifted from a different EDR sharing only the envelope hash does
+        not verify (transplant defense — E-1). Routed through the shared 1-of-1
+        `verify_steward_quorum`.
         """
         await self._verify_single_signature(
-            content_hash=record.template_envelope_hash,
+            content_hash=record.signing_payload(),
             signature_hex=record.org_admin_signature_hex,
             pinned_pubkey=org_root_pubkey,
             failure_detail="deploying-principal signature does not verify against "
@@ -181,12 +206,16 @@ class EnterpriseDeploymentVerifier:
         """Step 3 — affected-employee signature valid against employee's Genesis.
 
         The employee's Genesis public key is carried in the record's
-        `affected_employee_principal.public_key_hex`; the employee signs the
-        same `template_envelope_hash`. Routed through the shared 1-of-1
-        `verify_steward_quorum`.
+        `affected_employee_principal.public_key_hex`; the employee signs
+        `record.signing_payload()` — the FULL canonical record digest, NOT the
+        bare `template_envelope_hash`. Binding the full record means the
+        employee's signature attests to THIS deployment's exact scope + principal
+        set; it cannot be transplanted onto an EDR with a widened scope or a
+        different affected employee (transplant defense — E-1). Routed through
+        the shared 1-of-1 `verify_steward_quorum`.
         """
         await self._verify_single_signature(
-            content_hash=record.template_envelope_hash,
+            content_hash=record.signing_payload(),
             signature_hex=record.affected_employee_signature_hex,
             pinned_pubkey=record.affected_employee_principal.public_key_hex,
             failure_detail="affected-employee signature does not verify against "
@@ -226,7 +255,20 @@ class EnterpriseDeploymentVerifier:
             raise EnterpriseDeploymentRecordInvalidError(failure_detail) from exc
 
     def _step5_check_reattestation_window(self, record: EnterpriseDeploymentRecord) -> None:
-        """Step 5 — `enabled_at` within 365 days (annual re-attestation)."""
+        """Step 5 — `enabled_at` within 365 days (annual re-attestation).
+
+        The spec's "within 365 days" is a TWO-SIDED recency window. The upper
+        bound rejects a stale (older-than-365-days) attestation as
+        `EnterpriseModeRevokedError`. The lower bound rejects a FUTURE-dated
+        `enabled_at`: a record post-dating its attestation would otherwise yield
+        a negative age that silently passes the upper-bound check, letting a
+        forged record evade future expiry indefinitely. A future `enabled_at` is
+        a malformed/forged record, so it raises `EnterpriseDeploymentRecordInvalidError`
+        (NOT `EnterpriseModeRevokedError` — the record was never validly
+        attested, it did not age out). A small `FUTURE_DATED_SKEW_TOLERANCE`
+        (5 minutes) absorbs benign clock skew between the signing host and the
+        verifying session; anything beyond that is rejected.
+        """
         enabled_at = _parse_iso8601(record.enabled_at)
         now = self._now()
         # Compare in a common awareness: if the parsed timestamp is naive, treat
@@ -237,6 +279,14 @@ class EnterpriseDeploymentVerifier:
         elif enabled_at.tzinfo is not None and now.tzinfo is None:
             enabled_at = enabled_at.replace(tzinfo=None)
         age = now - enabled_at
+        if age < -FUTURE_DATED_SKEW_TOLERANCE:
+            # enabled_at is in the future beyond benign clock skew — a forged or
+            # malformed record, not an aged-out one.
+            raise EnterpriseDeploymentRecordInvalidError(
+                f"enabled_at {record.enabled_at!r} is future-dated beyond the "
+                f"{FUTURE_DATED_SKEW_TOLERANCE} clock-skew tolerance; refusing a "
+                "record post-dating its attestation"
+            )
         if age > timedelta(days=REATTESTATION_WINDOW_DAYS):
             raise EnterpriseModeRevokedError(
                 f"enabled_at {record.enabled_at!r} is older than "

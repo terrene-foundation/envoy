@@ -27,6 +27,7 @@ from envoy.enterprise.errors import (
     EnterpriseDualSignMissingError,
     EnterpriseScopeMismatchError,
 )
+from envoy.envelope.canonical_bytes import canonical_bytes, content_hash
 
 EDR_TYPE = "EnterpriseDeploymentRecord"
 EDR_SCHEMA_VERSION = "edr/1.0"
@@ -117,6 +118,47 @@ class EnterpriseDeploymentRecord:
     verification_algorithm: str
     org_admin_signature_hex: str
     affected_employee_signature_hex: str
+
+    def signing_payload(self) -> str:
+        """The canonical digest BOTH the org admin and the employee sign over.
+
+        Binds the FULL security-relevant field set — everything EXCEPT the
+        `signatures` block — so a signature cannot be transplanted from one EDR
+        onto another that shares only the `template_envelope_hash`. The digest
+        covers `type`, `schema_version`, `org_genesis_hash`, `org_id`, both
+        principal blocks (`address` + `public_key_hex`), `template_envelope_hash`,
+        `template_envelope_ref`, `enabled_at`, `scope`, and
+        `verification_algorithm`. Mutating ANY of these (e.g. widening `scope`
+        from employee-personal to agent-fleet, or swapping the affected-employee
+        principal) changes the digest, so the transplanted signature no longer
+        verifies (transplant defense — E-1).
+
+        REUSES the shared `envoy.envelope.canonical_bytes` JCS+NFC pipeline (the
+        same canonicalization the Envelope Library + Ledger use) — there is NO
+        parallel canonicalization implementation here. The `scope` enum is
+        rendered as its wire `.value` string so the payload is plain-JSON-able and
+        byte-identical to what an offline signer canonicalizes.
+        """
+        canonical_record = {
+            "type": EDR_TYPE,
+            "schema_version": EDR_SCHEMA_VERSION,
+            "org_genesis_hash": self.org_genesis_hash,
+            "org_id": self.org_id,
+            "deploying_principal": {
+                "address": self.deploying_principal.address,
+                "public_key_hex": self.deploying_principal.public_key_hex,
+            },
+            "affected_employee_principal": {
+                "address": self.affected_employee_principal.address,
+                "public_key_hex": self.affected_employee_principal.public_key_hex,
+            },
+            "template_envelope_hash": self.template_envelope_hash,
+            "template_envelope_ref": self.template_envelope_ref,
+            "enabled_at": self.enabled_at,
+            "scope": self.scope.value,
+            "verification_algorithm": self.verification_algorithm,
+        }
+        return content_hash(canonical_bytes(canonical_record))
 
     @classmethod
     def from_dict(cls, raw: Any) -> EnterpriseDeploymentRecord:
