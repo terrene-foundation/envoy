@@ -298,14 +298,17 @@ class TrustStoreAdapter:
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
         # Posture sub-store is constructed lazily in `initialize()`, NOT here:
-        # kailash 2.29.3's `SQLitePostureStore.__init__` opens a persistent
-        # SQLite connection eagerly (2.13.4 did not). Eager construction here
-        # would open an I/O handle during `__init__`, breaking the documented
-        # "no I/O until `initialize()`" contract and leaking that connection for
-        # any caller that constructs an adapter without initializing it (e.g. the
-        # principal_id-validation regression tests). Deferring keeps `__init__`
-        # I/O-free; the handle's lifecycle is owned entirely by `initialize()` /
-        # `close()`.
+        # kailash's `SQLitePostureStore.__init__` opens a SQLite connection
+        # eagerly (verified on BOTH 2.13.4 and 2.29.3 — `__init__` calls
+        # `_get_connection()`). Eager construction here opens an I/O handle during
+        # `__init__` and leaks that connection for any caller that constructs an
+        # adapter without initializing it (e.g. the principal_id-validation
+        # regression tests) — a PRE-EXISTING leak (23 GC ResourceWarnings on both
+        # versions) that the kailash-2.29.3 upgrade's full-suite run surfaced, not
+        # one the upgrade introduced. Deferring construction to `initialize()`
+        # keeps `__init__` I/O-free, restores the documented "no I/O until
+        # `initialize()`" contract, and closes the leak at root; the handle's
+        # lifecycle is then owned entirely by `initialize()` / `close()`.
         self._posture_db = posture_db
         self._posture_store: SQLitePostureStore | None = None
         self._key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
