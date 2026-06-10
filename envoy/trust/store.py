@@ -297,7 +297,17 @@ class TrustStoreAdapter:
         self._digest_db_path = str(self._vault_path.parent / f"{self._vault_path.stem}.digest.db")
 
         self._chain_store = SqliteTrustStore(db_path=chain_db)
-        self._posture_store = SQLitePostureStore(db_path=posture_db)
+        # Posture sub-store is constructed lazily in `initialize()`, NOT here:
+        # kailash 2.29.3's `SQLitePostureStore.__init__` opens a persistent
+        # SQLite connection eagerly (2.13.4 did not). Eager construction here
+        # would open an I/O handle during `__init__`, breaking the documented
+        # "no I/O until `initialize()`" contract and leaking that connection for
+        # any caller that constructs an adapter without initializing it (e.g. the
+        # principal_id-validation regression tests). Deferring keeps `__init__`
+        # I/O-free; the handle's lifecycle is owned entirely by `initialize()` /
+        # `close()`.
+        self._posture_db = posture_db
+        self._posture_store: SQLitePostureStore | None = None
         self._key_manager = InMemoryKeyManager()  # type: ignore[no-untyped-call]  # kailash ctor is untyped
         self._authority_registry: AuthorityRegistryProtocol = _InMemoryAuthorityRegistry()
         # InMemoryKeyManager extends KeyManagerInterface (ABC) rather than
@@ -332,6 +342,8 @@ class TrustStoreAdapter:
         """Idempotently set up SQLite tables + authority registry."""
         if self._initialized:
             return
+        if self._posture_store is None:
+            self._posture_store = SQLitePostureStore(db_path=self._posture_db)
         await self._chain_store.initialize()
         await self._authority_registry.initialize()
         await asyncio.to_thread(self._sync_init_bc_store)
@@ -352,9 +364,12 @@ class TrustStoreAdapter:
         residence window in the meantime.
         """
         await self._chain_store.close()
-        # SQLitePostureStore.close is sync per kailash 2.13.4
-        if hasattr(self._posture_store, "close"):
+        # SQLitePostureStore.close is sync (kailash 2.13.4–2.29.3). Close only if
+        # it was actually constructed (lazy — see `initialize()`); reset to None
+        # so a subsequent `initialize()` re-opens a fresh handle after re-use.
+        if self._posture_store is not None:
             self._posture_store.close()
+            self._posture_store = None
         # Best-effort zeroize of the key manager's in-memory store. The
         # InMemoryKeyManager exposes a private `_keys` dict in kailash-py
         # 2.13.4; `clear()` reduces the residency window for the eventual
@@ -394,6 +409,7 @@ class TrustStoreAdapter:
         """
         if not self._initialized:
             await self.initialize()
+        assert self._posture_store is not None  # constructed by initialize()
         return self._posture_store.get_posture(_posture_store_agent_id(self._principal_id))
 
     async def seed_genesis(self, seed: GenesisSeed) -> SeedResult:
