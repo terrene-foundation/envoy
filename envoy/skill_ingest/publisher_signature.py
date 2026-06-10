@@ -80,7 +80,19 @@ async def verify_publisher_signature(
         )
 
     payload = skill_source_hash.encode("utf-8")
-    if not await key_manager.verify(payload, signature_hex, pinned_pubkey):
+    # The key manager returns False for a well-formed-but-wrong signature and
+    # MAY raise for a malformed signature (wrong length / bad base64). Both are
+    # verification failures from the validator's view — map either to the typed
+    # refusal (fail-closed) rather than letting a raw crypto exception escape.
+    try:
+        verified = await key_manager.verify(payload, signature_hex, pinned_pubkey)
+    except Exception as exc:
+        raise PublisherSignatureInvalidError(
+            f"publisher Ed25519 signature for genesis_id {genesis_id!r} could not "
+            "be verified (malformed signature material); refuse install — "
+            "possible supply-chain tamper"
+        ) from exc
+    if not verified:
         raise PublisherSignatureInvalidError(
             f"publisher Ed25519 signature for genesis_id {genesis_id!r} does not "
             "verify over the skill_source_hash; refuse install — possible "
