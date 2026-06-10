@@ -22,6 +22,7 @@ would crash inside any pytest-asyncio / Kaizen agent / Nexus handler).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -49,6 +50,22 @@ from kailash.trust.posture.postures import TrustPosture
 from kailash.trust.revocation.broadcaster import InMemoryDelegationRegistry
 from kailash.trust.revocation.cascade import RevocationResult, cascade_revoke
 from kailash.trust.signing.algorithm_id import AlgorithmIdentifier
+
+from envoy.trust.errors import (
+    CascadeIncompleteError,
+    GenesisAlreadySeededError,
+    PrincipalRequiredError,
+    RevocationNotFoundError,
+    TrustChainNotFoundError,
+)
+from envoy.trust.types import (
+    BoundaryConversationStateRow,
+    DelegationRequest,
+    GenesisSeed,
+    PrincipalId,
+    SeedResult,
+    VisibleSecret,
+)
 
 # ---------------------------------------------------------------------------
 # Envoy-side identifier safety guard
@@ -118,22 +135,6 @@ def _posture_store_agent_id(principal_id: str) -> str:
     """
     return hashlib.sha256(principal_id.encode("utf-8")).hexdigest()
 
-
-from envoy.trust.errors import (
-    CascadeIncompleteError,
-    GenesisAlreadySeededError,
-    PrincipalRequiredError,
-    RevocationNotFoundError,
-    TrustChainNotFoundError,
-)
-from envoy.trust.types import (
-    BoundaryConversationStateRow,
-    DelegationRequest,
-    GenesisSeed,
-    PrincipalId,
-    SeedResult,
-    VisibleSecret,
-)
 
 # Module-level UTC alias so digest methods whose `timezone` parameter shadows
 # the `datetime.timezone` import (digest_schedule_set) can still reach UTC.
@@ -853,12 +854,10 @@ class TrustStoreAdapter:
             import os as _os
             import stat as _stat
 
-            try:
+            # Windows / FS-without-chmod — non-fatal; the touch above set mode
+            # at create time on POSIX.
+            with contextlib.suppress(OSError):
                 _os.chmod(db_file, _stat.S_IRUSR | _stat.S_IWUSR)
-            except OSError:
-                # Windows / FS-without-chmod — non-fatal; the touch above set
-                # mode at create time on POSIX.
-                pass
         conn = self._bc_connect()
         try:
             conn.execute("PRAGMA journal_mode=WAL")
