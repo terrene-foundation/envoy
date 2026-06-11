@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 def cli(ctx: click.Context, log_level: str) -> None:
     """envoy — Autonomous AI where you set the boundaries.
 
-    Phase 01 ships `envoy shamir`, `envoy digest`, `envoy posture`,
+    Currently ships `envoy shamir`, `envoy digest`, `envoy posture`,
     `envoy version`, `envoy connection`, `envoy model`, `envoy ledger`, and
     `envoy init` (8 of 10 canonical subcommands); the remaining `envoy chat`
     and `envoy grant` complete the surface in Phase 02

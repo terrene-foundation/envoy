@@ -108,6 +108,49 @@ class TestBuildTrustAnchor:
         for forbidden in ("private", "secret", "passphrase", "master_key"):
             assert forbidden not in raw
 
+    def test_anchor_minted_at_is_microsecond_padded(self) -> None:
+        """`anchor_minted_at` ALWAYS carries a 6-digit microsecond fraction
+        (ENVOY-P2-W2G-010) — `specs/independent-verifier.md` mandates
+        `<iso8601 microsecond-padded>`. The default-arg path (`_now_iso()`) MUST
+        NOT drop the fraction when the wall-clock microseconds happen to be 0."""
+        import re
+
+        anchor = build_trust_anchor(
+            principal_genesis_id=_GENESIS_ID,
+            principal_genesis_pubkey_hex=_VALID_PUBKEY_HEX,
+        )
+        minted = anchor["anchor_minted_at"]
+        # ...T..:..:..[.NNNNNN]+00:00 — exactly 6 fractional digits, always.
+        assert re.search(r"T\d{2}:\d{2}:\d{2}\.\d{6}", minted), (
+            f"anchor_minted_at {minted!r} is not microsecond-padded (6 digits)"
+        )
+
+    def test_anchor_minted_at_padded_even_at_zero_microseconds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure case the bug hid: when the wall-clock's microseconds are
+        EXACTLY 0, `datetime.isoformat()` (no timespec) drops `.000000`. Pin a
+        zero-microsecond clock and assert the fraction is STILL present."""
+        import datetime as _dt
+
+        import envoy.boundary_conversation.init_runtime as init_mod
+
+        fixed = _dt.datetime(2026, 6, 11, 9, 53, 0, 0, tzinfo=_dt.timezone.utc)
+
+        class _FixedDateTime(_dt.datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> _dt.datetime:  # type: ignore[override]
+                return fixed
+
+        monkeypatch.setattr(init_mod, "datetime", _FixedDateTime)
+
+        anchor = build_trust_anchor(
+            principal_genesis_id=_GENESIS_ID,
+            principal_genesis_pubkey_hex=_VALID_PUBKEY_HEX,
+        )
+        # The zero-microsecond instant MUST still render the .000000 fraction.
+        assert anchor["anchor_minted_at"] == "2026-06-11T09:53:00.000000+00:00"
+
 
 class TestVaultAlreadyInitializedError:
     def test_carries_principal_and_store_key(self) -> None:

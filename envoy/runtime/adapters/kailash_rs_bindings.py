@@ -4,11 +4,27 @@
 
 Per shard 18 § 3.3 and § 7 frozen-spec disposition 3 the Rust-bindings adapter
 was authored in Phase 01 as a structurally-present slot whose every Protocol
-method raised the Phase-01 deferral sentinel. Phase-02 shard **S2a** fills
-those bodies: each method now forwards to the real `kailash` binding root (the
-PyO3-backed runtime — `import kailash` is the binding root per the SDK import
-discipline) OR to an Envoy primitive, mirroring `KailashPyRuntime`'s boundary
-discipline exactly.
+method raised the Phase-01 deferral sentinel. Phase-02 shard **S2a** fills the
+**genuinely-wired** bodies: those methods forward to the real `kailash` binding
+root (the PyO3-backed runtime — `import kailash` is the binding root per the SDK
+import discipline) OR to an Envoy primitive, mirroring `KailashPyRuntime`'s
+boundary discipline exactly.
+
+Wired-vs-gated honesty (18/31, NOT "all 30 forward"): of the 31 Protocol
+methods, **18 are genuinely wired** in S2a — the signing surface
+(`trust_sign`, `runtime_sign`/`runtime_verify`), envelope primitives
+(`envelope_canonical_form`, `envelope_intersect`), the Ledger surface
+(`ledger_*`, `head_commitment`), the budget surface (`budget_*`), the trust-
+store-backed surface (`trust_verify_chain`, `trust_cascade_revoke`), and the
+lifecycle methods. The remaining **13 are substrate-gated**: their backing
+engine does NOT exist yet (it ships in shard S5o / S6a / S6c), so they raise a
+typed `RuntimeNotReadyError` naming the gating shard — UNCONDITIONALLY, NOT
+gated on whether a `trust_store=` was injected. (An earlier draft forwarded
+these 13 to `self._trust_store.<same name>`, a surface no shipped class
+provides; with the documented DI that would surface an opaque AttributeError,
+and with `trust_store=None` a generic not-ready error. Raising the typed,
+shard-naming error unconditionally is the honest contract — see
+`_substrate_not_ready` + `rules/zero-tolerance.md` Rule 3a.)
 
 Boundary discipline (mirrors `kailash_py.py:28-42`):
 
@@ -70,6 +86,35 @@ _RS_BINDINGS_GUARD_MSG = (
     "the WS-1 critical path (after S2b/S2c/S3a/S3b prove byte-identity on both "
     "runtimes). Phase-02 entry flips the flag in envoy/runtime/feature_flags.py."
 )
+
+
+def _substrate_not_ready(method: str, shard: str, surface: str) -> RuntimeNotReadyError:
+    """Build the typed not-ready error for a substrate-gated Protocol method.
+
+    Used by the 13 methods whose backing engine ships in a later shard
+    (S5o / S6a / S6c). These methods raise UNCONDITIONALLY — there is NO shipped
+    class that provides the gated surface, so forwarding to
+    ``self._trust_store.<method>`` would only surface an opaque ``AttributeError``
+    when the documented dependency injection is supplied (and a
+    ``RuntimeNotReadyError`` when it is None). Raising a typed, shard-naming error
+    here turns "method silently missing" into a one-line fix instruction
+    (`rules/zero-tolerance.md` Rule 3a — typed delegate guards). When the gating
+    shard lands, the method body is replaced with the real engine call; until
+    then this IS the honest contract: the rs adapter has 18/31 Protocol methods
+    wired and these 13 substrate-gated.
+
+    ``method`` is the Protocol method name; ``shard`` names the gating engine-
+    shard so a future session can grep the message to find where the wiring
+    lands; ``surface`` is the human-readable description of the engine the method
+    forwards to once wired.
+    """
+    return RuntimeNotReadyError(
+        f"{method}: not wired on the rs adapter — the {surface} ships in shard "
+        f"{shard}. This Protocol method is substrate-gated: no engine backs it in "
+        "the current phase, so it raises unconditionally rather than forwarding "
+        "to a phantom attribute. When the gating shard lands, this body is "
+        "replaced with the real engine call."
+    )
 
 #: The device-key attestation backends the rs adapter can route signing through.
 #: `software` is the always-available Ed25519 fallback (via the kailash binding);
@@ -246,16 +291,14 @@ class KailashRsBindingsRuntime:
     def trust_verify_subset_proof(self, parent: Any, sub: Any) -> Any:
         """Subset-proof verification per specs/sub-agent-delegation.md.
 
-        Forwards to the injected trust store's subset-proof verifier (the
-        runtime-signed `runtime_verification_signature` surface E5 hashes). When
-        no store is supplied the substrate gap is named loud."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "trust_verify_subset_proof: requires a trust store exposing "
-                "`verify_subset_proof(parent, sub)`; pass `trust_store=` to "
-                "KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.verify_subset_proof(parent, sub)
+        Substrate-gated: the subset-proof verifier (the runtime-signed
+        `runtime_verification_signature` surface E5 hashes) is the sub-agent-
+        delegation engine wired in shard S6c. Raises unconditionally — no shipped
+        class exposes `verify_subset_proof`, so forwarding would surface an opaque
+        AttributeError under the documented DI."""
+        raise _substrate_not_ready(
+            "trust_verify_subset_proof", "S6c", "sub-agent-delegation subset-proof verifier"
+        )
 
     # ------------------------------------------------------------------
     # Envelope (spec § Envelope) — sync per Protocol
@@ -282,30 +325,26 @@ class KailashRsBindingsRuntime:
         return intersect_envelopes(a, b)
 
     def envelope_check(self, envelope: Any, action: Any) -> Any:
-        """Forward to the injected envelope-check engine.
+        """Envelope-check verdict per spec § Envelope.
 
-        The structural slice (N3) never dispatches the classifier; the semantic
-        slice dispatches it (observed via `envoy.runtime.dispatch_observation`).
-        When no check engine is supplied the substrate gap is named loud."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "envelope_check: requires the envelope-check engine exposing "
-                "`check(envelope, action)`; pass `trust_store=` to "
-                "KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.check(envelope, action)
+        Substrate-gated: the structural+semantic check engine (the structural
+        slice (N3) never dispatches the classifier; the semantic slice dispatches
+        it, observed via `envoy.runtime.dispatch_observation`) is wired in shard
+        S6a. Raises unconditionally — no shipped class exposes `check`."""
+        raise _substrate_not_ready(
+            "envelope_check", "S6a", "structural+semantic envelope-check engine"
+        )
 
     def envelope_re_read_checkpoint(self, envelope: Any, depth: int) -> Any:
         """T-015 envelope re-read checkpoint — re-read from Trust Vault every N
-        composition-rule evaluations. Forwards to the injected store's
-        re-read-checkpoint surface; loud typed error when absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "envelope_re_read_checkpoint: requires the Trust Vault re-read "
-                "surface exposing `re_read_checkpoint(envelope, depth)`; pass "
-                "`trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.re_read_checkpoint(envelope, depth)
+        composition-rule evaluations.
+
+        Substrate-gated: the composition-rule depth-tracking re-read surface is
+        wired in shard S6a. Raises unconditionally — no shipped class exposes
+        `re_read_checkpoint`."""
+        raise _substrate_not_ready(
+            "envelope_re_read_checkpoint", "S6a", "Trust Vault re-read checkpoint surface"
+        )
 
     # ------------------------------------------------------------------
     # Two-phase signing (spec § Two-phase signing) — sync per Protocol
@@ -313,39 +352,32 @@ class KailashRsBindingsRuntime:
 
     def phase_a_sign_intent(self, intent: Any) -> Any:
         """Delegation-key-signed Phase-A intent (envelope_check pre-sign + Ledger
-        write). Forwards to the injected trust store's two-phase signing surface;
-        loud typed error when absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "phase_a_sign_intent: requires the two-phase signing surface "
-                "exposing `phase_a_sign_intent(intent)`; pass `trust_store=` to "
-                "KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.phase_a_sign_intent(intent)
+        write).
+
+        Substrate-gated: the two-phase signing engine is wired in shard S6a.
+        Raises unconditionally — no shipped class exposes `phase_a_sign_intent`."""
+        raise _substrate_not_ready(
+            "phase_a_sign_intent", "S6a", "two-phase signing engine"
+        )
 
     def phase_b_sign_outcome(self, outcome: Any, intent_id: str) -> Any:
         """Runtime-device-key-signed Phase-B outcome linked to `intent_id`.
-        Forwards to the injected two-phase signing surface; loud typed error when
-        absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "phase_b_sign_outcome: requires the two-phase signing surface "
-                "exposing `phase_b_sign_outcome(outcome, intent_id)`; pass "
-                "`trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.phase_b_sign_outcome(outcome, intent_id)
+
+        Substrate-gated: the two-phase signing engine is wired in shard S6a.
+        Raises unconditionally — no shipped class exposes `phase_b_sign_outcome`."""
+        raise _substrate_not_ready(
+            "phase_b_sign_outcome", "S6a", "two-phase signing engine"
+        )
 
     def phase_a_orphan_resolve(self, intent_id: str, resolution: Any) -> Any:
         """User-chosen orphan resolution (Genesis-signed via Grant Moment).
-        Forwards to the injected two-phase signing surface; loud typed error when
-        absent (E6 hashes the orphan-resolution record)."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "phase_a_orphan_resolve: requires the orphan-resolution surface "
-                "exposing `phase_a_orphan_resolve(intent_id, resolution)`; pass "
-                "`trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.phase_a_orphan_resolve(intent_id, resolution)
+
+        Substrate-gated: the orphan-resolution surface (E6 hashes the orphan-
+        resolution record) is wired in shard S6a. Raises unconditionally — no
+        shipped class exposes `phase_a_orphan_resolve`."""
+        raise _substrate_not_ready(
+            "phase_a_orphan_resolve", "S6a", "two-phase signing orphan-resolution surface"
+        )
 
     # ------------------------------------------------------------------
     # Ledger (spec § Ledger) — async per Protocol
@@ -411,39 +443,32 @@ class KailashRsBindingsRuntime:
 
     def classifier_invoke(self, ref: str, content: bytes, ctx: Any) -> Any:
         """Semantically-equivalent classifier verdict (N3 semantic slice). 2+
-        classifiers per ensemble mandatory. Forwards to the injected classifier
-        ensemble; loud typed error when absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "classifier_invoke: requires the classifier ensemble exposing "
-                "`classifier_invoke(ref, content, ctx)`; pass `trust_store=` to "
-                "KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.classifier_invoke(ref, content, ctx)
+        classifiers per ensemble mandatory.
+
+        Substrate-gated: the classifier ensemble is wired in shard S6c. Raises
+        unconditionally — no shipped class exposes `classifier_invoke`."""
+        raise _substrate_not_ready(
+            "classifier_invoke", "S6c", "classifier ensemble"
+        )
 
     def ensemble_aggregate(self, verdicts: list[Any], policy: Any) -> Any:
         """Byte-identical aggregation; disagreement fails CLOSED by default.
-        Forwards to the injected ensemble aggregator; loud typed error when
-        absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "ensemble_aggregate: requires the ensemble aggregator exposing "
-                "`ensemble_aggregate(verdicts, policy)`; pass `trust_store=` to "
-                "KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.ensemble_aggregate(verdicts, policy)
+
+        Substrate-gated: the ensemble aggregator is wired in shard S6c. Raises
+        unconditionally — no shipped class exposes `ensemble_aggregate`."""
+        raise _substrate_not_ready(
+            "ensemble_aggregate", "S6c", "classifier ensemble aggregator"
+        )
 
     def classifier_registry_resolve(self, registry_id: str) -> Any:
         """Fetch + verify 2-of-N steward signatures + hash-match per
-        specs/foundation-ops.md. Forwards to the injected classifier registry;
-        loud typed error when absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "classifier_registry_resolve: requires the classifier registry "
-                "exposing `classifier_registry_resolve(registry_id)`; pass "
-                "`trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.classifier_registry_resolve(registry_id)
+        specs/foundation-ops.md.
+
+        Substrate-gated: the classifier registry is wired in shard S6c. Raises
+        unconditionally — no shipped class exposes `classifier_registry_resolve`."""
+        raise _substrate_not_ready(
+            "classifier_registry_resolve", "S6c", "classifier steward registry"
+        )
 
     # ------------------------------------------------------------------
     # Budget (spec § Budget) — sync per Protocol
@@ -564,16 +589,14 @@ class KailashRsBindingsRuntime:
         context: Any,
         user_message: str,
     ) -> Any:
-        """Envelope-pinned system prompt (T-015 defense). Forwards to the
-        injected prompt assembler; loud typed error when absent. Byte-identical
-        — the assembly is a deterministic template fill."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "prompt_assemble: requires the prompt assembler exposing "
-                "`prompt_assemble(system, envelope, context, user_message)`; "
-                "pass `trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.prompt_assemble(system, envelope, context, user_message)
+        """Envelope-pinned system prompt (T-015 defense). Byte-identical — the
+        assembly is a deterministic template fill.
+
+        Substrate-gated: the prompt assembler is wired in shard S6a. Raises
+        unconditionally — no shipped class exposes `prompt_assemble`."""
+        raise _substrate_not_ready(
+            "prompt_assemble", "S6a", "envelope-pinned prompt assembler"
+        )
 
     def tool_output_sanitize(
         self,
@@ -582,15 +605,13 @@ class KailashRsBindingsRuntime:
         envelope: Any,
     ) -> Any:
         """specs/tool-output-sanitization.md § Algorithm; fail-closed on
-        classifier unavailability. Forwards to the injected sanitizer; loud typed
-        error when absent. Byte-identical (deterministic sanitizer)."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "tool_output_sanitize: requires the tool-output sanitizer "
-                "exposing `tool_output_sanitize(output, tool_name, envelope)`; "
-                "pass `trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.tool_output_sanitize(output, tool_name, envelope)
+        classifier unavailability. Byte-identical (deterministic sanitizer).
+
+        Substrate-gated: the tool-output sanitizer is wired in shard S6a. Raises
+        unconditionally — no shipped class exposes `tool_output_sanitize`."""
+        raise _substrate_not_ready(
+            "tool_output_sanitize", "S6a", "tool-output sanitizer"
+        )
 
     def first_time_action_gate(
         self,
@@ -598,28 +619,25 @@ class KailashRsBindingsRuntime:
         tool_name: str,
         args: dict[str, Any],
     ) -> Any:
-        """specs/session-state.md § `first_time_action_gate`. Forwards to the
-        injected session-state surface; loud typed error when absent.
-        Byte-identical (deterministic first-seen check)."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "first_time_action_gate: requires the session-state surface "
-                "exposing `first_time_action_gate(session, tool_name, args)`; "
-                "pass `trust_store=` to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.first_time_action_gate(session, tool_name, args)
+        """specs/session-state.md § `first_time_action_gate`. Byte-identical
+        (deterministic first-seen check).
+
+        Substrate-gated: the session-state first-time-action gate is wired in
+        shard S5o. Raises unconditionally — no shipped class exposes
+        `first_time_action_gate`."""
+        raise _substrate_not_ready(
+            "first_time_action_gate", "S5o", "session-state first-time-action gate"
+        )
 
     def grant_moment_surface(self, request: Any) -> Any:
         """specs/grant-moment.md dispatch; channel-adapter routing. The rendered
-        verdict TEXT is the ONE Phase-02 semantic slice (N4). Forwards to the
-        injected Grant Moment surface; loud typed error when absent."""
-        if self._trust_store is None:
-            raise RuntimeNotReadyError(
-                "grant_moment_surface: requires the Grant Moment surface "
-                "exposing `grant_moment_surface(request)`; pass `trust_store=` "
-                "to KailashRsBindingsRuntime(...)."
-            )
-        return self._trust_store.grant_moment_surface(request)
+        verdict TEXT is the ONE Phase-02 semantic slice (N4).
+
+        Substrate-gated: the Grant Moment dispatch surface is wired in shard S6a.
+        Raises unconditionally — no shipped class exposes `grant_moment_surface`."""
+        raise _substrate_not_ready(
+            "grant_moment_surface", "S6a", "Grant Moment dispatch surface"
+        )
 
 
 __all__ = ["KailashRsBindingsRuntime"]

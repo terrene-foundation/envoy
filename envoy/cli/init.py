@@ -118,6 +118,27 @@ def init_run(
     vault_path = _resolve_vault(vault)
     anchor_dir = _resolve_trust_anchor_dir(trust_anchor_dir)
 
+    cli_session_id = (click.get_current_context().obj or {}).get("cli_session_id", "")
+    log_extra = {"principal_id_prefix": pid[:8], "cli_session_id": cli_session_id}
+
+    # Write-once pre-check (ENVOY-P2-W2G-001): if the vault already exists, exit
+    # cleanly with code 30 + a plain-language message BEFORE prompting for the
+    # passphrase or any of the 9 ritual answers. Re-running `init` on an
+    # initialized vault is the user's most common foot-gun; making them re-type
+    # the passphrase + answer 9 questions only to hit a traceback (FileExistsError
+    # raised deep in build_init_runtime → vault.create) is the failure mode the
+    # spec (session-runtime.md:188-191) + this command's docstring forbid.
+    if vault_path.exists():
+        logger.warning("envoy.init.run.already_initialized.precheck", extra=log_extra)
+        click.echo(
+            "\nThis vault is already set up — your boundaries and backup were "
+            "created in a previous setup. There's nothing to do. If you've lost "
+            "your setup, recover it with your backup cards "
+            "(`envoy shamir recover`).\n",
+            err=True,
+        )
+        raise SystemExit(EXIT_ALREADY_INITIALIZED)
+
     passphrase = click.prompt(
         "Choose a vault passphrase (you'll need it to unlock Envoy)",
         hide_input=True,
@@ -158,8 +179,6 @@ def init_run(
             if bootstrap.vault.is_unlocked:
                 await bootstrap.vault.lock()
 
-    cli_session_id = (click.get_current_context().obj or {}).get("cli_session_id", "")
-    log_extra = {"principal_id_prefix": pid[:8], "cli_session_id": cli_session_id}
     logger.info("envoy.init.run.start", extra=log_extra)
     try:
         exit_code = asyncio.run(_run())

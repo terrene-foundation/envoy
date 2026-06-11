@@ -16,9 +16,9 @@ and semantic→dispatch identically on both runtimes (S1 acceptance criterion 4;
 the N3 family in S2b consumes this hook).
 
 The hook is a thread-safe in-process recorder. A runtime adapter calls
-`record_dispatch(ref, content_kind=...)` at the moment it actually invokes the
-classifier ensemble; the harness wraps a method call in `observe()` and reads
-back `DispatchObservation.dispatched`. The recorder is deterministic — it counts
+`record_dispatch(ref)` at the moment it actually invokes the classifier
+ensemble; the harness wraps a method call in `observe()` and reads back
+`DispatchObservation.dispatched`. The recorder is deterministic — it counts
 real dispatch calls, it does NOT infer dispatch from output heuristics (which
 would be the regex-NLP failure mode `rules/probe-driven-verification.md` blocks).
 A structural-class check that never calls `record_dispatch` yields

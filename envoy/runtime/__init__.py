@@ -10,8 +10,10 @@ Per shard 18 (`workspaces/phase-01-mvp/01-analysis/18-runtime-abstraction-stub.m
   `kailash` and to Envoy primitives. Wired methods do real work;
   Phase02-deferred methods raise typed `Phase02SubstrateNotWiredError` with
   grep-able substrate hints.
-- `KailashRsBindingsRuntime` — Phase 02 deferred slot, structurally present
-  but feature-flagged off via `RS_BINDINGS_ENABLED`.
+- `KailashRsBindingsRuntime` — the Rust-bindings runtime, feature-flagged off
+  via `RS_BINDINGS_ENABLED` until Phase 02 entry. 18/31 Protocol methods are
+  genuinely wired; the remaining 13 are substrate-gated and raise a typed
+  `RuntimeNotReadyError` naming their gating shard (S5o/S6a/S6c) until wired.
 - `get_runtime()` — single factory entry point; primitives import THIS, never
   the adapter classes directly. The Phase 02 mechanicality lock.
 
