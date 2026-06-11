@@ -179,7 +179,7 @@ def reasoning_commit(session, reasoning_context, rule_ids):
 
 ## Persistence
 
-`SessionObservedState` is in-memory during session + snapshot to Trust Vault encrypted at every Ledger append (so a crash mid-session preserves orphan-phase-A tracking). Never synced to other devices (each device has its own session cache).
+`SessionObservedState` is in-memory during session + snapshot to a 0o600 vault-sibling SQLite store (`<vault-stem>.session.db`, `session_observed_state` table) at every Ledger append, so a crash mid-session preserves orphan-phase-A tracking. The snapshot blob is stored as canonical JSON; the resolution rows the same store holds are signed with an OS-keychain Ed25519 session key (a trust anchor distinct from the ledger signing key), not encrypted-at-rest. Never synced to other devices (each device has its own session cache).
 
 ## Orphan Phase-A tracking
 
@@ -201,8 +201,8 @@ Per specs/ledger.md §Two-phase signing, Phase A intents without matching Phase 
 - **specs/ledger.md** — owns the type table; this spec is the producer for `session_boundary_crossed` + `ReasoningCommit` + `PhaseAOrphanResolution` (together with ledger.md §Two-phase signing).
 - **specs/grant-moment.md** — dispatched on FIRST_TIME_REQUIRES_GRANT + orphan resolution.
 - **specs/boundary-conversation.md** — session-start trigger.
-- **specs/trust-vault.md** — persistence region.
-- **specs/threat-model.md** — T-013, T-015, T-019.
+- **specs/session-runtime.md** — durable persistence substrate (§Region 2 — the `session_observed_state` table in the 0o600 vault-sibling SQLite store).
+- **specs/threat-model.md** — T-013, T-015, T-019; the local-file-read residual on the vault-sibling session store.
 
 ## Test location
 
