@@ -339,8 +339,10 @@ async def verify_key_config_signatures(
     Delegates to the SHARED ``verify_steward_quorum`` primitive — the signed
     payload is ``sha256(encode_key_config(config))`` in hex (the same
     content-hash shape every Foundation registry signs). Raises
-    ``KeyConfigSignatureError`` when the quorum is not met (mapping the shared
-    verifier's ``StewardQuorumError``).
+    ``KeyConfigSignatureError`` both when the quorum is not met (mapping the
+    shared verifier's ``StewardQuorumError``) AND when the quorum input is
+    rejected at the boundary — ``threshold < 1`` or an oversized signature array
+    (mapping ``StewardQuorumInputError``). Neither path fails open.
 
     Args:
         threshold: 2 for the 2-of-N Foundation steward gate.
@@ -352,7 +354,7 @@ async def verify_key_config_signatures(
     import hashlib
 
     from envoy.foundation_ops.errors import KeyConfigSignatureError
-    from envoy.registry.errors import StewardQuorumError
+    from envoy.registry.errors import StewardQuorumError, StewardQuorumInputError
     from envoy.registry.steward_quorum import verify_steward_quorum
 
     content_hash_hex = hashlib.sha256(encode_key_config(config)).hexdigest()
@@ -370,6 +372,19 @@ async def verify_key_config_signatures(
             f"OHTTP key config (key_id={config.key_id}) failed the 2-of-N "
             f"steward quorum (distinct_valid={exc.distinct_valid}, "
             f"threshold={exc.threshold})"
+        ) from exc
+    except StewardQuorumInputError as exc:
+        # The input-bound failures (threshold < 1, or a signature array beyond
+        # MAX_STEWARD_SIGNATURES — a verify-cost DoS bound) ALSO map to the
+        # foundation_ops taxonomy. Catching only StewardQuorumError above let
+        # this ValueError subclass escape the KeyConfigSignatureError contract
+        # the caller relies on. The enterprise verifier (verifier.py:250)
+        # catches both for exactly this reason. Neither branch fails open — an
+        # oversized array / bad threshold is still REFUSED.
+        raise KeyConfigSignatureError(
+            f"OHTTP key config (key_id={config.key_id}) rejected at the quorum "
+            "input boundary (degenerate threshold or oversized signature array); "
+            "refusing — never fail open on malformed quorum input"
         ) from exc
 
 
