@@ -36,9 +36,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
+import warnings
+
 from envoy.foundation_ops.errors import (
+    CertPinMismatchError,
+    HSTSPreloadMissingWarning,
     KeyConfigExpiredError,
     OHTTPRelayDownError,
     SNIStrippingDetectedError,
@@ -57,6 +62,28 @@ from envoy.foundation_ops.hpke import (
 _TLS_1_3 = 0x0304
 
 
+def _parse_iso8601(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp, accepting a trailing ``Z`` as UTC.
+
+    Mirrors ``envoy.enterprise.verifier._parse_iso8601`` so the OHTTP key-config
+    expiry path compares the SAME instant regardless of whether the Foundation
+    publishes ``expires_at`` in the RFC-3339 canonical ``Z`` form or the
+    ``+00:00`` offset form. ``datetime.fromisoformat`` does not accept a bare
+    ``Z`` before Python 3.11; normalizing it keeps the comparison correct across
+    runtimes. Raises ``KeyConfigExpiredError`` on a malformed timestamp — a
+    structurally-invalid expiry is treated as "refuse, fail-closed" rather than
+    letting an opaque ``ValueError`` propagate.
+    """
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise KeyConfigExpiredError(
+            f"key config expires_at {value!r} is not a valid ISO-8601 timestamp; "
+            "refusing (fail-closed) — client must fetch a well-formed config"
+        ) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class TlsEndpointPolicy:
     """The network-security hardening contract every Foundation endpoint enforces.
@@ -71,6 +98,19 @@ class TlsEndpointPolicy:
     require_strict_sni: bool = True
     require_hsts: bool = True
     pinned_cert_fingerprint: str | None = None
+    # ``None`` does NOT mean "pinning disabled". The pinned-cert fingerprint for
+    # every Foundation-operated endpoint is shipped WITH the Envoy binary release
+    # (`specs/network-security.md:20-21` — "pinned certificates shipped with Envoy
+    # binary"; updates delivered via signed binary release, NOT live update). The
+    # canonical pin material is loaded from the WS-2 binary at startup and injected
+    # into the operative policy by the deployment layer; ``DEFAULT_TLS_POLICY``
+    # carries ``None`` because this module is the policy CONTRACT, not the binary
+    # that holds the pin bytes. When a fingerprint IS set (operative policy or a
+    # test), ``enforce_tls_policy`` refuses any non-matching cert with
+    # ``CertPinMismatchError``. The fail-closed property is therefore at the
+    # transport layer that injects the binary-shipped pin; a ``None`` here is the
+    # "no pin to compare against at THIS layer" sentinel, never a permissive
+    # opt-out of pinning.
 
 
 DEFAULT_TLS_POLICY = TlsEndpointPolicy()
@@ -101,11 +141,21 @@ def enforce_tls_policy(handshake: TlsHandshake, policy: TlsEndpointPolicy) -> bo
 
     Returns True when the handshake satisfies the policy. Raises the typed
     network-security error otherwise (fail-closed: any unmet condition refuses).
+    A satisfied-but-HSTS-missing handshake still returns True but emits the
+    advisory ``HSTSPreloadMissingWarning`` per the spec's advisory row.
 
     Raises:
         TLSVersionTooLowError: negotiated TLS < the policy minimum.
         SNIStrippingDetectedError: strict-SNI required but SNI absent or
             mismatched against the expected server name.
+        CertPinMismatchError: a pinned-cert fingerprint is configured AND the
+            presented cert fingerprint does not match it
+            (``specs/network-security.md:42`` — suspected Foundation MITM).
+
+    Warns:
+        HSTSPreloadMissingWarning: ``require_hsts`` is True but the handshake did
+            not offer HSTS (``specs/network-security.md:24,48`` — advisory, not a
+            hard refusal for non-Foundation endpoints).
     """
     if handshake.negotiated_tls_version < policy.min_tls_version:
         raise TLSVersionTooLowError(
@@ -127,8 +177,22 @@ def enforce_tls_policy(handshake: TlsHandshake, policy: TlsEndpointPolicy) -> bo
         policy.pinned_cert_fingerprint is not None
         and handshake.cert_fingerprint != policy.pinned_cert_fingerprint
     ):
-        raise SNIStrippingDetectedError(
-            "presented certificate fingerprint does not match the pinned cert"
+        raise CertPinMismatchError(
+            "presented certificate fingerprint does not match the binary-shipped "
+            "pinned cert (suspected Foundation MITM — verify via signed binary)"
+        )
+    # HSTS is mandated for all outbound HTTPS (`specs/network-security.md:24`).
+    # A handshake that satisfies TLS/SNI/pin but did not offer HSTS is an
+    # ADVISORY, not a hard refusal for non-Foundation endpoints
+    # (`specs/network-security.md:48` — `Retry: Manual`). Emit the spec-named
+    # warning so the operator can investigate without breaking the connection.
+    if policy.require_hsts and not handshake.hsts_offered:
+        warnings.warn(
+            "endpoint did not offer HSTS / is not in the preload list "
+            "(specs/network-security.md:24); strict SNI + HSTS is mandated for "
+            "outbound HTTPS — investigate intermediary downgrade",
+            HSTSPreloadMissingWarning,
+            stacklevel=2,
         )
     return True
 
@@ -205,16 +269,21 @@ class OhttpKeyConfigServerHandlers:
         """Refuse a key config that has passed its ``expires_at`` rotation deadline.
 
         Raises ``KeyConfigExpiredError`` so S11's client never encapsulates
-        under a rotated-out key. ISO-8601 string compare is correct for the
-        UTC-Z canonical form the Foundation publishes.
+        under a rotated-out key. Expiry is compared as parsed ``datetime``
+        instants — NOT a lexicographic string compare — so an ``expires_at`` in
+        the RFC-3339 canonical ``Z`` form and a ``now_iso`` in ``+00:00`` offset
+        form (or vice-versa) evaluate the SAME instant correctly. A naive string
+        compare would mis-rank ``...Z`` against ``...+00:00`` because
+        ``ord('Z') > ord('+')``.
         """
         config = self.configs.get(key_id)
         if config is None:
             raise KeyConfigExpiredError(f"no published key config for key_id={key_id}")
-        if config.expires_at <= self.now_iso():
+        now_iso = self.now_iso()
+        if _parse_iso8601(config.expires_at) <= _parse_iso8601(now_iso):
             raise KeyConfigExpiredError(
                 f"key config key_id={key_id} expired at {config.expires_at} "
-                f"(now {self.now_iso()}); refusing — client must fetch the "
+                f"(now {now_iso}); refusing — client must fetch the "
                 f"rotated config"
             )
         return True
