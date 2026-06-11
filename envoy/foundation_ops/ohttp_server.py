@@ -34,12 +34,11 @@ the REAL server logic, no port bind) AND wired onto a real `Nexus` app by
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-
-import warnings
 
 from envoy.foundation_ops.errors import (
     CertPinMismatchError,
