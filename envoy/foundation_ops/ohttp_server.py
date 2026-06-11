@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import warnings
@@ -59,6 +60,28 @@ from envoy.foundation_ops.hpke import (
 # (`specs/network-security.md:15` — "Minimum TLS 1.3 for all outbound
 # connections"). Encoded as the IANA two-byte version (0x0304 == TLS 1.3).
 _TLS_1_3 = 0x0304
+
+
+def _parse_iso8601(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp, accepting a trailing ``Z`` as UTC.
+
+    Mirrors ``envoy.enterprise.verifier._parse_iso8601`` so the OHTTP key-config
+    expiry path compares the SAME instant regardless of whether the Foundation
+    publishes ``expires_at`` in the RFC-3339 canonical ``Z`` form or the
+    ``+00:00`` offset form. ``datetime.fromisoformat`` does not accept a bare
+    ``Z`` before Python 3.11; normalizing it keeps the comparison correct across
+    runtimes. Raises ``KeyConfigExpiredError`` on a malformed timestamp — a
+    structurally-invalid expiry is treated as "refuse, fail-closed" rather than
+    letting an opaque ``ValueError`` propagate.
+    """
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise KeyConfigExpiredError(
+            f"key config expires_at {value!r} is not a valid ISO-8601 timestamp; "
+            "refusing (fail-closed) — client must fetch a well-formed config"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,16 +269,21 @@ class OhttpKeyConfigServerHandlers:
         """Refuse a key config that has passed its ``expires_at`` rotation deadline.
 
         Raises ``KeyConfigExpiredError`` so S11's client never encapsulates
-        under a rotated-out key. ISO-8601 string compare is correct for the
-        UTC-Z canonical form the Foundation publishes.
+        under a rotated-out key. Expiry is compared as parsed ``datetime``
+        instants — NOT a lexicographic string compare — so an ``expires_at`` in
+        the RFC-3339 canonical ``Z`` form and a ``now_iso`` in ``+00:00`` offset
+        form (or vice-versa) evaluate the SAME instant correctly. A naive string
+        compare would mis-rank ``...Z`` against ``...+00:00`` because
+        ``ord('Z') > ord('+')``.
         """
         config = self.configs.get(key_id)
         if config is None:
             raise KeyConfigExpiredError(f"no published key config for key_id={key_id}")
-        if config.expires_at <= self.now_iso():
+        now_iso = self.now_iso()
+        if _parse_iso8601(config.expires_at) <= _parse_iso8601(now_iso):
             raise KeyConfigExpiredError(
                 f"key config key_id={key_id} expired at {config.expires_at} "
-                f"(now {self.now_iso()}); refusing — client must fetch the "
+                f"(now {now_iso}); refusing — client must fetch the "
                 f"rotated config"
             )
         return True
