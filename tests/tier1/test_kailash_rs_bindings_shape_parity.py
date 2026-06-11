@@ -49,6 +49,34 @@ ASYNC_METHODS: tuple[str, ...] = (
     "head_commitment",
 )
 
+# The 13 substrate-gated methods (ENVOY-P2-W2G-002): their backing engine ships
+# in a later shard (S5o / S6a / S6c), so each raises RuntimeNotReadyError
+# UNCONDITIONALLY (regardless of whether trust_store= is injected), naming the
+# gating shard in the message. Genuinely-wired methods (trust_sign,
+# envelope_intersect, runtime_sign/verify, envelope_canonical_form, ledger_*,
+# budget_*, trust_verify_chain, trust_cascade_revoke) are NOT in this set.
+SUBSTRATE_GATED_METHODS: tuple[str, ...] = (
+    "envelope_check",
+    "envelope_re_read_checkpoint",
+    "trust_verify_subset_proof",
+    "phase_a_sign_intent",
+    "phase_b_sign_outcome",
+    "phase_a_orphan_resolve",
+    "classifier_invoke",
+    "ensemble_aggregate",
+    "classifier_registry_resolve",
+    "prompt_assemble",
+    "tool_output_sanitize",
+    "first_time_action_gate",
+    "grant_moment_surface",
+)
+
+# The set of shard tokens any substrate-gated message is allowed to name. The
+# W2G-002 contract is "the message names a gating shard" — assert membership,
+# not a single hardcoded value, so a shard re-assignment does not falsely fail.
+_VALID_SHARD_TOKENS: frozenset[str] = frozenset({"S5o", "S6a", "S6c"})
+
+
 # Methods whose Protocol declaration is sync `def`.
 SYNC_METHODS: tuple[str, ...] = (
     "runtime_identity",
@@ -245,9 +273,16 @@ def test_sync_method_executes_without_await(adapter: KailashRsBindingsRuntime, n
         "envelope_intersect",
     ):
         # Non-substrate-gated forwards (real primitive / binding) + device-key
-        # crypto — exercised in dedicated tests below. The shape parity for these
-        # is already proven by test_sync_methods_match_protocol_shape; skip the
-        # generic substrate-error path (they do not raise RuntimeNotReadyError).
+        # crypto — they do NOT raise RuntimeNotReadyError, so the generic
+        # substrate-error path below does not apply. Each is exercised by a
+        # dedicated direct-call test by name:
+        #   runtime_sign / runtime_verify → test_runtime_sign_returns_real_bytes,
+        #       test_runtime_sign_verify_round_trip, test_runtime_sign_without_key_raises
+        #   trust_sign → test_trust_sign_round_trip_and_py_byte_identity
+        #   envelope_canonical_form → test_envelope_canonical_form_forwards_to_primitive
+        #   envelope_intersect → test_envelope_intersect_forwards_loud_on_shape_mismatch
+        # The shape parity for these is already proven by
+        # test_sync_methods_match_protocol_shape.
         return
     # Substrate-forwarding sync methods raise the typed error synchronously
     # (no coroutine returned) when their backing dependency is absent.
@@ -415,3 +450,148 @@ def test_isinstance_is_not_treated_as_completion(
     # Structural typing is necessary but NOT sufficient: prove a real method runs.
     sig = adapter.runtime_sign(b"x")
     assert isinstance(sig, bytes) and len(sig) > 0
+
+
+# ---------------------------------------------------------------------------
+# 7. Substrate-gated methods raise typed not-ready, naming a shard —
+#    UNCONDITIONALLY, even when the documented trust_store= DI is injected
+#    (ENVOY-P2-W2G-002). The pre-fix bug forwarded to self._trust_store.<name>,
+#    a surface no shipped class provides: with trust_store=None it raised
+#    RuntimeNotReadyError, but with the documented DI it raised an OPAQUE
+#    AttributeError from a phantom attribute. These tests pin that every gated
+#    method raises the typed, shard-naming error regardless of DI.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", SUBSTRATE_GATED_METHODS)
+def test_substrate_gated_method_raises_typed_not_ready_with_shard(
+    adapter: KailashRsBindingsRuntime, name: str
+) -> None:
+    """Each substrate-gated method raises `RuntimeNotReadyError` and the message
+    names the gating engine-shard (S5o / S6a / S6c) so the gap is discoverable.
+
+    `adapter` has NO trust_store injected. The message MUST name BOTH the method
+    and a valid shard token so a future `grep` enumerates the unwired surface.
+    """
+    method = getattr(adapter, name)
+    with pytest.raises(RuntimeNotReadyError) as exc_info:
+        method(**_benign_args(name))
+    msg = str(exc_info.value)
+    assert name in msg, f"{name}: error message does not name the method ({msg!r})"
+    assert any(shard in msg for shard in _VALID_SHARD_TOKENS), (
+        f"{name}: error message names no gating shard {sorted(_VALID_SHARD_TOKENS)} "
+        f"({msg!r})"
+    )
+
+
+@pytest.mark.parametrize("name", SUBSTRATE_GATED_METHODS)
+def test_substrate_gated_method_raises_even_with_trust_store_injected(
+    rs_enabled: None, device_keypair: tuple[str, str], name: str
+) -> None:
+    """The fix's load-bearing invariant: a gated method raises the SAME typed
+    `RuntimeNotReadyError` even when the documented `trust_store=` DI is supplied.
+
+    Pre-fix, injecting a real backing object that LACKS the phantom method
+    surfaced an untyped `AttributeError` (`'X' object has no attribute
+    'envelope_check'`). The deterministic stand-in below exposes NONE of the 13
+    gated names, so the pre-fix code would raise AttributeError; the fixed code
+    raises RuntimeNotReadyError UNCONDITIONALLY (it never forwards).
+
+    The stand-in is a deterministic Protocol-shaped object, NOT a mock of a
+    behavior under test — it exists only to prove the gated methods never touch
+    it (`rules/testing.md` § Protocol Adapters).
+    """
+
+    class _TrustStoreWithoutGatedSurface:
+        """A trust-store stand-in exposing only the genuinely-wired surface
+        (get_chain / revoke / check). It deliberately exposes NONE of the 13
+        substrate-gated method names, so any attempt to forward to it would
+        raise AttributeError — which the fix MUST NOT do."""
+
+        def get_chain(self, record: object) -> object:  # pragma: no cover - never called
+            raise AssertionError("gated method forwarded to trust_store.get_chain")
+
+    priv_hex, pub_hex = device_keypair
+    adapter = KailashRsBindingsRuntime(
+        device_signing_private_key_hex=priv_hex,
+        device_signing_public_key_hex=pub_hex,
+        trust_store=_TrustStoreWithoutGatedSurface(),
+    )
+    method = getattr(adapter, name)
+    with pytest.raises(RuntimeNotReadyError):
+        method(**_benign_args(name))
+
+
+# ---------------------------------------------------------------------------
+# 8. Genuinely-wired sync forwards get DIRECT-CALL tests (ENVOY-P2-W2G-006).
+#    The generic loop skips trust_sign/envelope_intersect with "exercised in
+#    dedicated tests below" — these ARE those dedicated tests.
+# ---------------------------------------------------------------------------
+
+
+def test_trust_sign_round_trip_and_py_byte_identity(
+    adapter: KailashRsBindingsRuntime, device_keypair: tuple[str, str]
+) -> None:
+    """`trust_sign(record, key)` returns a REAL Ed25519 signature (bytes), it
+    verifies via `kailash.trust.signing.verify_signature`, AND it is byte-equal
+    to the kailash_py adapter's `trust_sign` for the SAME record+key.
+
+    The byte-equality is the E2 cross-runtime byte-identity invariant: both
+    adapters forward to the SAME `kailash.trust.signing.sign`, so the signatures
+    MUST be identical bytes. A drift here would mean the rs adapter is NOT
+    forwarding to the real binding (a stub / re-implementation)."""
+    from kailash.trust.signing import verify_signature
+
+    from envoy.runtime.adapters.kailash_py import KailashPyRuntime
+
+    priv_hex, pub_hex = device_keypair
+    record = "envoy-rs-trust-sign-record"
+
+    rs_sig = adapter.trust_sign(record, priv_hex)
+    assert isinstance(rs_sig, bytes), "trust_sign MUST return bytes"
+    assert not inspect.iscoroutine(rs_sig)
+
+    # The signature verifies against the real kailash binding (hex round-trip).
+    assert verify_signature(record, rs_sig.decode("ascii"), pub_hex) is True
+    assert verify_signature("tampered", rs_sig.decode("ascii"), pub_hex) is False
+
+    # E2 byte-identity: rs and py forward to the SAME sign() → identical bytes.
+    py_sig = KailashPyRuntime().trust_sign(record, priv_hex)
+    assert rs_sig == py_sig, "rs trust_sign drifted from py trust_sign (E2 byte-identity)"
+
+
+def test_envelope_intersect_forwards_loud_on_shape_mismatch(
+    adapter: KailashRsBindingsRuntime,
+) -> None:
+    """`envelope_intersect` is GENUINELY wired (forwards to
+    `kailash.trust.pact.envelopes.intersect_envelopes`), so a wrong-shaped input
+    surfaces the kailash binding's loud error — NEVER a silent fallback — and the
+    rs adapter behaves IDENTICALLY to the kailash_py adapter at that boundary.
+
+    Per the rs adapter boundary discipline + `rules/zero-tolerance.md` Rule 3:
+    callers wire the kailash-shaped ConstraintEnvelopeConfig conversion; an
+    envoy-shaped dict that the binding does not accept raises loudly. This proves
+    the method is a real forward (not a stub) AND the rs/py boundary behavior is
+    the same class of loud failure — without depending on the exact kailash
+    ConstraintEnvelopeConfig constructor (which lives in the binding)."""
+    from envoy.runtime.adapters.kailash_py import KailashPyRuntime
+
+    # An envoy-shaped dict pair — NOT a kailash ConstraintEnvelopeConfig. The
+    # binding rejects it loudly (TypeError / AttributeError / ValueError class),
+    # never returning a silent empty/None intersection.
+    bad_a = {"schema": "envelope/1.0", "dims": {"data_access": "public"}}
+    bad_b = {"schema": "envelope/1.0", "dims": {"data_access": "internal"}}
+
+    with pytest.raises(Exception) as rs_exc:  # noqa: PT011 - binding error class varies
+        adapter.envelope_intersect(bad_a, bad_b)
+    # NOT a RuntimeNotReadyError: envelope_intersect is wired, so the error comes
+    # from the real binding's shape rejection, not the substrate-gated path.
+    assert not isinstance(rs_exc.value, RuntimeNotReadyError), (
+        "envelope_intersect is genuinely wired — a wrong shape MUST surface the "
+        "binding's loud error, not the substrate-not-ready error"
+    )
+
+    # The py adapter forwards to the SAME binding; it MUST raise the SAME error
+    # type on the SAME bad input (boundary-behavior parity, never a silent fork).
+    with pytest.raises(type(rs_exc.value)):
+        KailashPyRuntime().envelope_intersect(bad_a, bad_b)
