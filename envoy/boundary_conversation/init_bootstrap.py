@@ -140,20 +140,28 @@ async def build_init_runtime(
             principal_id=principal_id,
             genesis_store_key=genesis_session_key(principal_id),
         ) from exc
-    await vault.unlock(passphrase)
-
-    trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
-    await trust_store.initialize()
-
-    session_router = SessionRouter(
-        vault_path=vault_path,
-        principal_id=principal_id,
-        keyring_backend=keyring_backend,
-    )
-    await session_router.open()
-
+    # ENVOY-P2-R2-Q-01: vault.unlock + trust_store.initialize + session_router.open
+    # are acquired INSIDE the try so a failure in any of them runs the reverse-order
+    # cleanup below — most importantly vault.lock(), so a failed bootstrap never
+    # leaves the TrustVault unlocked with the live master key resident in memory.
+    # (vault.create stays above: on FileExistsError nothing is acquired yet, and a
+    # failed unlock leaves vault.is_unlocked False so the lock() guard is a no-op.)
+    trust_store: TrustStoreAdapter | None = None
+    session_router: SessionRouter | None = None
     durable: DurableLedger | None = None
     try:
+        await vault.unlock(passphrase)
+
+        trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
+        await trust_store.initialize()
+
+        session_router = SessionRouter(
+            vault_path=vault_path,
+            principal_id=principal_id,
+            keyring_backend=keyring_backend,
+        )
+        await session_router.open()
+
         key_manager = await load_or_create_ledger_key_manager(
             principal_id=principal_id,
             signing_key_id=LEDGER_SIGNING_KEY_ID,
@@ -210,10 +218,12 @@ async def build_init_runtime(
                 await durable.aclose()
         finally:
             try:
-                await session_router.close()
+                if session_router is not None:
+                    await session_router.close()
             finally:
                 try:
-                    await trust_store.close()
+                    if trust_store is not None:
+                        await trust_store.close()
                 finally:
                     if vault.is_unlocked:
                         await vault.lock()
