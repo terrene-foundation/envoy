@@ -15,9 +15,12 @@ the constant is read-only at import time. Phase 02 entry flips
 
 from __future__ import annotations
 
-# Phase 01: kailash_py is the sole production runtime. Setting True here
-# without filling kailash_rs_bindings adapter method bodies will surface
-# `Phase02SubstrateNotWiredError` from every Protocol method — by design.
+# kailash_py is the sole production runtime while this flag is False. The
+# kailash_rs_bindings adapter has 18/31 Protocol methods genuinely wired; the
+# remaining 13 are substrate-gated and raise a typed `RuntimeNotReadyError`
+# naming their gating shard (S5o/S6a/S6c) when invoked — so flipping this True
+# before those shards land surfaces a clear, shard-named not-ready error from
+# the gated methods (the 18 wired methods work), by design.
 RS_BINDINGS_ENABLED: bool = False
 
 __all__ = ["RS_BINDINGS_ENABLED"]
