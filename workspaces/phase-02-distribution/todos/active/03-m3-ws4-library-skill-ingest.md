@@ -32,6 +32,29 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 
 **Capacity check (per `rules/autonomous-execution.md` § Per-Session Capacity Budget):** load-bearing logic ≈ the quorum verifier + resolver verify path (~250-350 LOC); the Nexus handler set + `@db.model` is largely framework-stamped boilerplate (DataFlow/Nexus generate the surface). Invariants held: re-hash-before-trust, quorum-distinctness, revocation-vs-rotation distinctness, cache-re-verify, tier-publish-gate = 5. Live loop (deterministic crypto round-trip + Nexus integration harness). Within one shard. Describable in 3 sentences: "Build the 2-of-N steward verifier once; build the tier-aware Nexus registry; wire the FV resolver to fetch+re-hash+quorum-verify locally."
 
+**Status: ✅ COMPLETE** (2026-06-09, `journal/0010`, Wave 1).
+
+## Verification (S8)
+
+- EC-S8.1–S8.3 ✅ `tests/integration/test_registry_resolve_signature_threshold.py` + `test_envelope_library_tier_signatures.py` + `tests/regression/test_t020_envelope_template_supply_chain.py` (quorum threshold, revocation-vs-rotation, resolve round-trip + tamper). EC-S8.4 ✅ `test_envelope_library_offline_cache.py` (cache-hit re-verify + miss `LibraryUnreachableError`). EC-S8.5 ✅ Community-publish typed 503 (`test_envelope_library_tier_signatures.py::TestCommunityPublishGate`). EC-S8.6 ✅ content-hash byte-identical read-back. EC-S8.7 ✅ single-helper AST gate (`test_steward_quorum_single_helper.py`, exactly one `def verify_steward_quorum`).
+- **Spec deviation (F4, recorded per `rules/specs-authority.md` Rule 6):** the metadata store shipped as an **in-process dict** (`envoy/registry/storage.py`), NOT the DataFlow `@db.model` the Scope + the framework-first note above name. Bounded-by-design for the current non-network-exposed FV read path (journal/0010 § For Discussion item 2), but a registry restart loses all published FV templates. Owned follow-up: **S8-persist** below — the persistence swap MUST land before the registry is network-exposed.
+
+## S8-persist — Registry persistence swap: in-process dict → DataFlow `@db.model` (FOLLOW-UP, OWNED)
+
+**Type:** Wire
+
+**Value-anchor (per `rules/value-prioritization.md` MUST-2):** the FV Envelope Library registry (`envoy/registry/storage.py`) currently holds published-template metadata (`template_id@version → content_hash + tier + steward_signatures[] + published_at`) in an in-process dict — a Foundation registry restart drops every published FV template, breaking the "Foundation-Verified tier live" exit criterion (`ROADMAP.md:96`, source e — the user-approved Phase-02 spec exit criterion) the moment the registry is restarted or network-exposed. Swapping to a durable DataFlow `@db.model` makes published FV templates survive restart so an end user importing `foundation-verified:family-starter@v3` resolves reliably across the registry's lifecycle — the durability the "library v1 live" promise assumes.
+
+**Implements:** the DataFlow `@db.model` metadata table named in the S8 Scope + the framework-first header (delegate to dataflow-specialist — raw SQL is BLOCKED). On landing, the S8 Verification deviation note flips to "persisted via DataFlow `@db.model`" (first-instance update per `rules/specs-authority.md` Rule 5).
+
+**Depends:** S8 (the in-process store + the content-addressing pipeline it swaps under). MUST land before the registry is network-exposed (any WS-2 distribution / public registry surface).
+
+**Scope:** Replace the in-process dict in `envoy/registry/storage.py` with a DataFlow `@db.model` table keyed `template_id@version`, preserving the content-addressed `sha256(canonical_bytes(content))` lookup + the re-hash-before-trust + quorum-re-verify invariants (persistence is not a trust bypass; cache/store hits still re-verify against pinned keys). Index/lookup columns stay queryable; the steward-signature blob round-trips byte-identically.
+
+**Acceptance criteria:** a published FV template survives a fresh-process registry restart (read-back per `rules/testing.md` Tiers 2-3); content-hash lookup + quorum re-verify unchanged; the single-helper `verify_steward_quorum` gate stays green.
+
+**Capacity check:** invariants ≤5 (durable-keyed-store, content-addressed-lookup-preserved, re-hash-before-trust-retained, quorum-re-verify-retained, restart-survival); call-graph hops ≤3 (`library.publish → @db.model write → content-addressed read`); ~200 LOC (mostly framework-stamped DataFlow surface). Loop: base→live once dataflow-specialist wiring lands.
+
 ---
 
 ## S8e — EnterpriseDeploymentRecord schema + verifier + dual-sign gate
@@ -61,7 +84,7 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 ## Verification (S8e)
 
 - Plan reference re-checked: `02-plans/01-architecture.md` S8e row + `specs/enterprise-deployment.md` §19-49 — schema fields, closed scope enum, 6 steps, dual-sign all match line-by-line.
-- EC-S8e.1 ✅ `tests/integration/test_edr_verifier_six_steps.py` (13 tests: green path + each targeted single-step failure → mapped error). EC-S8e.2 ✅ `test_edr_dual_sign_required.py` (4 tests). EC-S8e.3 ✅ `tests/regression/test_t024_enterprise_delegation_upward.py` (`@pytest.mark.regression`, 2 tests). EC-S8e.4 ✅ single-verifier AST gate green (`test_steward_quorum_single_helper.py`; EDR verify routes through `verify_steward_quorum` 1-of-1 at `envoy/enterprise/verifier.py`). EC-S8e.5 ✅ `find tests -name 'test_edr_disablement*' -o -name 'test_enterprise_n5*'` empty.
+- EC-S8e.1 ✅ `tests/integration/test_edr_verifier_six_steps.py` (13 tests: green path + each targeted single-step failure → mapped error). EC-S8e.2 ✅ `test_edr_dual_sign_required.py` (4 tests). EC-S8e.3 ✅ `tests/regression/test_t024_enterprise_delegation_upward.py` (`@pytest.mark.regression`, 5 tests — count updated 2026-06-11 per F5; `TestT024SignatureTransplant` added the 3 transplant-refusal tests in the batch-2 E-1 security fix). EC-S8e.4 ✅ single-verifier AST gate green (`test_steward_quorum_single_helper.py`; EDR verify routes through `verify_steward_quorum` 1-of-1 at `envoy/enterprise/verifier.py`). EC-S8e.5 ✅ `find tests -name 'test_edr_disablement*' -o -name 'test_enterprise_n5*'` empty.
 - Wiring: signature math via kailash `InMemoryKeyManager.verify` (real crypto, Tier 2 no-mocking); `known_org_roots` + migration-algorithm set + clock injected (deterministic).
 - Spec deviation reconciled in same branch: step-2 wording now names `org_admin_signature_hex` + the resolved-org-root anchor (`specs/enterprise-deployment.md` § Verification).
 
@@ -73,7 +96,7 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 
 **Value-anchor:** `ROADMAP.md:108` (source e — Phase-02 exit criterion, user-approved) reads VERBATIM: "CO validator rejects 3 constructed adversarial skill samples (permission-escalation, exfiltration, privilege-overreach) and accepts 100 benign ones" — **this shard is accountable for 2 of the 3** (the AST-catchable permission-escalation + exfiltration samples that make literal undeclared-capability calls). Also `ROADMAP.md:98` ("**`SKILL.md` translator:** lint + CO-compliance validator + automated envelope generator"). Delivers the install-time gate that protects a user from an over-privileged or mis-declared skill.
 
-**Implements:** `specs/skill-ingest.md` SKILL.md parser (§13-15), ENVELOPE.md generator (§17-19), permission→PACT-dimension mapping (§21-33), CO validator steps 1, 2, 3 (declared=inferred, §41), 4 (over-privilege), 6 (publisher signature, §44), score thresholds ≥0.8/0.5-0.8/<0.5 (§46), install flow (§69), error taxonomy `COValidatorRefusedError`/`OverPrivilegeWarning`/`UnknownPermissionPatternError`/`SkillSourceHashMismatchError` (§78-85). Step-6 publisher-signature verify reuses the S8 Ed25519 verify primitive.
+**Implements:** `specs/skill-ingest.md` SKILL.md parser (§13-15), ENVELOPE.md generator (§17-19), permission→PACT-dimension mapping (§21-33), CO validator steps 1, 2, 3 (declared=inferred, §41), 4 (over-privilege), 6 (publisher signature, §44), score thresholds ≥0.8/0.5-0.8/<0.5 (§46), error taxonomy `COValidatorRefusedError`/`OverPrivilegeWarning`/`UnknownPermissionPatternError`/`SkillSourceHashMismatchError` (§78-85). Step-6 publisher-signature verify reuses the S8 Ed25519 verify primitive.
 
 **Depends:** S8 (shared Ed25519 verify for step-6 + the registry-resolve substrate for the permission→PACT-dimension registry lookup at step-2).
 
@@ -94,7 +117,8 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 
 ## Verification (S9a)
 
-- Plan reference re-checked: `specs/skill-ingest.md` §13-46, 69, 78-85 — parser, generator, mapping table, steps 1/2/3/4/6, thresholds, install-flow taxonomy all match.
+- Plan reference re-checked: `specs/skill-ingest.md` §13-46, 78-85 — parser, generator, mapping table, steps 1/2/3/4/6, thresholds, error taxonomy all match.
+- **Scope clarification (F7, 2026-06-11):** S9a shipped the **validator library** (parser + generator + CO-validator pipeline an install flow CALLS), NOT the user-facing install-flow ORCHESTRATION (`envoy skill install` end-to-end fetch→parse→generate→validate→Grant-Moment→sign→inventory, spec §69). The `envoy skill install` CLI verb is a separate, not-yet-shipped surface — value-anchored against `ROADMAP.md:98`/`specs/skill-ingest.md` §69 when a WS-4 CLI shard is scheduled. The S9a value-anchor's "install-time gate" refers to the validator logic, which is present; the install command that invokes it is not.
 - EC-S9a.1 ✅ permission-escalation + exfiltration samples → score 0.3 (<0.5) + `COValidatorRefusedError` (`test_co_validator_3_adversarial_corpus.py`). EC-S9a.2 ✅ literal `getattr`/`eval`/`importlib` dynamic-dispatch construct rejected DIRECTLY by the AST walk (no S9b dependency for AST-visible cases). EC-S9a.3 ✅ **100/100 benign accepted, zero `COValidatorRefusedError`** (75 clean ≥0.8, 25 warning band — `test_co_validator_100_benign_corpus.py`). EC-S9a.4 ✅ over-declaration → `OverPrivilegeWarning`, NOT a reject (`test_co_validator_six_steps.py`). EC-S9a.5 ✅ all 7 documented patterns map (+ `http-get` added, spec'd); unknown → `UnknownPermissionPatternError`; step-6 → `PublisherSignatureInvalidError` (incl. malformed-sig crypto exception mapped fail-closed); hash mismatch → `SkillSourceHashMismatchError`. EC-S9a.6 ✅ 103-fixture corpus at `tests/acceptance/phase_02/co_validator_corpus/`; step-5 emits typed `AdversarialCheckPending` (structural assert).
 - Wiring: step-2 via real `resolve_permission` registry surface (pinned table transcribed from spec, fail-closed on miss); step-6 reuses the S8 Ed25519 `key_manager.verify` primitive (no second verifier); static `ast.parse` only — validator never executes skill code; 131 tests green incl. `-W error` re-run.
 - Spec updates landed same branch: `http-get` mapping, oauth→operational axis placement, empty financial/temporal note, step-3 asymmetric-routing § (`specs/skill-ingest.md`).

@@ -24,15 +24,16 @@
 
 ---
 
-## S2a — rs-bindings adapter wiring behind the frozen interface (30 methods, 9 groups)
+## S2a — rs-bindings adapter wiring behind the frozen interface (31 methods, 9 groups)
 
+- **Status / Verification (2026-06-11, redteam Wave-2 gate — W2G-002):** SHIPPED as **18 of 31 methods genuinely wired**, **13 substrate-gated**. The 18 wired forward to a real backend: the kailash binding (`trust_sign`, `envelope_intersect`, `runtime_sign`/`runtime_verify`), the shared envoy primitive (`envelope_canonical_form`), the `ledger_*` (EnvoyLedger), and the `budget_*` (BudgetRuntimeAdapter). The 13 substrate-gated methods (`envelope_check`, `envelope_re_read_checkpoint`, `trust_verify_subset_proof`, `phase_a_sign_intent`, `phase_b_sign_outcome`, `phase_a_orphan_resolve`, `classifier_invoke`, `ensemble_aggregate`, `classifier_registry_resolve`, `prompt_assemble`, `tool_output_sanitize`, `first_time_action_gate`, `grant_moment_surface`) raise a typed `RuntimeNotReadyError` naming the gating engine shard (S5o / S6a / S6c), DI-gated pending those engines — NOT a phantom forward (the pre-gate code forwarded to a non-existent `self._trust_store.<name>` surface that produced an opaque `AttributeError` under DI). Verified: `tests/tier1/test_kailash_rs_bindings_shape_parity.py` (parametrized typed-raise over the 13 + trust_sign/envelope_intersect direct-call tests).
 - **Type:** Wire
 - **Value-anchor:** `briefs/00-phase-02-scope.md` §WS-1 "`kailash-rs-bindings` integration as **default** runtime"; this is the literal delivery of the Rust-accelerated default the user's ADR-0001 picker promises (`DECISIONS.md:47`).
 - **Implements:** `specs/runtime-abstraction.md` §Abstract interface (`:13-91`, all 9 method groups); fills the Phase-01 seam at `envoy/runtime/adapters/kailash_rs_bindings.py:46`.
 - **Depends:** S1 (needs the harness + tier metadata to gate each wired method).
 - **Scope:** Replace each `Phase02SubstrateNotWiredError` body in `KailashRsBindingsRuntime` with a forward to the Rust binding's equivalent, mirroring `KailashPyRuntime`'s boundary discipline (hex-string→`bytes` encoding at the boundary, `kailash_py.py:28-42`); hold the EXACT sync/async shape per method (`trust_cascade_revoke` is sync in the Protocol — `protocol.py`; the ledger methods are `async def`), so structural `isinstance` typing cannot mask an awaited non-coroutine; wire `runtime_sign`/`runtime_verify` to the platform device-key surface (Secure Enclave / TPM, the rs adapter owns attestation). Do NOT flip `RS_BINDINGS_ENABLED` here — wiring precedes flag-flip (that gates on S2b/S2c/S3a/S3b green).
 - **Acceptance criteria:**
-  - All 30 methods forward to the Rust core; zero `Phase02SubstrateNotWiredError` bodies remain (grep clean).
+  - The wireable surface (18/31) forwards to the binding/primitive/ledger/budget core; the 13 substrate-gated methods raise a typed `RuntimeNotReadyError` naming the gating shard (S5o/S6a/S6c), NOT a phantom forward; zero `Phase02SubstrateNotWiredError` bodies remain (grep clean). [Amended 2026-06-11 per W2G-002 — original "all 30 forward" was the pre-gate aspiration; see Status/Verification above.]
   - Each method's sync/async shape matches the Protocol declaration; a test awaits every `async def` method and calls every sync method directly (no shape mismatch).
   - `runtime_sign` returns `bytes` satisfying the `-> bytes` contract; the conformance harness (S2b/S3a) is what proves byte-equality with `kailash-py`.
   - "rs adapter satisfies `isinstance(adapter, KailashRuntime)`" is explicitly NOT treated as a completion signal (`zero-tolerance.md` Rule 3d; `01-ws1-runtime-pluggability.md:344-354`) — completion is gated on the byte-identical harness, not structural typing.
