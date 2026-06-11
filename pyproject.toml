@@ -148,6 +148,18 @@ filterwarnings = [
     # Scoped by message+category so it never masks an envoy-originated
     # ResourceWarning.
     "ignore:Unclosed AsyncLocalRuntime:ResourceWarning",
+    # Upstream kaizen LlmClient (`kaizen.llm.client.LlmClient`) socket-cleanup
+    # gap: the client opens an HTTP transport to the live LLM endpoint and
+    # exposes NO close()/aclose()/__aexit__ (verified — dir(LlmClient) has no
+    # lifecycle method), so its connection socket is reclaimed at GC time with an
+    # `unclosed <socket.socket ... raddr=('127.0.0.1', 11434)>` ResourceWarning
+    # from the real-infra Tier-2 model-router tests (Ollama on :11434). Unfixable
+    # from this application repo — the client gives no handle to close. Scoped to
+    # the Ollama port 11434 ONLY: it CANNOT mask an envoy-owned socket leak to any
+    # other endpoint, and if the Ollama port differs the warning surfaces loudly
+    # (fail-safe). Upstream-file candidate (human-gated per upstream-issue-hygiene.md;
+    # tracked in workspaces/phase-02-distribution journal).
+    'ignore:unclosed <socket\.socket.*11434:ResourceWarning',
 ]
 markers = [
     "regression: Permanent regression tests reproducing fixed bugs (rules/testing.md § Regression Testing); never deleted",

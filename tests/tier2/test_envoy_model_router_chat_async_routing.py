@@ -57,9 +57,17 @@ class TestLegacyProviderChatAsyncSurface:
         try:
             module = importlib.import_module(module_path)
         except ImportError as exc:
+            # Upstream kaizen packaging gap: some legacy provider modules
+            # (e.g. kaizen.providers.llm.deepseek) are absent from the installed
+            # kaizen build, so this chat-async routing path is untested in this
+            # environment. This is NOT a missing-API-key infra skip — it is an
+            # upstream packaging defect. Track before relying on the affected
+            # provider's routing; documented skip is acceptable per
+            # rules/zero-tolerance.md Rule 1 (upstream exception).
             pytest.skip(
                 f"legacy provider module {module_path} not installed "
-                f"(upstream kaizen build): {exc}"
+                f"(upstream kaizen packaging gap — track before relying on "
+                f"this provider's routing): {exc}"
             )
         provider_cls = getattr(module, class_name, None)
         if provider_cls is None:
