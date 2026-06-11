@@ -38,7 +38,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import warnings
+
 from envoy.foundation_ops.errors import (
+    CertPinMismatchError,
+    HSTSPreloadMissingWarning,
     KeyConfigExpiredError,
     OHTTPRelayDownError,
     SNIStrippingDetectedError,
@@ -71,6 +75,19 @@ class TlsEndpointPolicy:
     require_strict_sni: bool = True
     require_hsts: bool = True
     pinned_cert_fingerprint: str | None = None
+    # ``None`` does NOT mean "pinning disabled". The pinned-cert fingerprint for
+    # every Foundation-operated endpoint is shipped WITH the Envoy binary release
+    # (`specs/network-security.md:20-21` — "pinned certificates shipped with Envoy
+    # binary"; updates delivered via signed binary release, NOT live update). The
+    # canonical pin material is loaded from the WS-2 binary at startup and injected
+    # into the operative policy by the deployment layer; ``DEFAULT_TLS_POLICY``
+    # carries ``None`` because this module is the policy CONTRACT, not the binary
+    # that holds the pin bytes. When a fingerprint IS set (operative policy or a
+    # test), ``enforce_tls_policy`` refuses any non-matching cert with
+    # ``CertPinMismatchError``. The fail-closed property is therefore at the
+    # transport layer that injects the binary-shipped pin; a ``None`` here is the
+    # "no pin to compare against at THIS layer" sentinel, never a permissive
+    # opt-out of pinning.
 
 
 DEFAULT_TLS_POLICY = TlsEndpointPolicy()
@@ -101,11 +118,21 @@ def enforce_tls_policy(handshake: TlsHandshake, policy: TlsEndpointPolicy) -> bo
 
     Returns True when the handshake satisfies the policy. Raises the typed
     network-security error otherwise (fail-closed: any unmet condition refuses).
+    A satisfied-but-HSTS-missing handshake still returns True but emits the
+    advisory ``HSTSPreloadMissingWarning`` per the spec's advisory row.
 
     Raises:
         TLSVersionTooLowError: negotiated TLS < the policy minimum.
         SNIStrippingDetectedError: strict-SNI required but SNI absent or
             mismatched against the expected server name.
+        CertPinMismatchError: a pinned-cert fingerprint is configured AND the
+            presented cert fingerprint does not match it
+            (``specs/network-security.md:42`` — suspected Foundation MITM).
+
+    Warns:
+        HSTSPreloadMissingWarning: ``require_hsts`` is True but the handshake did
+            not offer HSTS (``specs/network-security.md:24,48`` — advisory, not a
+            hard refusal for non-Foundation endpoints).
     """
     if handshake.negotiated_tls_version < policy.min_tls_version:
         raise TLSVersionTooLowError(
@@ -127,8 +154,22 @@ def enforce_tls_policy(handshake: TlsHandshake, policy: TlsEndpointPolicy) -> bo
         policy.pinned_cert_fingerprint is not None
         and handshake.cert_fingerprint != policy.pinned_cert_fingerprint
     ):
-        raise SNIStrippingDetectedError(
-            "presented certificate fingerprint does not match the pinned cert"
+        raise CertPinMismatchError(
+            "presented certificate fingerprint does not match the binary-shipped "
+            "pinned cert (suspected Foundation MITM — verify via signed binary)"
+        )
+    # HSTS is mandated for all outbound HTTPS (`specs/network-security.md:24`).
+    # A handshake that satisfies TLS/SNI/pin but did not offer HSTS is an
+    # ADVISORY, not a hard refusal for non-Foundation endpoints
+    # (`specs/network-security.md:48` — `Retry: Manual`). Emit the spec-named
+    # warning so the operator can investigate without breaking the connection.
+    if policy.require_hsts and not handshake.hsts_offered:
+        warnings.warn(
+            "endpoint did not offer HSTS / is not in the preload list "
+            "(specs/network-security.md:24); strict SNI + HSTS is mandated for "
+            "outbound HTTPS — investigate intermediary downgrade",
+            HSTSPreloadMissingWarning,
+            stacklevel=2,
         )
     return True
 
