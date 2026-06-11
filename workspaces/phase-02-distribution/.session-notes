@@ -1,72 +1,76 @@
-# Session Notes — 2026-06-11
+# Session Notes — 2026-06-12
 
 ## Where we are
 
-**Wave-2 batch-2 (S8e + S9a + S4i) COMPLETE and MERGED** — PR #93 (`d0d5bf4`).
-Repo-wide ruff debt also swept — PR #94 (`395e4a9`); `ruff check .` is now a
-usable clean gate. main is green: 2040 passed / 9 skipped / 2 xfailed,
-mypy + pyright clean. Next: **Wave-2 batch-3** — M1 conformance families
-(S2b/S2c/S3a/S3b, unblocked by S2a ✅) + WS-6 serial chain start (S4g-1).
+**Wave-2 `/redteam` CONVERGED** (this session): 0 CRIT / 0 HIGH, 2 consecutive
+clean rounds; 24 findings fixed → **PR #96** (`test/redteam-phase02-wave2-gate`,
+25 commits, +1939/-333) — AWAITING HUMAN MERGE to protected main. `/codify` →
+journals 0016 (convergence DECISION) + 0017 (3 reusable patterns) on **this
+codify PR** (`codify/jack-hong-2026-06-12`). New deliverable: `ENVOY_KEYRING`
+headless keyring-backend override (fail-closed allowlist) — closes the live
+keychain foot-gun the user hit. Gate receipts: 2098 passed/9 skipped/2 xfailed,
+mypy+pyright+ruff clean, 0 WARN+.
+
+Prior: batch-2 (S8e+S9a+S4i) PR #93; ruff sweep PR #94; codify PR #95
+(journals 0014/0015). main green; venv kailash 2.29.3 / Python 3.13.
+
+**Next (in order):** (1) merge PR #96 + this codify PR; (2) Wave-2 batch-3 —
+M1 conformance families S2b/S2c/S3a/S3b + the WS-6 serial chain
+(S4g-1→S5b→S5o→S6*→S6c). When implementing `chat`/`grant` (WS-6 CLI verbs),
+thread the `resolve_keyring_backend` seam per journal/0017 Pattern 1 (make it a
+batch-3 acceptance criterion so the keychain foot-gun is closed at implement
+time, not re-found at redteam).
 
 ## Read first
 
-1. `journal/0014` — batch-2 DECISION (what landed, the two security fixes
-   E-1 transplant + future-dated enabled_at, gate receipts). Start here.
-2. `journal/0015` — kailash 2.29.3 × Python 3.14.3 incompatibility +
-   `.python-version`/`UV_PYTHON` fixes + the P10 upstream recommendation.
-3. `todos/active/_index.md` — status line current through batch-2; batch-3
-   shards next.
-4. `specs/session-runtime.md` § Genesis write — the genesis-key convention
-   S4g-1/S5o consume.
+1. `workspaces/phase-02-distribution/journal/0014` — batch-2 receipt: what
+   landed, the two in-PR security fixes, the interrupted-wave lesson.
+2. `workspaces/phase-02-distribution/journal/0015` — kailash × Python-3.14
+   breakage, the `.python-version`/`UV_PYTHON` traps, P10 upstream rec.
+3. `workspaces/phase-02-distribution/todos/active/_index.md` — status line
+   current through batch-2; batch-3 = S2b/S2c/S3a/S3b + S4g-1.
+4. `specs/session-runtime.md` § Genesis write — key convention S4g-1/S5o consume.
+5. `workspaces/phase-02-distribution/todos/active/02-m2-ws6-durable-substrate.md`
+   § SAME-CLASS SERIALIZATION — read BEFORE launching any WS-6 shard.
 
 ## In-flight state
 
-- Nothing of substance uncommitted. This `.session-notes` update + journal
-  0014/0015 land via the codify PR (this branch).
-- WS-6 batch-3 REMINDER: S4g-1 → S5b → S5o → S6a/b → S6c are SAME-class
-  serialized (shared `runtime.py`/store touch) — one shard per session-slice,
-  merge-before-next. Do NOT worktree-parallelize within WS-6. S2b/c/S3a/b
-  (M1) are parallelizable with each other and with the WS-6 serial head.
+- This `.session-notes` rewrite is the only uncommitted change (main is
+  protected; next session's codify/wrapup PR carries it).
 
 ## Outstanding ledger (forest)
 
-| ID  | Item                                                                        | Value-anchor (MUST-1 source)                                        | Status                          |
-| --- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------- |
-| P1  | WS-2 distribution RELEASE (binary/brew/winget)                              | `ROADMAP.md:74`; brief §WS-2                                        | BLOCKED — external legal gates  |
-| P2  | ADR-0009 runtime-pluggability board endorsement                             | brief § external-gate blocker                                       | BLOCKED — board/human gate      |
-| P3  | Flagged `/todos` design decisions (N4 scoring, SPAKE2-vs-Noise, ADR-0006)   | `todos/active/_index.md` open Qs                                    | queued (SPAKE2-vs-Noise due before S13) |
-| P4  | S8 registry persistence: in-proc dict → DataFlow `@db.model`                | `journal/0010` reviewer MED                                         | DEFERRED-by-design              |
-| P5  | WhatsApp channel PUBLIC launch                                              | brief §WS-3 / `ROADMAP.md:94`                                       | BLOCKED — business pricing gate |
-| P7  | S10 security deferrals M2/L1/L2 → S11 (EC-S11.8/9/10)                       | `journal/0011`; `threat-model.md:52`                                | queued — land with S11          |
-| P9  | `sqlite_perms` WAL/SHM transient-perms window on the 3 TrustStoreAdapter sibling stores | `journal/0012` redteam LOW; `trust-plane-security.md` MUST-6 (0o600) | queued — trust-store hardening  |
-| P10 | Upstream kailash-py issue: Python 3.14 `__annotate_func__` breaks Signature | `journal/0015`; zero-tolerance Rule 1 (real SDK defect)             | AWAITING USER APPROVAL to file  |
-| P11 | EDR write-once genesis TOCTOU → transactional CAS at store layer            | PR #93 security I-1 (LOW); bounded today by `TrustVault.create`     | queued — with multi-device work |
+| ID  | Item                                                        | Value-anchor (MUST-1 source)                          | Status                         |
+| --- | ----------------------------------------------------------- | ------------------------------------------------------ | ------------------------------ |
+| P1  | WS-2 distribution RELEASE (binary/brew/winget)               | `ROADMAP.md:74`; brief §WS-2                           | BLOCKED — external legal gates |
+| P2  | ADR-0009 runtime-pluggability board endorsement              | brief § external-gate blocker                          | BLOCKED — board/human gate     |
+| P3  | Flagged `/todos` design Qs (N4 scoring, SPAKE2-vs-Noise, ADR-0006) | `todos/active/_index.md` open Qs                 | queued — SPAKE2 due before S13 |
+| P4  | S8 registry persistence → DataFlow `@db.model`               | `journal/0010` reviewer MED                            | DEFERRED-by-design             |
+| P5  | WhatsApp channel PUBLIC launch                               | brief §WS-3 / `ROADMAP.md:94`                          | BLOCKED — business pricing     |
+| P7  | S10 security deferrals M2/L1/L2 → S11 (EC-S11.8/9/10)        | `journal/0011`; `threat-model.md:52`                   | queued — land with S11         |
+| P9  | `sqlite_perms` WAL/SHM window on 3 TrustStoreAdapter stores  | `journal/0012` redteam LOW; `trust-plane-security.md`  | queued — trust-store hardening |
+| P10 | Upstream kailash-py issue: Python-3.14 `__annotate_func__`   | `journal/0015`; zero-tolerance Rule 1 (real SDK defect)| AWAITING USER APPROVAL to file |
+| P11 | Genesis write-once TOCTOU → transactional CAS at store layer | PR #93 security I-1; bounded by `TrustVault.create`    | queued — with multi-device     |
 
-Closed this session: Wave-2 batch-2 (S8e/S9a/S4i → PR #93) + repo ruff debt
-(PR #94) + E-1/MED security findings (fixed in-PR, not deferred).
+Closed this session: batch-2 shards + lint debt → receipts PR #93, PR #94,
+`journal/0014`; codify wrapup → PR #95.
 
 ## Traps
 
-- Tests: `uv run pytest` ONLY. **Python 3.14 breaks kailash 2.29.3**
-  (`journal/0015`) — `.python-version` pins 3.13; do not remove. Bare
-  `uv run` RE-SYNCS the venv to `.python-version` and DROPS extras —
-  CI uses `UV_PYTHON`; scripts needing another interpreter must pass it
-  explicitly.
-- `main` ruleset EMPTY bypass — even `--admin` can't merge over red CI.
-- `journal/` is append-only + codify-branch-only (integrity-guard) —
-  entries land via `codify/<id>-<date>` branches only.
-- Background-agent completions can drag the orchestrator shell's cwd into
-  agent worktrees — verify `pwd` before branch ops in the main checkout.
-- Resumed worktree agents may run in the MAIN checkout (their worktree gets
-  pruned) and leave it on their shard branch — check `git worktree list` +
-  HEAD after any agent resume.
-- envoy = APPLICATION repo (no `/release`; `main`+`/deploy`).
+- Tests: `uv run pytest` ONLY. Python 3.14 breaks kailash (`journal/0015`);
+  `.python-version` pins 3.13 — do not remove. Bare `uv run` RE-SYNCS the
+  venv to the pin and DROPS extras; CI uses `UV_PYTHON`.
+- WS-6 shards are SAME-class serialized — never worktree-parallelize within
+  WS-6 (M1 conformance shards ARE parallelizable alongside the serial head).
+- `journal/` = append-only + codify-branch-only; `main` ruleset bypass is
+  EMPTY — even `--admin` can't merge over red CI.
+- Shell cwd drifts into agent worktrees after background-agent completions;
+  resumed worktree agents may run in the MAIN checkout — check `pwd` +
+  `git worktree list` before branch ops.
 
 ## Open questions for the human
 
-- **P10**: approve filing the kailash-py upstream issue (Python 3.14
-  `__annotate_func__` defect)? Draft body per `upstream-issue-hygiene.md`
-  Rule 3 is ready to assemble from `journal/0015`.
-- Batch-3 sequencing default (per approved index): M1 conformance families
-  in parallel + S4g-1 as the WS-6 serial head. Override only if value-rank
-  changed.
+- P10: approve the upstream kailash-py filing? Body assembles from
+  `journal/0015` per `upstream-issue-hygiene.md` Rule 3.
+- Batch-3 default (approved index order): M1 families parallel + S4g-1
+  serial head — override only if value-rank changed.
