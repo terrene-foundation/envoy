@@ -48,7 +48,7 @@ Checks at install:
 
 Score thresholds: ≥0.8 pass; 0.5–0.8 pass with warnings; <0.5 fail (requires `force_install=True`).
 
-Step 3 (Phase-02 automated, `envoy/skill_ingest/inference.py` + `comparison.py`) uses a CONSERVATIVE Python `ast` static walk (literal-call-only; never executes skill code) plus an import-graph second opinion that can only WARN, never auto-reject. The asymmetric routing: an AST-proven literal call to an undeclared capability (including literal `getattr`/`eval`/`importlib` dynamic-dispatch constructs) scores <0.5 → reject; an import-graph-only extra scores in the 0.5–0.8 warning band; declared ⊃ inferred (over-declaration) routes to step 4's `OverPrivilegeWarning`, not a reject. Unparseable skill code fails closed (`SkillCodeUnparseableError`). Step 5 is shipped as a typed pending surface (`AdversarialCheckPending`) until the classifier-ensemble substrate lands (S9b).
+Step 3 (Phase-02 automated, `envoy/skill_ingest/inference.py` + `comparison.py`) uses a CONSERVATIVE Python `ast` static walk (literal-call-only; never executes skill code) plus an import-graph second opinion that can only WARN, never auto-reject. The asymmetric routing: an AST-proven literal call to an undeclared capability (including literal `getattr`/`eval`/`importlib` dynamic-dispatch constructs) scores <0.5 → reject; an import-graph-only extra scores in the 0.5–0.8 warning band; declared ⊃ inferred (over-declaration) routes to step 4's `OverPrivilegeWarning`, not a reject. Unparseable skill code fails closed (`SkillCodeUnparseableError`). Step 5 is shipped as a typed pending surface (`AdversarialCheckPending`); the active classifier-ensemble adversarial check is out of scope for this step's current surface.
 
 ## `force_install=True` (doc 00 v3 §4.1 item 16)
 
@@ -104,9 +104,9 @@ All errors persisted to Ledger with `record_id` redacted via `format_record_id_f
 
 - `tests/integration/test_skill_md_parser_canonical_format.py` — round-trip parser against external ecosystem's canonical SKILL.md format (Tier 2).
 - `tests/integration/test_envelope_md_generator_field_complete.py` — every field in `{skill_id, skill_source_hash, publisher, requested_permissions, co_validator_result}` populated.
-- `tests/integration/test_permission_to_pact_dimension_mapping.py` — every documented mapping entry round-trips (bash, file-read, file-write, http-post, mcp, oauth, exec).
+- `tests/integration/test_co_validator_six_steps.py` (`TestStep2UnknownPattern` + happy path) — documented mapping entries (bash, file-read, file-write, http-post, mcp, oauth) resolve; an unknown category raises.
 - `tests/integration/test_co_validator_six_steps.py` — every CO validator step exercised on a known-good skill (Tier 2).
-- `tests/integration/test_co_validator_score_thresholds.py` — ≥0.8 pass, 0.5–0.8 warning, <0.5 refuse.
+- `tests/integration/test_co_validator_100_benign_corpus.py` + `tests/integration/test_co_validator_3_adversarial_corpus.py` — score-band split: ≥0.8 pass (benign), <0.5 refuse (adversarial), 0.5–0.8 warning (the re-derived 25 of the 100 benign).
 - `tests/integration/test_force_install_visible_flags.py` — `force_install=True` writes Ledger flag, envelope flag, inventory marker; surfaces in Monthly Trust Report.
 - `tests/integration/test_skill_sandbox_cpu_memory_limits.py` — Phase 01–03 Python subprocess limits enforced (Tier 2).
 - `tests/integration/test_envelope_library_tier_signatures.py` — Foundation-Verified 2-of-N + Community Ed25519 publisher signatures.
@@ -114,7 +114,7 @@ All errors persisted to Ledger with `record_id` redacted via `format_record_id_f
 - `tests/integration/test_co_validator_100_benign_corpus.py` — 100-benign skill corpus passes CO validator (specs/acceptance-metrics.md).
 - `tests/integration/test_co_validator_3_adversarial_corpus.py` — 3-adversarial skill corpus refused (specs/acceptance-metrics.md).
 - `tests/regression/test_t020_malicious_skill_author.py` — T-020 adversarial-pattern detection.
-- `tests/regression/test_t021_envelope_publisher_compromise.py` — T-021 publisher signature verification.
+- `tests/integration/test_co_validator_six_steps.py` (`TestStep6PublisherSignature`) — T-021 publisher signature verification (bad signature + unpinned publisher both raise).
 - `tests/regression/test_t022_sybil_publisher.py` — T-022 identity-proof tier + adoption-rate cap.
 - `tests/regression/test_t090_sandbox_dos.py` — T-090 sandbox CPU/memory/wall-clock limits.
 - `tests/regression/test_t092_spam_flood.py` — T-092 publish rate-limit + reviewer priority.

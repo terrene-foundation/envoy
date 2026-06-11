@@ -197,7 +197,7 @@ The verifier's CI MUST verify that no commit shares producer source. Three mecha
 
 ### Cross-runtime conformance vector reuse
 
-The conformance contract in `workspaces/phase-00-alignment/02-plans/conformance/01-runtime-swap-contract.md` § 4.2 row E7 (Ledger head-commitment monotonicity, ≥10 byte-identical conformance vectors) defines the cross-runtime spec method. The verifier's mutation-battery test fixtures `tests/fixtures/conformance/e7/` SHOULD include the E7 conformance vectors verbatim (Phase 02: git submodule pin or versioned-fixture-package dep TBD). When the cross-runtime gate ships in Phase 02, the same vectors that prove `kailash-py` == `kailash-rs-bindings` ALSO prove `envoy-producer` == `envoy-verifier`. This is the same byte-identity invariant tested through two different lenses.
+The conformance contract in `workspaces/phase-00-alignment/02-plans/conformance/01-runtime-swap-contract.md` § 4.2 row E7 (Ledger head-commitment monotonicity, ≥10 byte-identical conformance vectors) defines the cross-runtime spec method. The verifier's mutation-battery test fixtures `tests/fixtures/conformance/e7/` include the E7 conformance vectors verbatim. The same vectors that prove `kailash-py` == `kailash-rs-bindings` ALSO prove `envoy-producer` == `envoy-verifier` — the same byte-identity invariant tested through two different lenses.
 
 ## Error taxonomy
 
@@ -272,6 +272,6 @@ The cross-OS test catches Unicode normalization drift (NFC behaves differently o
 1. **Foundation key registry (Phase 02+).** Phase 02 may extend trust-anchor resolution with a Foundation-published registry at `terrene.foundation/registry/<principal_id>.json`. The verifier accepts `--trust-anchor https://terrene.foundation/registry/...` and validates the registry's response is signed by a known Foundation steward key. Phase 01 ships option C (file-based) only.
 2. **Signed CA cert in bundle (Phase 04+).** Out of scope for Phase 01 because the Foundation does not issue certificates as a Phase 01 deliverable; this is Phase 04+ infrastructure.
 3. **Rust variant Phase 01 vs Phase 02 disposition.** `specs/ledger.md` line 643 names Python as the community default; Rust as Phase 04. Phase 01 ships Python REQUIRED; Rust OPTIONAL but RECOMMENDED for the strongest cross-language source-isolation proof. Phase 02 makes Rust MANDATORY.
-4. **E7 conformance vector versioning.** TBD — git submodule pin OR versioned-fixture-package dep. Phase 02 entry decides; Phase 01 commits the vectors verbatim.
+4. **E7 conformance vector versioning.** The vectors are committed verbatim into the fixture tree. The cross-repo reuse mechanism for the separately-codebased verifier (submodule pin vs versioned-fixture-package dependency) is a packaging decision tracked in the verifier-track workspace plan (S7v), not pinned in this spec.
 5. **Cross-channel bundle delivery (Phase 02+).** A natural extension: channel adapters support `envoy ledger export-via-channel slack`. Phase 01 uses out-of-band file transfer only; Phase 02 may extend.
 6. **PDF export receipt_hash parser library.** Phase 01 picks one (`pypdf` recommended); the test exercises a non-Envoy library to preserve source-isolation.
