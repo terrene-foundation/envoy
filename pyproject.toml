@@ -135,16 +135,18 @@ filterwarnings = [
     #
     # Upstream kailash SDK resource leak: `nexus.Nexus.close()` does not cascade
     # to close the internal `AsyncLocalRuntime` it constructs, so a GC-time
-    # ResourceWarning surfaces for every test that builds a Nexus app (the S8
-    # Envelope Library FV registry tests and the S10 OHTTP server tests). envoy
-    # IS closing every Nexus app it owns (the `build_nexus` test fixtures call
-    # `app.close()`); the residual leak is inside kailash and unfixable from this
-    # application repo. STILL PRESENT on kailash 2.29.3 — verified during the
-    # 2026-06-10 upgrade (1 occurrence surfaced on the S8 `build_library_nexus`
-    # path with `-o filterwarnings=default`). Scoped by message+category so it
-    # never masks an envoy-originated ResourceWarning. Upstream-file candidate
-    # (human-gated per upstream-issue-hygiene.md) — tracked in
-    # workspaces/phase-02-distribution journal.
+    # `Unclosed AsyncLocalRuntime` ResourceWarning surfaces even when envoy
+    # correctly calls `app.close()`. This filter scopes to THAT cascade only —
+    # the residual is inside kailash's `Nexus.close()` and is unfixable from this
+    # application repo (upstream-file candidate, human-gated per
+    # upstream-issue-hygiene.md — tracked in workspaces/phase-02-distribution
+    # journal). It does NOT cover the distinct `Unclosed Nexus` warning: THAT one
+    # was an envoy-owned leak (test apps built via `build_library_nexus` /
+    # `build_ohttp_nexus` without a matching `app.close()`), now fixed by closing
+    # every Nexus app the tests own (fixture yield+close or try/finally) per
+    # rules/zero-tolerance.md Rule 1 — so no `Unclosed Nexus` ignore is carried.
+    # Scoped by message+category so it never masks an envoy-originated
+    # ResourceWarning.
     "ignore:Unclosed AsyncLocalRuntime:ResourceWarning",
 ]
 markers = [
