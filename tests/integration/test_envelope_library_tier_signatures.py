@@ -79,7 +79,12 @@ def handlers(store: ContentAddressedStore) -> LibraryRegistryHandlers:
 def nexus_app(handlers: LibraryRegistryHandlers):
     # Real Nexus app; high port numbers, never started (we drive the registered
     # handler in-process, which IS the real registry transport).
-    return build_library_nexus(handlers, api_port=18931, mcp_port=18932)
+    app = build_library_nexus(handlers, api_port=18931, mcp_port=18932)
+    yield app
+    # Close so the internal AsyncLocalRuntime is released — otherwise a GC-time
+    # "Unclosed Nexus" ResourceWarning surfaces under -W default (envoy-owned
+    # leak; T-01). Fixtures yield + cleanup, never bare-return (rules/testing.md).
+    app.close()
 
 
 class TestFvReadPath:
