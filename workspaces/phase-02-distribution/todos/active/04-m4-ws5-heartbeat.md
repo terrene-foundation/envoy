@@ -37,6 +37,13 @@ Spec context per `rules/specs-authority.md` MUST Rule 7. Primary specs read for 
 
 **Capacity check (per `rules/autonomous-execution.md` § Per-Session Capacity Budget):** load-bearing logic ≈ the HPKE key-config signing/publish path + the relay IP-strip forwarding logic (~250-350 LOC); the Nexus handler set + key-registry `@db.model` is framework-stamped boilerplate. Invariants held: 2-of-N steward-signed config, relay-strips-IP, aggregator-never-sees-IP / relay-never-sees-body (non-collusion split), TLS-1.3+pinned-cert+strict-SNI, fixed HPKE ciphersuite, Tor-opt-in-default-off = ~6, within the 5-10 band. Live loop (deterministic OHTTP round-trip + Nexus integration harness). One shard. Three sentences: "Stand up the Foundation OHTTP Key Config Server publishing a 2-of-N-signed HPKE key config; stand up the IP-stripping Relay forwarding to the STAR aggregator; harden every endpoint with TLS 1.3 + pinned certs + strict SNI. No client crypto — that's S11."
 
+**Status: ✅ COMPLETE** (2026-06-09, `journal/0011`, Wave-2 batch-1, PR #88).
+
+## Verification (S10)
+
+- EC-S10.1 ✅ `tests/integration/test_ohttp_key_config_steward_signed.py` (2-of-N steward-signed config; 1-sig rejected). EC-S10.2 ✅ `tests/integration/test_ohttp_relay_ip_stripped.py` (relay strips IP both axes — aggregator never sees IP, relay never sees plaintext). EC-S10.3 ✅ `tests/integration/test_ohttp_relay_down_typed.py` (`OHTTPRelayUnavailableError` vs `OHTTPRelayDownError` mutual-non-subclass distinctness). EC-S10.4 ✅ `tests/integration/test_strict_sni_enforcement.py` (TLS<1.3 + SNI-stripped refused) + **HSTS enforcement + `CertPinMismatchError` landed 2026-06-11 per F1/F2** (`tests/integration/test_tls_hsts_enforcement.py`, `test_cert_pin_mismatch.py`). EC-S10.5 ✅ `tests/integration/test_ohttp_key_registry_live_fetch.py` (live signature-valid non-expired key config). EC-S10.6 ✅ `tests/integration/test_tor_route_optional_phase02.py` (Tor opt-in, default OFF).
+- **Queued deferrals (P7, bounded — land with S11 as EC-S11.8/9/10):** HPKE `info` binding (M2), key-id selection (L1), expiry ISO-compare (L2 — the lexicographic-compare half was closed 2026-06-11 per SEC-LOW-1; the remaining S11 work is the client-side expiry contract). Carried in this file's S11 acceptance criteria.
+
 ---
 
 ## S11 — STAR client crypto + k-anonymity + client-side DP (total-ε-over-window)

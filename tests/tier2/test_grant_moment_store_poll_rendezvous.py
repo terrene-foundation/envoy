@@ -390,6 +390,94 @@ class TestTimeoutAuditRowByteIdentity:
 
 
 @pytest.mark.asyncio
+class TestTimeoutDurableExpiry:
+    """ENVOY-P2-W2G-004: a poll-timeout MUST durably flip the pending row to
+    ``state='expired'`` before raising. The Phase-01 path drove only the
+    in-memory state machine + raised, leaving the durable row ``state='pending'``
+    forever — so count_pending_grants over-counted dead grants AND a late
+    answerer could still flip the row to ``resolved``. These tests pin the spec
+    claim (session-runtime.md:123-124 / session.py:107-108 — "expired is the
+    timeout terminal driven by S4r's M2→M3 transition") as TRUE.
+    """
+
+    async def test_timeout_writes_expired_terminal_to_durable_row(
+        self, vault_path: Path, backend: _MemBackend, router_a: SessionRouter
+    ) -> None:
+        """After a grant times out, the durable pending-grant row is
+        ``state='expired'`` — read back by a SEPARATE router (fresh-process
+        model), proving the write landed durably, not just in memory."""
+        runtime, *_ = await make_runtime(session_router=router_a, default_timeout_seconds=1)
+        request = await runtime.issue_grant_moment(**make_issue_kwargs())
+        assert runtime.current_state(request.request_id) == GrantMomentState.M2_AWAIT
+
+        with pytest.raises(GrantMomentExpiredError):
+            await runtime.await_decision(request.request_id, timeout_seconds=0)
+
+        # Read the durable row back via a DISTINCT router over the same vault.
+        router_b = await _open_router(vault_path, backend)
+        try:
+            row = await router_b.get_pending_grant(request.request_id)
+        finally:
+            await router_b.close()
+        assert row is not None, "the pending row must persist (terminal), not vanish"
+        assert row.state == "expired", (
+            f"timeout must flip the durable row to 'expired', not leave it "
+            f"{row.state!r} (the over-count + late-resolve bug)"
+        )
+
+    async def test_count_pending_grants_excludes_timed_out_grant(
+        self, router_a: SessionRouter
+    ) -> None:
+        """count_pending_grants() does NOT count a timed-out grant — it counts
+        only ``state='pending'`` rows, and the timeout flipped the row to
+        ``expired``."""
+        runtime, *_ = await make_runtime(session_router=router_a, default_timeout_seconds=1)
+        request = await runtime.issue_grant_moment(**make_issue_kwargs())
+        # While pending, the count is 1.
+        assert await router_a.count_pending_grants() == 1
+
+        with pytest.raises(GrantMomentExpiredError):
+            await runtime.await_decision(request.request_id, timeout_seconds=0)
+
+        # After timeout the dead grant is NOT counted (it is 'expired').
+        assert await router_a.count_pending_grants() == 0, (
+            "count_pending_grants must NOT over-count a timed-out (expired) grant"
+        )
+
+    async def test_late_resolution_after_timeout_is_refused_not_flipped(
+        self, vault_path: Path, backend: _MemBackend, router_a: SessionRouter
+    ) -> None:
+        """A late answerer who calls resolve_pending_grant on a timed-out
+        request_id is REFUSED (KeyError — the UPDATE is gated on state='pending'),
+        NOT silently flipped from 'expired' to 'resolved'. The terminal state is
+        immutable once the timeout landed."""
+        runtime, *_ = await make_runtime(session_router=router_a, default_timeout_seconds=1)
+        request = await runtime.issue_grant_moment(**make_issue_kwargs())
+
+        with pytest.raises(GrantMomentExpiredError):
+            await runtime.await_decision(request.request_id, timeout_seconds=0)
+
+        # A late answer (process B) attempts to resolve the already-expired row.
+        router_b = await _open_router(vault_path, backend)
+        try:
+            with pytest.raises(KeyError):
+                await router_b.resolve_pending_grant(
+                    request_id=request.request_id,
+                    resolution_json=resolution_to_json(
+                        ApproveResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+                    ),
+                    state="resolved",
+                )
+            # The row is STILL 'expired' — the late resolve did not flip it.
+            row = await router_b.get_pending_grant(request.request_id)
+            assert row is not None and row.state == "expired", (
+                "a late resolve MUST NOT flip an expired grant to resolved"
+            )
+        finally:
+            await router_b.close()
+
+
+@pytest.mark.asyncio
 class TestResolutionCodec:
     async def test_codec_round_trips_all_three_shapes(self) -> None:
         """resolution_to_json / resolution_from_json round-trip every concrete

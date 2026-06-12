@@ -80,13 +80,13 @@ This spec's primitives are consumed by:
 
 ## Test location
 
-- `tests/integration/test_envelope_library_publisher_sign_verify.py` — publisher Ed25519 sign/verify round-trip.
+- `tests/integration/test_envelope_library_tier_signatures.py` (`TestFvReadPath::test_publish_then_resolve_round_trips_with_quorum`) — Foundation-Verified 2-of-N steward Ed25519 sign/verify round-trip.
 - `tests/integration/test_envelope_library_fork_graph.py` — parent_template_hash binding.
 - `tests/regression/test_t020_envelope_template_supply_chain.py` — T-020 publisher signature defense.
 - `tests/regression/test_t021_publisher_impersonation.py` — T-021 web-of-trust attestation depth ≥ 3.
 - `tests/regression/test_t022_envelope_library_sybil.py` — T-022 Sybil defense; rate-limit + classifier-ensemble.
 - `tests/regression/test_t024_publisher_side_enterprise_delegation.py` — T-024 publisher-side mitigation.
-- `tests/regression/test_t051_foundation_infra_compromise_library.py` — T-051 N-of-M steward signing failure modes.
+- `tests/integration/test_registry_resolve_signature_threshold.py` — T-051 N-of-M steward signing failure modes (threshold-not-met, duplicate-sig-no-inflate, unpinned-ignored, tampered-sig, zero-threshold-input-error).
 - `tests/regression/test_t092_library_spam.py` — T-092 rate-limit enforcement.
 - `tests/integration/test_publisher_reputation_record.py` — reputation_score updates on abuse_flag resolution.
 

@@ -42,6 +42,8 @@ __all__ = [
     "OHTTPRelayUnavailableError",
     "TLSVersionTooLowError",
     "SNIStrippingDetectedError",
+    "CertPinMismatchError",
+    "HSTSPreloadMissingWarning",
     "TorRouteUnavailableError",
     "KeyConfigSignatureError",
     "KeyConfigExpiredError",
@@ -83,6 +85,20 @@ class SNIStrippingDetectedError(FoundationOpsError):
     """
 
 
+class CertPinMismatchError(FoundationOpsError):
+    """TLS handshake to a Foundation-operated endpoint returned a cert NOT in the
+    pinned-keys allowlist.
+
+    ``specs/network-security.md:18-22,42``. The pinned certificate for every
+    Foundation-operated endpoint (Envelope Library, OHTTP relay, sync node,
+    migration-allowlist registry) ships WITH the Envoy binary release; a
+    presented cert whose fingerprint is not the pinned one is a suspected
+    Foundation MITM. User action: refuse connection; surface the "Foundation
+    MITM suspected" banner; the user verifies via the signed binary. Never
+    auto-retry (T-080 network-MITM defense).
+    """
+
+
 class TorRouteUnavailableError(FoundationOpsError):
     """Phase 02+ Tor route explicitly requested but the Tor daemon is unreachable.
 
@@ -108,4 +124,15 @@ class KeyConfigExpiredError(FoundationOpsError):
     The published key registry carries expiry/rotation metadata; a config the
     client fetches AFTER its expiry MUST be refused so S11's client never
     encapsulates under a rotated-out key.
+    """
+
+
+class HSTSPreloadMissingWarning(UserWarning):
+    """Advisory: an outbound HTTPS endpoint did not offer HSTS / is not preloaded.
+
+    ``specs/network-security.md:24,48``. Strict SNI + HSTS is mandated for all
+    outbound HTTPS; a handshake that completes without an HSTS commitment is a
+    UX advisory (NOT a hard block for non-Foundation endpoints), surfaced so the
+    operator can investigate. A ``Warning`` rather than a ``FoundationOpsError``
+    because the spec's error-taxonomy row marks it advisory, ``Retry: Manual``.
     """

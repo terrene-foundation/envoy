@@ -135,7 +135,7 @@ All errors persisted to Ledger as `system_error` with `record_id` redacted via `
 - `tests/integration/test_envelope_library_publish_rate_limit.py` — per-publisher publish quota.
 - `tests/integration/test_moderator_queue_priority.py` — queue priority by publisher identity-proof tier.
 - `tests/integration/test_sync_node_99_5_uptime.py` — local-only fallback on sync-node unreachability (Tier 2).
-- `tests/integration/test_ohttp_relay_strips_source_ip.py` — relay strips source IPs end-to-end (Tier 2 against test relay).
+- `tests/integration/test_ohttp_relay_ip_stripped.py` — relay strips source IPs end-to-end; the aggregator only ever receives the opaque encapsulated payload (Tier 2 against test relay).
 - `tests/integration/test_foundation_allowlist_override_90d_expiry.py` — override expires; user re-signs to renew.
 - `tests/integration/test_reproducible_build_verification_stream.py` — third-party verification matches runtime binary_hash.
 - `tests/regression/test_t050a_binary_mirror_compromise.py` — T-050a mirror-side tamper detected at hash compare.

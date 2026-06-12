@@ -215,8 +215,11 @@ class KailashRuntime(Protocol):
         """Semantically-equivalent; 2+ classifiers per ensemble mandatory. The
         classifier verdict is an LLM-class output — equivalent but not byte-
         equal across runtimes, scored by an LLM-judge probe (Phase-03). This is
-        the method N3's semantic slice expects to dispatch (observed via
-        `envoy.runtime.dispatch_observation.record_dispatch`)."""
+        the method N3's semantic slice expects to dispatch; it WILL be observed
+        via `envoy.runtime.dispatch_observation.record_dispatch` once S2b/S6a wire
+        the real classifier path (no adapter calls `record_dispatch` yet — the
+        hook + its observe() harness exist; the production call site lands with
+        the classifier wiring)."""
         ...
 
     @byte_identical

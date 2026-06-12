@@ -99,7 +99,17 @@ def genesis_session_key(principal_id: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+    """ISO-8601 UTC timestamp, ALWAYS microsecond-padded (6 digits).
+
+    `datetime.isoformat()` DROPS the fractional-seconds component when the
+    microseconds happen to be 0, yielding e.g. `2026-06-11T09:53:00+00:00`
+    instead of `2026-06-11T09:53:00.000000+00:00`. `specs/independent-verifier.md`
+    mandates `anchor_minted_at` be `<iso8601 microsecond-padded>` (ENVOY-P2-W2G-010),
+    and the durable session-state timestamps share this helper, so
+    `timespec="microseconds"` pins the 6-digit fraction unconditionally — the
+    output is stable-width regardless of the wall-clock's sub-second value.
+    """
+    return datetime.now(tz=timezone.utc).isoformat(timespec="microseconds")
 
 
 def _uuid7_like() -> str:

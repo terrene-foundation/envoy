@@ -34,6 +34,10 @@ import pathlib
 import click
 
 from envoy.boundary_conversation.errors import VaultAlreadyInitializedError
+from envoy.ledger.keystore import (
+    LedgerKeyringSelectorError,
+    resolve_keyring_backend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ EXIT_USAGE = 2
 EXIT_NO_PRINCIPAL = 20
 EXIT_ALREADY_INITIALIZED = 30
 EXIT_INIT_FAILED = 31
+EXIT_KEYRING_SELECTOR = 32
 
 _DEFAULT_VAULT = "~/.envoy/trust_vault.db"
 _DEFAULT_TRUST_ANCHOR_DIR = "~/.envoy/trust-anchor"
@@ -113,10 +118,52 @@ def init_run(
 
     Re-running on an already-set-up vault exits cleanly (code 30) without
     re-running setup or overwriting your genesis.
+
+    Keyring backend: by default the ledger + session signing keys are stored in
+    your OS keychain (macOS Keychain / Linux Secret Service / Windows Credential
+    Manager). For headless / CI / automated runs where no interactive keychain is
+    available, set ``ENVOY_KEYRING=memory`` to use an in-process key store
+    (ephemeral — keys are NOT persisted; intended for testing, not production).
+    Any other ``ENVOY_KEYRING`` value exits with code 32. Note: the first-run
+    setup is LLM-driven (it understands your free-form boundary answers), so a
+    headless run also needs an LLM configured (e.g. ``KAILASH_LLM_PROVIDER``).
     """
     pid = _resolve_principal(principal)
     vault_path = _resolve_vault(vault)
     anchor_dir = _resolve_trust_anchor_dir(trust_anchor_dir)
+
+    cli_session_id = (click.get_current_context().obj or {}).get("cli_session_id", "")
+    log_extra = {"principal_id_prefix": pid[:8], "cli_session_id": cli_session_id}
+
+    # Keyring backend selection (ENVOY_KEYRING): unset → the real OS keychain
+    # (secure default); ENVOY_KEYRING=memory → an in-process ephemeral backend for
+    # headless / CI / red-team-walk use, so `envoy init` can run end-to-end without
+    # touching (or requiring) the host OS keychain. A bad selector exits cleanly
+    # (code 32), never a traceback.
+    try:
+        keyring_backend = resolve_keyring_backend()
+    except LedgerKeyringSelectorError as exc:
+        logger.warning("envoy.init.run.bad_keyring_selector", extra=log_extra)
+        click.echo(f"\n{exc}\n", err=True)
+        raise SystemExit(EXIT_KEYRING_SELECTOR) from exc
+
+    # Write-once pre-check (ENVOY-P2-W2G-001): if the vault already exists, exit
+    # cleanly with code 30 + a plain-language message BEFORE prompting for the
+    # passphrase or any of the 9 ritual answers. Re-running `init` on an
+    # initialized vault is the user's most common foot-gun; making them re-type
+    # the passphrase + answer 9 questions only to hit a traceback (FileExistsError
+    # raised deep in build_init_runtime → vault.create) is the failure mode the
+    # spec (session-runtime.md:188-191) + this command's docstring forbid.
+    if vault_path.exists():
+        logger.warning("envoy.init.run.already_initialized.precheck", extra=log_extra)
+        click.echo(
+            "\nThis vault is already set up — your boundaries and backup were "
+            "created in a previous setup. There's nothing to do. If you've lost "
+            "your setup, recover it with your backup cards "
+            "(`envoy shamir recover`).\n",
+            err=True,
+        )
+        raise SystemExit(EXIT_ALREADY_INITIALIZED)
 
     passphrase = click.prompt(
         "Choose a vault passphrase (you'll need it to unlock Envoy)",
@@ -137,6 +184,7 @@ def init_run(
             principal_id=pid,
             passphrase=passphrase,
             trust_anchor_dir=anchor_dir,
+            keyring_backend=keyring_backend,
         )
         try:
             result = await bootstrap.init_runtime.run_first_time_bootstrap(
@@ -158,8 +206,6 @@ def init_run(
             if bootstrap.vault.is_unlocked:
                 await bootstrap.vault.lock()
 
-    cli_session_id = (click.get_current_context().obj or {}).get("cli_session_id", "")
-    log_extra = {"principal_id_prefix": pid[:8], "cli_session_id": cli_session_id}
     logger.info("envoy.init.run.start", extra=log_extra)
     try:
         exit_code = asyncio.run(_run())

@@ -254,38 +254,43 @@ async def test_med1_stale_offline_pin_rollback_refused() -> None:
     store = ContentAddressedStore()
     handlers = LibraryRegistryHandlers(store=store)
     app = build_library_nexus(handlers, api_port=18961, mcp_port=18962)
-    km = InMemoryKeyManager()
+    try:
+        km = InMemoryKeyManager()
 
-    ch, pinned = await _publish_fv(
-        handlers,
-        store,
-        km,
-        version="v3",
-        content=dict(CONTENT),
-        published_at="2026-06-08T00:00:00Z",
-    )
-    client = _ToggleClient(app)
-    resolver = FoundationVerifiedTemplateResolver(
-        client=client, key_manager=km, pinned_pubkeys=pinned
-    )
-    ref = TemplateRef("foundation-verified:family-starter@v3")
+        ch, pinned = await _publish_fv(
+            handlers,
+            store,
+            km,
+            version="v3",
+            content=dict(CONTENT),
+            published_at="2026-06-08T00:00:00Z",
+        )
+        client = _ToggleClient(app)
+        resolver = FoundationVerifiedTemplateResolver(
+            client=client, key_manager=km, pinned_pubkeys=pinned
+        )
+        ref = TemplateRef("foundation-verified:family-starter@v3")
 
-    # 1. Online resolve caches the version + sets the freshness high-water at its
-    #    published_at (2026-06-08).
-    first = await resolver.resolve_async(ref)
-    assert first.template_hash == ch
-    assert resolver._highest_published_at["family-starter@v3"] == "2026-06-08T00:00:00Z"
+        # 1. Online resolve caches the version + sets the freshness high-water at its
+        #    published_at (2026-06-08).
+        first = await resolver.resolve_async(ref)
+        assert first.template_hash == ch
+        assert resolver._highest_published_at["family-starter@v3"] == "2026-06-08T00:00:00Z"
 
-    # 2. The resolver observes a NEWER published_at for the same id (a superseding
-    #    publish was seen online) — the freshness high-water advances PAST the
-    #    cached slot's timestamp. This is the exact state the guard defends.
-    resolver._note_published_at("family-starter@v3", "2026-06-09T00:00:00Z")
+        # 2. The resolver observes a NEWER published_at for the same id (a superseding
+        #    publish was seen online) — the freshness high-water advances PAST the
+        #    cached slot's timestamp. This is the exact state the guard defends.
+        resolver._note_published_at("family-starter@v3", "2026-06-09T00:00:00Z")
 
-    # 3. Endpoint down; the only cache slot is the OLD (2026-06-08) version, but
-    #    the high-water is 2026-06-09 → stale pin-rollback refused, NOT served.
-    client.online = False
-    with pytest.raises(StaleOfflineTemplateError, match="superseded"):
-        await resolver.resolve_async(ref)
+        # 3. Endpoint down; the only cache slot is the OLD (2026-06-08) version, but
+        #    the high-water is 2026-06-09 → stale pin-rollback refused, NOT served.
+        client.online = False
+        with pytest.raises(StaleOfflineTemplateError, match="superseded"):
+            await resolver.resolve_async(ref)
+    finally:
+        # Release the Nexus AsyncLocalRuntime — otherwise a GC-time "Unclosed
+        # Nexus" ResourceWarning surfaces under -W default (envoy-owned leak; T-01).
+        app.close()
 
 
 @pytest.mark.regression
@@ -294,28 +299,31 @@ async def test_med1_offline_current_version_still_served() -> None:
     store = ContentAddressedStore()
     handlers = LibraryRegistryHandlers(store=store)
     app = build_library_nexus(handlers, api_port=18963, mcp_port=18964)
-    km = InMemoryKeyManager()
+    try:
+        km = InMemoryKeyManager()
 
-    ch, pinned = await _publish_fv(
-        handlers,
-        store,
-        km,
-        version="v3",
-        content=dict(CONTENT),
-        published_at="2026-06-08T00:00:00Z",
-    )
-    client = _ToggleClient(app)
-    resolver = FoundationVerifiedTemplateResolver(
-        client=client, key_manager=km, pinned_pubkeys=pinned
-    )
-    ref = TemplateRef("foundation-verified:family-starter@v3")
+        ch, pinned = await _publish_fv(
+            handlers,
+            store,
+            km,
+            version="v3",
+            content=dict(CONTENT),
+            published_at="2026-06-08T00:00:00Z",
+        )
+        client = _ToggleClient(app)
+        resolver = FoundationVerifiedTemplateResolver(
+            client=client, key_manager=km, pinned_pubkeys=pinned
+        )
+        ref = TemplateRef("foundation-verified:family-starter@v3")
 
-    online = await resolver.resolve_async(ref)
-    assert online.template_hash == ch
+        online = await resolver.resolve_async(ref)
+        assert online.template_hash == ch
 
-    # Offline hit on the SAME (current) version: published_at == high-water,
-    # not less-than → served, not refused.
-    client.online = False
-    offline = await resolver.resolve_async(ref)
-    assert offline.template_hash == ch
-    assert offline.template_origin == "foundation-verified"
+        # Offline hit on the SAME (current) version: published_at == high-water,
+        # not less-than → served, not refused.
+        client.online = False
+        offline = await resolver.resolve_async(ref)
+        assert offline.template_hash == ch
+        assert offline.template_origin == "foundation-verified"
+    finally:
+        app.close()  # release the Nexus AsyncLocalRuntime (T-01 envoy-owned leak)

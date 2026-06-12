@@ -78,40 +78,49 @@ async def test_offline_cache_hit_reverifies_and_succeeds() -> None:
     store = ContentAddressedStore()
     handlers = LibraryRegistryHandlers(store=store)
     app = build_library_nexus(handlers, api_port=18951, mcp_port=18952)
-    km = InMemoryKeyManager()
-    ch, pinned = await _publish_fv(handlers, store, km)
+    try:
+        km = InMemoryKeyManager()
+        ch, pinned = await _publish_fv(handlers, store, km)
 
-    client = _ToggleClient(app)
-    resolver = FoundationVerifiedTemplateResolver(
-        client=client, key_manager=km, pinned_pubkeys=pinned
-    )
-    ref = TemplateRef("foundation-verified:family-starter@v3")
+        client = _ToggleClient(app)
+        resolver = FoundationVerifiedTemplateResolver(
+            client=client, key_manager=km, pinned_pubkeys=pinned
+        )
+        ref = TemplateRef("foundation-verified:family-starter@v3")
 
-    # 1. Online resolve populates the content-addressed cache.
-    first = await resolver.resolve_async(ref)
-    assert first.template_hash == ch
+        # 1. Online resolve populates the content-addressed cache.
+        first = await resolver.resolve_async(ref)
+        assert first.template_hash == ch
 
-    # 2. Endpoint goes down; cache HIT still re-verifies against pinned keys.
-    client.online = False
-    offline = await resolver.resolve_async(ref)
-    assert offline.template_hash == ch
-    assert offline.template_origin == "foundation-verified"
+        # 2. Endpoint goes down; cache HIT still re-verifies against pinned keys.
+        client.online = False
+        offline = await resolver.resolve_async(ref)
+        assert offline.template_hash == ch
+        assert offline.template_origin == "foundation-verified"
+    finally:
+        # Close the Nexus app so its internal AsyncLocalRuntime is released —
+        # otherwise a GC-time "Unclosed Nexus" ResourceWarning surfaces under
+        # -W default (envoy-owned leak; T-01).
+        app.close()
 
 
 async def test_offline_cache_miss_raises_unreachable() -> None:
     store = ContentAddressedStore()
     handlers = LibraryRegistryHandlers(store=store)
     app = build_library_nexus(handlers, api_port=18953, mcp_port=18954)
-    km = InMemoryKeyManager()
-    await _publish_fv(handlers, store, km)
+    try:
+        km = InMemoryKeyManager()
+        await _publish_fv(handlers, store, km)
 
-    client = _ToggleClient(app)
-    client.online = False  # down from the start; nothing cached yet
-    resolver = FoundationVerifiedTemplateResolver(
-        client=client, key_manager=km, pinned_pubkeys=set()
-    )
-    with pytest.raises(LibraryUnreachableError):
-        await resolver.resolve_async(TemplateRef("foundation-verified:family-starter@v3"))
+        client = _ToggleClient(app)
+        client.online = False  # down from the start; nothing cached yet
+        resolver = FoundationVerifiedTemplateResolver(
+            client=client, key_manager=km, pinned_pubkeys=set()
+        )
+        with pytest.raises(LibraryUnreachableError):
+            await resolver.resolve_async(TemplateRef("foundation-verified:family-starter@v3"))
+    finally:
+        app.close()  # release the Nexus AsyncLocalRuntime (T-01 envoy-owned leak)
 
 
 async def test_offline_cache_hit_still_refuses_when_keys_unpinned() -> None:
@@ -123,15 +132,18 @@ async def test_offline_cache_hit_still_refuses_when_keys_unpinned() -> None:
     store = ContentAddressedStore()
     handlers = LibraryRegistryHandlers(store=store)
     app = build_library_nexus(handlers, api_port=18955, mcp_port=18956)
-    km = InMemoryKeyManager()
-    await _publish_fv(handlers, store, km)
+    try:
+        km = InMemoryKeyManager()
+        await _publish_fv(handlers, store, km)
 
-    client = _ToggleClient(app)
-    # Fresh resolver, no cache, endpoint up but keys unpinned → quorum fails.
-    resolver = FoundationVerifiedTemplateResolver(
-        client=client, key_manager=km, pinned_pubkeys=set()
-    )
-    from envoy.registry.errors import FVTierMembershipNotProvenError
+        client = _ToggleClient(app)
+        # Fresh resolver, no cache, endpoint up but keys unpinned → quorum fails.
+        resolver = FoundationVerifiedTemplateResolver(
+            client=client, key_manager=km, pinned_pubkeys=set()
+        )
+        from envoy.registry.errors import FVTierMembershipNotProvenError
 
-    with pytest.raises(FVTierMembershipNotProvenError):
-        await resolver.resolve_async(TemplateRef("foundation-verified:family-starter@v3"))
+        with pytest.raises(FVTierMembershipNotProvenError):
+            await resolver.resolve_async(TemplateRef("foundation-verified:family-starter@v3"))
+    finally:
+        app.close()  # release the Nexus AsyncLocalRuntime (T-01 envoy-owned leak)

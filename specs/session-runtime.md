@@ -101,18 +101,19 @@ a foreclosed path.
 
 The durable form of `runtime.py:403`'s in-memory `_inflight` queue.
 
-| Column            | Type    | Notes                                                                        |
-| ----------------- | ------- | ---------------------------------------------------------------------------- |
-| `request_id`      | TEXT PK | key shape — the `GrantMomentRequest.request_id` (uuid-v7)                    |
-| `principal_id`    | TEXT    | owning principal                                                             |
-| `session_id`      | TEXT    | issuing session                                                              |
-| `state`           | TEXT    | enum `pending` / `resolved` / `expired`, enforced by a SQLite CHECK          |
-| `request_json`    | TEXT    | canonical-JSON `GrantMomentRequest`, stored verbatim (S4s does not parse it) |
-| `resolution_json` | TEXT    | nullable; the resolution row S4r writes; NULL while pending                  |
-| `version`         | INTEGER | monotonic; bumped on every re-put — the lost-update primitive S4r polls      |
-| `ttl_expires_at`  | TEXT    | ISO-8601 TTL bounding queue growth (S4g back-pressure)                       |
-| `created_at`      | TEXT    | ISO-8601; preserved across re-puts                                           |
-| `updated_at`      | TEXT    | ISO-8601                                                                     |
+| Column            | Type    | Notes                                                                                                                                                                  |
+| ----------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `request_id`      | TEXT PK | key shape — the `GrantMomentRequest.request_id` (uuid-v7)                                                                                                              |
+| `principal_id`    | TEXT    | owning principal                                                                                                                                                       |
+| `session_id`      | TEXT    | issuing session                                                                                                                                                        |
+| `state`           | TEXT    | enum `pending` / `resolved` / `expired`, enforced by a SQLite CHECK                                                                                                    |
+| `request_json`    | TEXT    | canonical-JSON `GrantMomentRequest`, stored verbatim (S4s does not parse it)                                                                                           |
+| `resolution_json` | TEXT    | nullable; the resolution row S4r writes; NULL while pending                                                                                                            |
+| `resolution_sig`  | TEXT    | nullable; hex Ed25519 signature over `resolution_signing_payload(request_id, resolution_json)`, keychain-signed by S4r (§ Resolution authenticity); NULL while pending |
+| `version`         | INTEGER | monotonic; bumped on every re-put — the lost-update primitive S4r polls                                                                                                |
+| `ttl_expires_at`  | TEXT    | ISO-8601 TTL bounding queue growth (S4g back-pressure)                                                                                                                 |
+| `created_at`      | TEXT    | ISO-8601; preserved across re-puts                                                                                                                                     |
+| `updated_at`      | TEXT    | ISO-8601                                                                                                                                                               |
 
 Index columns: `(principal_id, state, updated_at)` for the
 "pending rows for this principal, newest first" lookup the `grant list` read
@@ -152,8 +153,11 @@ cross-process poll rendezvous, sign-resolution) is S4r / S4g.
 ### Region 2 — SessionObservedState (`session_observed_state` table)
 
 The durable snapshot home for `specs/session-state.md` § Persistence
-("snapshot to Trust Vault encrypted at every Ledger append, so a crash
-mid-session preserves orphan-phase-A tracking", `session-state.md:182`).
+("snapshot to a 0o600 vault-sibling SQLite store at every Ledger append, so a
+crash mid-session preserves orphan-phase-A tracking", `session-state.md` § Persistence).
+The `state_json` blob is stored as canonical JSON; the `pending_grant`
+resolution rows the same store holds carry a keychain-signed `resolution_sig`
+(§ Resolution authenticity), so this store is signed-not-encrypted-at-rest.
 
 | Column         | Type    | Notes                                                       |
 | -------------- | ------- | ----------------------------------------------------------- |

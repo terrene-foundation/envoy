@@ -34,7 +34,11 @@ from pathlib import Path
 from typing import Any
 
 from envoy.authorship.novelty import NoveltyChecker
-from envoy.boundary_conversation.init_runtime import BoundaryConversationInitRuntime
+from envoy.boundary_conversation.errors import VaultAlreadyInitializedError
+from envoy.boundary_conversation.init_runtime import (
+    BoundaryConversationInitRuntime,
+    genesis_session_key,
+)
 from envoy.boundary_conversation.runtime import BoundaryConversationRuntime
 from envoy.envelope import EnvelopeCompiler, LocalTemplateResolver
 from envoy.ledger.bootstrap import (
@@ -123,21 +127,41 @@ async def build_init_runtime(
     vault_path = Path(vault_path)
     vault = TrustVault(vault_path, idle_ttl_seconds=900)
     # First-time install: create the vault from a fresh master key, then unlock.
-    await vault.create(b"envoy-genesis-install", passphrase)
-    await vault.unlock(passphrase)
-
-    trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
-    await trust_store.initialize()
-
-    session_router = SessionRouter(
-        vault_path=vault_path,
-        principal_id=principal_id,
-        keyring_backend=keyring_backend,
-    )
-    await session_router.open()
-
+    # Defense-in-depth (ENVOY-P2-W2G-001): the CLI pre-checks vault existence and
+    # exits 30 before prompting, but ANY other caller of build_init_runtime against
+    # a pre-existing vault must also get the TYPED write-once error, not the bare
+    # FileExistsError TrustVault.create raises. Translate it here so the typed
+    # path is the single contract every caller sees (per the CLI's exit-30
+    # already-initialized handler + session-runtime.md:188-191).
+    try:
+        await vault.create(b"envoy-genesis-install", passphrase)
+    except FileExistsError as exc:
+        raise VaultAlreadyInitializedError(
+            principal_id=principal_id,
+            genesis_store_key=genesis_session_key(principal_id),
+        ) from exc
+    # ENVOY-P2-R2-Q-01: vault.unlock + trust_store.initialize + session_router.open
+    # are acquired INSIDE the try so a failure in any of them runs the reverse-order
+    # cleanup below — most importantly vault.lock(), so a failed bootstrap never
+    # leaves the TrustVault unlocked with the live master key resident in memory.
+    # (vault.create stays above: on FileExistsError nothing is acquired yet, and a
+    # failed unlock leaves vault.is_unlocked False so the lock() guard is a no-op.)
+    trust_store: TrustStoreAdapter | None = None
+    session_router: SessionRouter | None = None
     durable: DurableLedger | None = None
     try:
+        await vault.unlock(passphrase)
+
+        trust_store = TrustStoreAdapter(vault_path=vault_path, principal_id=principal_id)
+        await trust_store.initialize()
+
+        session_router = SessionRouter(
+            vault_path=vault_path,
+            principal_id=principal_id,
+            keyring_backend=keyring_backend,
+        )
+        await session_router.open()
+
         key_manager = await load_or_create_ledger_key_manager(
             principal_id=principal_id,
             signing_key_id=LEDGER_SIGNING_KEY_ID,
@@ -194,10 +218,12 @@ async def build_init_runtime(
                 await durable.aclose()
         finally:
             try:
-                await session_router.close()
+                if session_router is not None:
+                    await session_router.close()
             finally:
                 try:
-                    await trust_store.close()
+                    if trust_store is not None:
+                        await trust_store.close()
                 finally:
                     if vault.is_unlocked:
                         await vault.lock()

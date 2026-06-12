@@ -60,8 +60,8 @@ State-actor MITM with stolen CA keys — out of §1.2 scope.
 
 ## Test location
 
-- `tests/integration/test_tls13_minimum_version.py` — outbound to TLS 1.2 endpoint refused (Tier 2).
-- `tests/regression/test_t080_cert_pin_mismatch_synthetic_mitm.py` — T-080 defense; synthetic MITM cert refused.
+- `tests/integration/test_strict_sni_enforcement.py` (`test_tls_below_1_3_refused`) — outbound to a sub-TLS-1.3 endpoint refused (Tier 2).
+- `tests/integration/test_cert_pin_mismatch.py` — T-080 defense; a presented certificate whose fingerprint ≠ the pinned cert raises `CertPinMismatchError`.
 - `tests/integration/test_user_added_ca_foundation_refused.py` — corporate-MITM CA refused for Foundation endpoints.
 - `tests/integration/test_strict_sni_enforcement.py` — handshake without SNI refused.
 - `tests/integration/test_cipher_suite_allowlist.py` — RFC 9325 + Envoy allowlist enforcement.

@@ -60,6 +60,7 @@ from envoy.shamir import ShamirRitualCoordinator, TrustVaultChecklistPersister
 from envoy.shamir.paper import PaperShardRenderer
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.vault import TrustVault
+from tests.tier3.conftest import PASSPHRASE
 
 PRINCIPAL = "alice@example"
 
@@ -383,3 +384,42 @@ class TestInitBootstrapIdempotency:
         # Genesis bytes are UNCHANGED (write-once — never overwritten).
         after = await session_router.load_observed_state(first.genesis_store_key)
         assert after == before, "second init MUST NOT overwrite the durable genesis"
+
+    async def test_build_init_runtime_translates_file_exists_to_typed_error(
+        self,
+        tmp_path: Path,
+        keyring_backend: _MemBackend,
+    ) -> None:
+        """Defense-in-depth (ENVOY-P2-W2G-001): `build_init_runtime` against a
+        vault that already exists on disk raises the TYPED
+        `VaultAlreadyInitializedError`, NOT the bare `FileExistsError` that
+        `TrustVault.create` raises.
+
+        The CLI pre-check (tested in tests/tier1/test_init_cli_surface.py) catches
+        the common path before prompting; this test pins the SDK-level contract so
+        any OTHER caller of build_init_runtime also gets the typed write-once error
+        — driving build_init_runtime directly (the tier-3 idempotency test above
+        bypasses it via init_runtime.run_first_time_bootstrap)."""
+        from envoy.boundary_conversation.init_bootstrap import build_init_runtime
+
+        vault_path = tmp_path / "preexisting.vault"
+        # Pre-create a REAL vault container at the path (real crypto, no mock).
+        seed_vault = TrustVault(vault_path, idle_ttl_seconds=60)
+        await seed_vault.create(b"seed-payload", PASSPHRASE)
+        assert vault_path.exists()
+
+        # build_init_runtime now hits vault.create → FileExistsError, which MUST be
+        # translated to the typed VaultAlreadyInitializedError carrying the
+        # principal + the deterministic genesis store key.
+        with pytest.raises(VaultAlreadyInitializedError) as excinfo:
+            await build_init_runtime(
+                vault_path=vault_path,
+                principal_id=PRINCIPAL,
+                passphrase=PASSPHRASE,
+                trust_anchor_dir=tmp_path / "anchor",
+                keyring_backend=keyring_backend,
+            )
+        assert excinfo.value.principal_id == PRINCIPAL
+        assert excinfo.value.genesis_store_key == genesis_session_key(PRINCIPAL)
+        # The bare FileExistsError MUST NOT leak through unwrapped.
+        assert not isinstance(excinfo.value, FileExistsError)

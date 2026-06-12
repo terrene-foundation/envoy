@@ -873,12 +873,27 @@ class EnvoyGrantMomentRuntime:
 
         if resolution_or_timeout is _TIMEOUT_SENTINEL:
             # M2 → M3 (with timeout disposition) — the state machine routes
-            # ``TIMEOUT_EXPIRED`` to M3 sign per the transition table. This
-            # block is BYTE-IDENTICAL to the Phase-01 timeout path (same
-            # next_state event, same pop, same raised error + kwargs) — the
-            # rendezvous mechanism changed, the audit-emitting M2 → M3
-            # transition did NOT.
+            # ``TIMEOUT_EXPIRED`` to M3 sign per the transition table.
             pending.state = next_state(pending.state, GrantMomentEvent.TIMEOUT_EXPIRED)
+            # Durably flip the pending row to ``expired`` BEFORE raising
+            # (ENVOY-P2-W2G-004). The Phase-01 path only drove the in-memory
+            # state machine + raised; the durable row stayed ``state=pending``
+            # forever, so count_pending_grants over-counted dead grants AND a
+            # late answerer could still flip the row to ``resolved``. Writing the
+            # expired terminal makes the spec claim (session-runtime.md:123-124 /
+            # session.py:107-108 — "expired is the timeout terminal driven by
+            # S4r's M2→M3 transition") TRUE. The store's UPDATE is gated on
+            # ``state='pending'`` (session.py:533), so a row already flipped
+            # terminal (e.g. a same-instant resolve raced the timeout) raises
+            # KeyError — suppressed here exactly as the M3 submit_resolution path
+            # does, since the answer already landed durably and is idempotent.
+            if self._session_router is not None:
+                with contextlib.suppress(KeyError):
+                    await self._session_router.resolve_pending_grant(
+                        request_id=request_id,
+                        resolution_json=_TIMEOUT_RESOLUTION_JSON,
+                        state="expired",
+                    )
             self._inflight.pop(request_id, None)
             raise GrantMomentExpiredError(
                 request_id=request_id, timeout_seconds=effective_timeout
@@ -1583,6 +1598,17 @@ _TIMEOUT_SENTINEL: object = object()
 # this blob so a polling process sees a terminal state, not a stuck pending.
 _DISPATCH_FAILED_RESOLUTION_JSON = json.dumps(
     {"shape": "expired", "reason": "dispatch_failed_all_channels_raised"},
+    sort_keys=True,
+    separators=(",", ":"),
+)
+
+# Serialized terminal-resolution marker for a grant that timed out at M2 (the
+# user never answered within the window). The durable row is flipped to
+# ``expired`` carrying this blob (ENVOY-P2-W2G-004) so count_pending_grants does
+# NOT over-count the dead grant AND a late submit_resolution is refused (the
+# store UPDATE is gated on state='pending').
+_TIMEOUT_RESOLUTION_JSON = json.dumps(
+    {"shape": "expired", "reason": "timeout_no_response_within_window"},
     sort_keys=True,
     separators=(",", ":"),
 )

@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -53,6 +54,17 @@ from kailash.trust.key_manager import InMemoryKeyManager
 from envoy.connection_vault.schema import validate_principal_genesis_id
 
 logger = logging.getLogger(__name__)
+
+# Headless / CI / red-team-walk backend selector. UNSET (the default) keeps the
+# real OS keychain (macOS Keychain / Linux Secret Service / Windows Credential
+# Manager). The ONLY recognized override value is "memory" — an in-PROCESS dict
+# backend that touches NO persistent store. The override is a closed allowlist:
+# unset → OS keychain; "memory" → in-process dict; ANY other value → loud refusal
+# (fail-closed — a typo'd selector MUST NOT silently fall back to a different
+# backend, and an arbitrary backend class path is NOT accepted, so the override
+# cannot be a backend-downgrade / injection vector).
+ENVOY_KEYRING_ENV = "ENVOY_KEYRING"
+_KEYRING_MEMORY = "memory"
 
 # Distinct keyring service namespace so the ledger signing key never collides
 # with the Connection Vault's credential entries (`envoy.connection-vault`).
@@ -81,6 +93,73 @@ class LedgerKeyCorruptError(LedgerKeystoreError):
 
 class LedgerKeySchemaVersionError(LedgerKeystoreError):
     """A keychain record carries an unrecognized schema version (upgrade Envoy)."""
+
+
+class LedgerKeyringSelectorError(LedgerKeystoreError):
+    """The ``ENVOY_KEYRING`` env value is not a recognized backend selector.
+
+    Fail-closed: an unrecognized selector raises rather than silently picking the
+    OS-keychain default (a typo'd selector must be loud, not a security surprise).
+    """
+
+
+class InMemoryKeyringBackend:
+    """In-PROCESS dict keyring backend — headless / CI / red-team-walk ONLY.
+
+    Implements the subset of the ``keyring`` backend interface envoy's keystore,
+    session-signing-key store, and connection vault use (``get_password`` /
+    ``set_password`` / ``delete_password``). It persists NOTHING to disk and is
+    process-local — keys vanish on exit. NEVER the production default: it is
+    reachable only via an explicit ``ENVOY_KEYRING=memory`` opt-in, which logs a
+    loud warning (see :func:`resolve_keyring_backend`). Mirrors the test backend
+    at ``tests/tier3/test_init_bootstrap_full_path.py`` so a walked CLI behaves
+    identically to the dependency-injected test path.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._store[(service, username)] = password
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self._store.get((service, username))
+
+    def delete_password(self, service: str, username: str) -> None:
+        key = (service, username)
+        if key not in self._store:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del self._store[key]
+
+
+def resolve_keyring_backend(env: dict[str, str] | None = None) -> Any | None:
+    """Resolve the keyring backend from ``ENVOY_KEYRING`` (closed allowlist).
+
+    Returns ``None`` (→ the real OS keychain, the secure default) when the env
+    var is unset/empty; an :class:`InMemoryKeyringBackend` when it is exactly
+    ``"memory"`` (with a loud warning, since an in-process ephemeral key store is
+    test/headless-only); and raises :class:`LedgerKeyringSelectorError` for any
+    other value. The strict allowlist is the fail-closed guarantee: the override
+    can ONLY ever select the known-safe in-process backend, never an attacker-
+    supplied backend class or a silent downgrade.
+    """
+    environ = os.environ if env is None else env
+    selector = (environ.get(ENVOY_KEYRING_ENV) or "").strip()
+    if not selector:
+        return None
+    if selector == _KEYRING_MEMORY:
+        logger.warning(
+            "envoy.keyring.memory_backend_selected",
+            extra={"reason": f"{ENVOY_KEYRING_ENV}=memory — in-process ephemeral "
+                   "key store; keys are NOT persisted to the OS keychain. "
+                   "Headless/CI/walk use only, never production."},
+        )
+        return InMemoryKeyringBackend()
+    raise LedgerKeyringSelectorError(
+        f"{ENVOY_KEYRING_ENV}={selector!r} is not a recognized keyring selector; "
+        f"unset it for the OS keychain (default) or set {ENVOY_KEYRING_ENV}=memory "
+        f"for the in-process headless backend"
+    )
 
 
 def principal_genesis_id(principal_id: str) -> str:
