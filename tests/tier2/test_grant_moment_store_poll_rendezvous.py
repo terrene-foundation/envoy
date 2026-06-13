@@ -516,6 +516,13 @@ class TestResolutionCodec:
         with pytest.raises(ValueError, match="unknown shape discriminator"):
             resolution_from_json('{"shape":"bogus","decided_by_principal_genesis_id":"p"}')
 
+    async def test_codec_rejects_missing_decided_by_field(self) -> None:
+        """A resolution blob missing the required decided_by field fails loud
+        with the module's ValueError taxonomy — NOT a bare KeyError (so the
+        read-side poll surfaces a clear corruption error, not an opaque one)."""
+        with pytest.raises(ValueError, match="missing decided_by_principal_genesis_id"):
+            resolution_from_json('{"shape":"approve"}')
+
 
 @pytest.mark.asyncio
 class TestResolutionAuthenticity:

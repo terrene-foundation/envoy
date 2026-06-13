@@ -160,6 +160,11 @@ def resolution_from_json(blob: str) -> ResolutionShape:
     if not isinstance(data, dict):
         raise ValueError(f"resolution blob must be a JSON object (got {type(data).__name__})")
     shape = data.get("shape")
+    if "decided_by_principal_genesis_id" not in data:
+        # Fail loud with the module's intended ValueError taxonomy (matching the
+        # unknown-shape branch below) rather than a bare KeyError — a resolution
+        # blob missing its required decider field is corrupt, surface it clearly.
+        raise ValueError("resolution blob missing decided_by_principal_genesis_id")
     decided_by = data["decided_by_principal_genesis_id"]
     co_signer = data.get("co_signer_principal_genesis_id")
     if shape == _SHAPE_APPROVE:

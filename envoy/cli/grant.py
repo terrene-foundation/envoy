@@ -99,20 +99,29 @@ def _resolve_keyring_backend_or_exit(log_extra: dict[str, Any]) -> Any:
         raise SystemExit(EXIT_KEYRING_SELECTOR) from exc
 
 
-def _request_field(row: PendingGrantRow, field: str, default: str = "") -> str:
-    """Read one field out of a pending row's canonical-JSON GrantMomentRequest.
+def _load_request(blob: str) -> dict[str, Any] | None:
+    """Parse a pending row's canonical-JSON GrantMomentRequest, or None if the
+    blob is malformed (not parseable JSON, or not a JSON object).
 
     The store holds ``request_json`` verbatim (``asdict(GrantMomentRequest)``);
-    this CLI is the wire-format reader. Returns ``default`` if the blob is
-    malformed or the field is absent — a corrupt row must not crash the listing.
+    this CLI is the wire-format reader. A malformed blob means store corruption
+    (the issue path writes a well-formed object) — the caller surfaces it loudly
+    rather than silently rendering a degraded row (`rules/observability.md`
+    Rule 3: no silent swallow on a security-display boundary).
     """
     try:
-        data = json.loads(row.request_json)
+        data = json.loads(blob)
     except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _request_field(obj: dict[str, Any] | None, field: str, default: str = "") -> str:
+    """Read one field out of a parsed request object, or ``default`` if absent
+    (or the object was malformed → None)."""
+    if obj is None:
         return default
-    if not isinstance(data, dict):
-        return default
-    value = data.get(field, default)
+    value = obj.get(field, default)
     return str(value) if value is not None else default
 
 
@@ -167,10 +176,24 @@ def grant_list(principal: str | None, vault: str | None) -> None:
 
     click.echo(f"\n{len(rows)} request(s) waiting for your decision:\n")
     for row in rows:
-        tool = _request_field(row, "tool_name", "(unknown action)")
-        why = _request_field(row, "why_asking", "")
-        novelty = _request_field(row, "novelty_class", "")
-        issued = _request_field(row, "issued_at", row.created_at)
+        obj = _load_request(row.request_json)
+        if obj is None:
+            # Store corruption on a human-authority gate: a request whose details
+            # cannot be read is one the user must NOT approve blind. Surface it
+            # loudly (WARN log + a visible marker) rather than rendering a silent
+            # "(unknown action)" fallback (`rules/observability.md` Rule 3).
+            logger.warning(
+                "envoy.grant.list.malformed_request",
+                extra={**log_extra, "request_id": row.request_id},
+            )
+            click.echo(f"  [{row.request_id}]  (malformed request — inspect before approving)")
+            click.echo(f"      Approve:  envoy grant approve {row.request_id}")
+            click.echo(f"      Deny:     envoy grant deny {row.request_id}\n")
+            continue
+        tool = _request_field(obj, "tool_name", "(unknown action)")
+        why = _request_field(obj, "why_asking", "")
+        novelty = _request_field(obj, "novelty_class", "")
+        issued = _request_field(obj, "issued_at", row.created_at)
         click.echo(f"  [{row.request_id}]  {tool}")
         if why:
             click.echo(f"      Why: {why}")
@@ -211,8 +234,12 @@ async def _answer_pending_grant(
         )
     # The answer is decided BY the same principal who owns the request
     # (cross-principal dual-sign is Phase-03); recover its genesis id from the
-    # stored request so the resolution shape is correctly attributed.
-    decided_by = _request_field(row, "principal_genesis_id", router.principal_id)
+    # stored request so the resolution shape is correctly attributed. A malformed
+    # request blob falls back to the router's principal_id — the resolution
+    # signature still binds request_id + resolution bytes regardless.
+    decided_by = _request_field(
+        _load_request(row.request_json), "principal_genesis_id", router.principal_id
+    )
     resolution: ResolutionShape = build_resolution(decided_by)
     try:
         await router.resolve_pending_grant(

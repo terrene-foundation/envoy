@@ -33,6 +33,7 @@ REAL grant-moment runtime issue path (`make_runtime` + `issue_grant_moment`), so
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import TypeVar
@@ -51,6 +52,7 @@ from envoy.grant_moment import (
     resolution_to_json,
 )
 from envoy.runtime import SessionRouter
+from envoy.runtime.session import session_db_path
 from tests.helpers.grant_moment_harness import (
     DEFAULT_PRINCIPAL_ID,
     make_issue_kwargs,
@@ -218,6 +220,35 @@ class TestGrantCliList:
         # The real wire form's tool_name is rendered (make_issue_kwargs default).
         assert "send_email" in result.output
 
+    def test_list_surfaces_malformed_row_with_marker(
+        self, vault_path: Path, backend: _MemBackend
+    ) -> None:
+        """A pending row whose request_json is corrupt (store corruption — the
+        issue path always writes a well-formed object) is surfaced LOUDLY with a
+        'malformed — inspect before approving' marker + its answer commands, NOT
+        a silent '(unknown action)' fallback. The listing does not crash."""
+        [rid] = _sync(_issue_n_pending(vault_path, backend, 1))
+
+        # Corrupt the stored request_json directly (bypassing the validating
+        # put_pending_grant API — simulates on-disk corruption).
+        conn = sqlite3.connect(session_db_path(vault_path))
+        try:
+            conn.execute(
+                "UPDATE pending_grant SET request_json='{not valid json' WHERE request_id=?",
+                (rid,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = CliRunner().invoke(cli, ["grant", "list"], env=_cli_env(vault_path))
+        assert result.exit_code == 0, result.output
+        assert "malformed request" in result.output
+        assert "(unknown action)" not in result.output
+        # The answer commands are still rendered so the user can act on it.
+        assert f"envoy grant approve {rid}" in result.output
+        assert f"envoy grant deny {rid}" in result.output
+
 
 class TestGrantCliApproveDeny:
     def test_approve_flips_row_to_resolved_with_approve_shape(
@@ -265,6 +296,34 @@ class TestGrantCliApproveDeny:
                 await r.close()
 
         _sync(_readback())
+
+    def test_deny_already_resolved_refused_exit_40(
+        self, vault_path: Path, backend: _MemBackend
+    ) -> None:
+        """Per-verb symmetry with approve: a deny on an already-resolved request
+        is REFUSED (exit 40), the settled decision is immutable."""
+        [rid] = _sync(_issue_n_pending(vault_path, backend, 1))
+
+        async def _pre_resolve() -> None:
+            r = await _open_router(vault_path, backend)
+            try:
+                await r.resolve_pending_grant(
+                    request_id=rid,
+                    resolution_json=resolution_to_json(
+                        ApproveResolution(decided_by_principal_genesis_id=DEFAULT_PRINCIPAL_ID)
+                    ),
+                    state="resolved",
+                )
+            finally:
+                await r.close()
+
+        _sync(_pre_resolve())
+
+        result = CliRunner().invoke(
+            cli, ["grant", "deny", rid, "--reason", "too late"], env=_cli_env(vault_path)
+        )
+        assert result.exit_code == 40, result.output
+        assert "already resolved" in result.output
 
     def test_approve_unknown_request_id_refused_exit_40(self, vault_path: Path) -> None:
         result = CliRunner().invoke(
