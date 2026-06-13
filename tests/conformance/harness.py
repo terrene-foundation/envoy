@@ -71,12 +71,9 @@ def _rs_construction_window() -> Iterator[None]:
     family exactly as before. The flip is scoped to construction so a leak
     cannot widen the production substitution boundary.
     """
-    previous = _rs_mod.RS_BINDINGS_ENABLED
-    _rs_mod.RS_BINDINGS_ENABLED = True
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_rs_mod, "RS_BINDINGS_ENABLED", True)
         yield
-    finally:
-        _rs_mod.RS_BINDINGS_ENABLED = previous
 
 
 def resolve_runtime(family: str, **kwargs: Any) -> KailashRuntime | None:
@@ -136,7 +133,9 @@ def load_vectors() -> Sequence[ConformanceVector]:
     return ()
 
 
-def parametrize_runtime_x_vectors(vectors: Sequence[ConformanceVector]):
+def parametrize_runtime_x_vectors(
+    vectors: Sequence[ConformanceVector],
+) -> pytest.MarkDecorator:
     """Parametrize a test over (runtime-under-test × vector).
 
     Emits IDs of the form ``<runtime>-<vector_id>`` so a parametrized test named
