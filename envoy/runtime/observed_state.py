@@ -42,7 +42,10 @@ Pattern-AST shape (code-first per ``rules/specs-authority.md`` Rule 5; recorded
 in ``specs/session-runtime.md`` § Region 2): each pattern node is matched against
 the corresponding args node by ``_match_node``. A node is one of —
 ``{"match": "exact", "value": <x>}`` (equality), ``{"match": "any"}`` (any value
-present), ``{"match": "prefix", "value": "<str>"}`` (string ``startswith``),
+present), ``{"match": "prefix", "value": "<str>"}`` (raw string ``startswith`` —
+NOTE: it does NOT normalize paths, so a ``"/safe/"`` prefix authored to scope a
+filesystem tool still matches ``"/safe/../etc/passwd"``; pattern authors MUST
+account for traversal when authoring path prefixes),
 ``{"match": "type", "value": "str|int|float|bool|list|dict"}`` (isinstance), a
 nested plain dict (recursive ``match_ast``), a list (elementwise, same length),
 or a bare scalar (treated as ``exact``). An unknown ``match`` directive fails
