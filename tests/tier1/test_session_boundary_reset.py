@@ -102,8 +102,8 @@ class TestTriggerTaxonomy:
     def test_six_canonical_triggers(self) -> None:
         assert ALL_TRIGGERS == START_TRIGGERS | END_TRIGGERS
         assert len(ALL_TRIGGERS) == 6
-        assert START_TRIGGERS == {"unlock", "cli_start"}
-        assert END_TRIGGERS == {"cli_end", "idle_timeout", "user_lock", "channel_disconnect"}
+        assert {"unlock", "cli_start"} == START_TRIGGERS
+        assert {"cli_end", "idle_timeout", "user_lock", "channel_disconnect"} == END_TRIGGERS
 
     @pytest.mark.parametrize("trigger", sorted(START_TRIGGERS))
     def test_start_triggers_map_to_start(self, trigger: str) -> None:
