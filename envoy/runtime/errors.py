@@ -73,6 +73,30 @@ class BudgetVelocityExceededError(RuntimeError):
 
 
 # ----------------------------------------------------------------------------
+# specs/session-state.md § Error taxonomy (first-time-action gate / goal-reconfirm)
+# ----------------------------------------------------------------------------
+
+
+class GoalReconfirmationThresholdExceededError(RuntimeError):
+    """`tool_calls_since_reconfirm` reached the session's threshold; the next tool
+    call is gated until the user reconfirms goal alignment (Grant Moment dispatch).
+
+    Per `specs/session-state.md` § Error taxonomy. Raised by
+    `envoy.runtime.observed_state.check_goal_reconfirmation`. A threshold of 0
+    (the genesis default) disables the gate — reconfirmation is opt-in.
+    """
+
+
+class FirstTimeActionGateBypassAttemptError(RuntimeError):
+    """The first-time-action gate was invoked with an unsigned / unauthenticated
+    caller — a runtime bug, not a user-actionable condition.
+
+    Per `specs/session-state.md` § Error taxonomy. Reserved for the caller-side
+    authentication guard around the gate; the pure gate itself is deterministic.
+    """
+
+
+# ----------------------------------------------------------------------------
 # Envoy-internal Phase-01 deferral discipline
 # ----------------------------------------------------------------------------
 
@@ -113,6 +137,8 @@ __all__ = [
     "RuntimeSignatureVerificationFailedError",
     "BudgetExhaustedError",
     "BudgetVelocityExceededError",
+    "GoalReconfirmationThresholdExceededError",
+    "FirstTimeActionGateBypassAttemptError",
     "RsBindingsNotAvailableInPhase01Error",
     "Phase02SubstrateNotWiredError",
 ]

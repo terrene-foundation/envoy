@@ -30,6 +30,8 @@ from envoy.runtime.errors import (
     BudgetExhaustedError,
     BudgetVelocityExceededError,
     ClassifierUnavailableError,
+    FirstTimeActionGateBypassAttemptError,
+    GoalReconfirmationThresholdExceededError,
     LedgerRollbackDetectedError,
     LedgerVerificationFailedError,
     Phase02SubstrateNotWiredError,
@@ -42,6 +44,17 @@ from envoy.runtime.errors import (
     RuntimeSignatureVerificationFailedError,
 )
 from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
+from envoy.runtime.observed_state import (
+    GateResult,
+    canonicalize_args,
+    check_goal_reconfirmation,
+    fingerprint,
+    first_time_action_gate,
+    match_ast,
+    reconfirm_goal,
+    record_observation,
+)
+from envoy.runtime.observed_state_gate import SessionObservedStateGate
 from envoy.runtime.protocol import KailashRuntime
 from envoy.runtime.selection import get_runtime
 from envoy.runtime.session import (
@@ -90,6 +103,16 @@ __all__ = [
     "ALL_TRIGGERS",
     "SESSION_BOUNDARY_ENTRY_TYPE",
     "SESSION_BOUNDARY_SCHEMA_VERSION",
+    # WS-6 S5o — SessionObservedState first-time-action gate
+    "GateResult",
+    "first_time_action_gate",
+    "fingerprint",
+    "canonicalize_args",
+    "match_ast",
+    "check_goal_reconfirmation",
+    "record_observation",
+    "reconfirm_goal",
+    "SessionObservedStateGate",
     # Errors (spec § Error taxonomy + Envoy-internal)
     "RuntimeError",
     "RuntimeNotReadyError",
@@ -103,6 +126,8 @@ __all__ = [
     "RuntimeSignatureVerificationFailedError",
     "BudgetExhaustedError",
     "BudgetVelocityExceededError",
+    "GoalReconfirmationThresholdExceededError",
+    "FirstTimeActionGateBypassAttemptError",
     "RsBindingsNotAvailableInPhase01Error",
     "Phase02SubstrateNotWiredError",
 ]

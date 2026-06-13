@@ -176,7 +176,8 @@ Raw store surface shipped in S4s:
 
 S4s stores + returns the `state_json` verbatim. The fingerprint /
 first-time-action gate / goal-reconfirmation semantics that DERIVE the blob are
-owned by S5o (`specs/session-state.md` § Algorithm), which consumes this region.
+shipped in S5o (§ SessionObservedState first-time-action gate below;
+`specs/session-state.md` § Algorithm), which consumes this region.
 
 ### Genesis write (`envoy init` — S4i)
 
@@ -414,6 +415,66 @@ The S5b session-lifecycle boundary surface is exported from
   `REGISTERED_AS_OF_F5` (9 of 10 subcommands wired; the strict-xfail for `grant`
   flipped to PASS).
 
+## SessionObservedState first-time-action gate (`envoy.runtime.observed_state` — S5o)
+
+The gate semantics that DERIVE the Region-2 blob. Two layers: a PURE,
+deterministic gate (`envoy.runtime.observed_state`) both runtime adapters
+delegate to, and a store-wired orchestrator
+(`envoy.runtime.observed_state_gate.SessionObservedStateGate`) that loads from /
+persists to Region 2.
+
+**Fingerprint.** `fingerprint(tool_name, args)` returns
+`sha256:<hex>` over `NFC(tool_name) || canonicalize_args(args)`, where
+`canonicalize_args` is the envelope-model JCS+NFC pipeline
+(`envoy.envelope.canonical_bytes`). The SAME pipeline both runtimes use, so the
+fingerprint is byte-identical across `kailash-py` and `kailash-rs-bindings`
+(the N6 conformance invariant); an NFD-authored tool name or arg value hashes
+identically to its precomposed sibling.
+
+**`first_time_action_gate(session, tool_name, args) -> GateResult`.** The pure
+gate (`specs/session-state.md` § Algorithm). Returns `RECOGNIZED` on a
+fingerprint cache-hit (via the S5b `is_recognized_fingerprint` membership
+predicate — reused, not re-derived per `specs-authority.md` Rule 5b) or a
+pre-authorized-pattern match; else `FIRST_TIME_REQUIRES_GRANT` (the caller
+dispatches `specs/grant-moment.md`). Both adapters' `first_time_action_gate`
+delegate to this one function, so the `GateResult` is byte-identical by
+construction (`@byte_identical` per `specs/runtime-abstraction.md`).
+
+**Pre-authorized pattern AST (fail-closed).** `match_ast(pattern_ast, args)`
+matches a pre-authorized pattern (`SessionObservedState.pre_authorized_patterns`)
+against tool-call args. Both MUST be dicts with the EXACT same key set — an args
+key the pattern does not constrain is an unauthorized parameter, and a pattern
+key absent from args is an unmet precondition; either fails the match closed
+(a pattern bypasses the Grant Moment, so it MUST never over-match). Each shared
+key's value is matched by node grammar: `{"match":"exact","value":x}` (equality),
+`{"match":"any"}` (any value present), `{"match":"prefix","value":"<str>"}`
+(string `startswith`), `{"match":"type","value":"str|int|float|bool|list|dict"}`
+(`isinstance`; `int` does NOT match `bool`), a nested plain dict (recursive
+match), a list (elementwise, same length), or a bare scalar (exact). An unknown
+`match` directive fails closed. A pre-authorized match RECORDS the call into
+`tool_calls_made` (`last_outcome="pre_authorized"`) so the next identical call is
+a plain cache hit.
+
+**Goal-reconfirmation.** `check_goal_reconfirmation(session)` raises
+`GoalReconfirmationThresholdExceededError` when
+`goal_reconfirmation.tool_calls_since_reconfirm ≥ threshold` (threshold `0` —
+the genesis default — DISABLES the gate). `record_observation` increments the
+counter per observed tool call; `reconfirm_goal` resets it to 0.
+
+**Store-wired `SessionObservedStateGate(router=...)`** (the "Wire" half):
+`evaluate(session_id, tool_name, args)` loads the Region-2 blob, enforces the
+goal-reconfirmation threshold, runs the pure gate, and persists when the gate
+recorded a pre-authorized match; `observe(...)` records a tool-call observation
+and snapshots it (the "snapshot at every Ledger append" crash-safety write);
+`reconfirm(session_id)` resets the counter. A fingerprint observed in one process
+is RECOGNIZED by a gate over a fresh router opened on the same vault (cross-process
+persistence). The T-013 boundary RESET is NOT re-implemented here:
+`SessionBoundarySignal.cross()` (S5b) applies `reset_session_observed_state` to
+the durable region on an END transition; S5o CONSUMES that signal — after a
+boundary crossing, `evaluate` on a previously-recognized fingerprint returns
+`FIRST_TIME_REQUIRES_GRANT` (proven via the shared `tests/support/t013.py`
+invariant, no per-shard reset re-derivation).
+
 ## Cross-references
 
 - **specs/session-state.md** — SessionObservedState schema + § Persistence
@@ -433,6 +494,5 @@ The S5b session-lifecycle boundary surface is exported from
   surface + `list_pending_grants`; the persisted last-approved-timestamp +
   monotonic baseline (forward-skew detection) and the 3-deep delegation-tree
   persistence are the security-hardening half, in S4g-2.
-- SessionObservedState first-time-action GATE — fingerprint canonicalization, AST pre-authorized-pattern match, goal-reconfirmation threshold (S5o). The boundary signal + the T-013 reset-on-boundary write that the gate consumes are shipped (S5b — see § Session-lifecycle boundary signal above).
 - Multi-device materialized-index rebuild-from-replay (`specs/data-model.md:99`,
   Phase-02+).

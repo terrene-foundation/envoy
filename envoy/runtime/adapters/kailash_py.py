@@ -529,10 +529,19 @@ class KailashPyRuntime:
         tool_name: str,
         args: dict[str, Any],
     ) -> Any:
-        raise Phase02SubstrateNotWiredError(
-            "first_time_action_gate: requires Wave-2 session state + Grant "
-            f"Moment surface; tracked at {_TODO_WAVE_2}"
+        """specs/session-state.md § `first_time_action_gate` (WS-6 S5o).
+
+        Delegates to the pure, deterministic gate
+        (`envoy.runtime.observed_state.first_time_action_gate`) so both runtime
+        adapters return the byte-identical `GateResult` for the same
+        `(session, tool_name, args)` — the cross-runtime parity the conformance
+        harness pins. The pure gate does no I/O; the store-wired orchestration
+        (load/persist/boundary-reset) is `SessionObservedStateGate`."""
+        from envoy.runtime.observed_state import (  # noqa: PLC0415
+            first_time_action_gate as _gate,
         )
+
+        return _gate(session, tool_name, args)
 
     def grant_moment_surface(self, request: Any) -> Any:
         raise Phase02SubstrateNotWiredError(

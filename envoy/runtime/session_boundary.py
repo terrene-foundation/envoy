@@ -45,10 +45,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from envoy.ledger.canonical import canonical_dumps
-from envoy.runtime.session import SessionRouter
+
+if TYPE_CHECKING:
+    # Type-only import: ``SessionRouter`` is referenced solely in annotations
+    # (``from __future__ import annotations`` makes them strings). Keeping it under
+    # TYPE_CHECKING means importing this module's PURE contracts
+    # (``reset_session_observed_state`` / ``is_recognized_fingerprint`` /
+    # ``boundary_transition``) does NOT drag in the store + keystore machinery —
+    # the S5o gate + the runtime adapters' byte-identical path stay I/O-import-free.
+    from envoy.runtime.session import SessionRouter
 
 # ── Trigger taxonomy (specs/session-state.md § session_boundary_crossed) ──────
 #: Triggers that OPEN a session — emit transition "start".
