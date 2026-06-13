@@ -30,6 +30,7 @@ from envoy.runtime.conformance import (
     canonical_hash,
     score_byte_identity,
 )
+from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
 from envoy.runtime.contract_tier import (
     ContractTier,
     MissingContractTierError,
@@ -133,10 +134,23 @@ def test_harness_resolves_runtime_through_get_runtime_seam() -> None:
     assert type(resolved).__name__ == type(get_runtime(family="kailash-py")).__name__
 
 
-def test_harness_rs_lane_returns_none_until_wired() -> None:
-    # rs-bindings is not wired in this phase; resolve_runtime returns None so the
-    # harness skips that lane rather than failing (ACCEPTABLE skip).
-    assert harness.resolve_runtime("kailash-rs-bindings") is None
+def test_harness_rs_lane_constructs_adapter_without_flipping_production_flag() -> None:
+    # S3a wired the test-only rs seam: resolve_runtime("kailash-rs-bindings")
+    # now constructs the rs adapter DIRECTLY (bypassing the production
+    # get_runtime flag-gate) so the conformance harness can exercise the rs
+    # adapter's wired methods cross-runtime. Crucially, the seam does NOT flip
+    # the PRODUCTION feature flag — production gating stays False; the harness
+    # is the gate that must pass before that flip.
+    from envoy.runtime.adapters.kailash_rs_bindings import KailashRsBindingsRuntime
+    from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
+
+    rs = harness.resolve_runtime("kailash-rs-bindings")
+    assert isinstance(rs, KailashRsBindingsRuntime)
+    # The production flag is untouched by the test-only seam.
+    assert RS_BINDINGS_ENABLED is False
+    # And the production selection seam still refuses the rs family.
+    with pytest.raises(RsBindingsNotAvailableInPhase01Error):
+        get_runtime(family="kailash-rs-bindings")
 
 
 def test_parametrize_emits_runtime_prefixed_ids() -> None:

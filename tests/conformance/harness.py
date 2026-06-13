@@ -32,12 +32,15 @@ the byte-identity scorer asserts hash-equality — that is the S1 deliverable.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import contextlib
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
 
 from envoy.runtime import get_runtime
+from envoy.runtime.adapters import kailash_rs_bindings as _rs_mod
+from envoy.runtime.adapters.kailash_rs_bindings import KailashRsBindingsRuntime
 from envoy.runtime.conformance import (
     ConformanceVector,
     ScoreResult,
@@ -55,16 +58,67 @@ RUNTIME_FAMILIES: tuple[str, ...] = ("kailash-py", "kailash-rs-bindings")
 REFERENCE_FAMILY = "kailash-py"
 
 
-def resolve_runtime(family: str, **kwargs: Any) -> KailashRuntime | None:
-    """Resolve a runtime via the single `get_runtime()` seam.
+@contextlib.contextmanager
+def _rs_construction_window() -> Iterator[None]:
+    """Temporarily admit `KailashRsBindingsRuntime` construction in-test.
 
-    Returns the adapter, or ``None`` when the family is not yet wired in this
-    phase (the rs-bindings runtime before S2a flips ``RS_BINDINGS_ENABLED`` —
-    `get_runtime` raises `RsBindingsNotAvailableInPhase01Error`). A ``None``
-    return tells the harness to SKIP that lane with an explicit reason
-    (`rules/testing.md` § Test-Skip Triage: infra-unavailable = ACCEPTABLE),
-    NOT to fail — the rs lane goes green automatically once S2a wires it.
+    The rs adapter's constructor guards on the module-level
+    ``RS_BINDINGS_ENABLED`` (raises ``RsBindingsNotAvailableInPhase01Error``
+    while it is ``False``). This window flips ONLY the adapter-module's view of
+    the flag for the duration of one construction, then restores it — the
+    PRODUCTION flag in ``envoy/runtime/feature_flags.py`` is never touched, and
+    `get_runtime` (the production selection seam) continues to refuse the rs
+    family exactly as before. The flip is scoped to construction so a leak
+    cannot widen the production substitution boundary.
     """
+    previous = _rs_mod.RS_BINDINGS_ENABLED
+    _rs_mod.RS_BINDINGS_ENABLED = True
+    try:
+        yield
+    finally:
+        _rs_mod.RS_BINDINGS_ENABLED = previous
+
+
+def resolve_runtime(family: str, **kwargs: Any) -> KailashRuntime | None:
+    """Resolve a runtime for the conformance harness.
+
+    Two paths, deliberately asymmetric:
+
+    - ``kailash-py`` (the REFERENCE family) resolves through the production
+      `get_runtime()` selection seam, UNCHANGED — the reference runtime is the
+      one real Envoy primitives get today.
+
+    - ``kailash-rs-bindings`` (the runtime-UNDER-TEST) is constructed DIRECTLY
+      via ``KailashRsBindingsRuntime(**test_kwargs)`` inside a scoped
+      construction window (see `_rs_construction_window`). This is a TEST-ONLY
+      seam: it bypasses the production ``get_runtime`` flag-gate so the harness
+      can exercise the rs adapter's WIRED methods cross-runtime EVEN WHILE the
+      production ``RS_BINDINGS_ENABLED`` stays ``False``.
+
+      The production flag is DELIBERATELY left ``False`` and is NOT flipped
+      here. Production gating (which runtime real Envoy primitives get) is a
+      SEPARATE concern from test access to the adapter: the conformance harness
+      IS the gate that must pass BEFORE the production flag flips — the
+      flag-flip is the LAST step of the WS-1 critical path, gated on
+      S2b/S2c/S3a/S3b proving byte-identity on both runtimes (per
+      `workspaces/phase-02-distribution/todos/active/01-m1-ws1-runtime-pluggability.md`
+      § "Flag-flip gate" + the rs adapter module docstring). Wiring `resolve_runtime`
+      to flip the production flag here would invert that gate.
+
+    ``kwargs`` are forwarded to the adapter constructor (device signing key,
+    trust store, ledger, …) so both runtimes can be constructed with IDENTICAL
+    key material — a precondition for byte-identical Ed25519 signatures and
+    SET-equal cascade-revoke results.
+
+    Returns the adapter, or ``None`` when the family genuinely cannot be wired
+    (a future family `get_runtime` does not know). A ``None`` return tells the
+    harness to SKIP that lane with an explicit reason rather than fail.
+    """
+    if family == "kailash-rs-bindings":
+        # TEST-ONLY direct construction — bypasses the production flag-gate
+        # without flipping the production flag (see docstring + window helper).
+        with _rs_construction_window():
+            return KailashRsBindingsRuntime(**kwargs)
     try:
         return get_runtime(family=family, **kwargs)
     except RsBindingsNotAvailableInPhase01Error:
