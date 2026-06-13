@@ -22,6 +22,7 @@ import click
 
 from envoy.cli.connection import connection as connection_group
 from envoy.cli.digest import digest as digest_group
+from envoy.cli.grant import grant as grant_group
 from envoy.cli.init import init as init_group
 from envoy.cli.ledger import ledger as ledger_group
 from envoy.cli.model import model as model_group
@@ -45,9 +46,9 @@ def cli(ctx: click.Context, log_level: str) -> None:
     """envoy — Autonomous AI where you set the boundaries.
 
     Currently ships `envoy shamir`, `envoy digest`, `envoy posture`,
-    `envoy version`, `envoy connection`, `envoy model`, `envoy ledger`, and
-    `envoy init` (8 of 10 canonical subcommands); the remaining `envoy chat`
-    and `envoy grant` complete the surface in Phase 02
+    `envoy version`, `envoy connection`, `envoy model`, `envoy ledger`,
+    `envoy init`, and `envoy grant` (9 of 10 canonical subcommands); the
+    remaining `envoy chat` completes the surface in Phase 02
     (`specs/mvp-build-sequence.md` line 128 + Phase-02 hooks item 9).
     """
     cli_session_id = os.environ.get("ENVOY_CLI_SESSION_ID") or uuid.uuid4().hex
@@ -71,6 +72,7 @@ cli.add_command(connection_group)
 cli.add_command(model_group)
 cli.add_command(ledger_group)
 cli.add_command(init_group)
+cli.add_command(grant_group)
 
 
 __all__ = ["cli"]

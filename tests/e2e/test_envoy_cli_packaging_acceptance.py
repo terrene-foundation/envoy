@@ -99,13 +99,14 @@ CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
 #   - ``model`` — F5.2 Shard 3 (BYOM picker, PR #66)
 #   - ``ledger`` — EC-4/EC-9 durable-export shard C (`envoy ledger export`)
 #   - ``init`` — Phase-02 WS-6 shard S4i (Boundary-Conversation bootstrap)
-# ``chat`` / ``grant`` remain Phase 02 per ``specs/mvp-build-sequence.md``
-# line 128 + Phase-02 hooks item 9. When a shard wires a subcommand, append it
-# here — the xfail in the parametrized test flips to PASSED on the next run,
-# surfacing the Milestone-5 progress signal (strict xfail forces this update in
-# the SAME PR that wires the subcommand).
+#   - ``grant`` — Phase-02 WS-6 shard S4g-1 (cross-process Grant Moment answer)
+# ``chat`` remains Phase 02 per ``specs/mvp-build-sequence.md`` line 128 +
+# Phase-02 hooks item 9 (WS-6 shard S6c, the resident receive-loop, LAST). When
+# a shard wires a subcommand, append it here — the xfail in the parametrized
+# test flips to PASSED on the next run, surfacing the Milestone-5 progress signal
+# (strict xfail forces this update in the SAME PR that wires the subcommand).
 REGISTERED_AS_OF_F5: frozenset[str] = frozenset(
-    {"shamir", "digest", "posture", "version", "connection", "model", "ledger", "init"}
+    {"shamir", "digest", "posture", "version", "connection", "model", "ledger", "init", "grant"}
 )
 
 
