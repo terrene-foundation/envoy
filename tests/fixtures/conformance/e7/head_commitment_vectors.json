@@ -1,0 +1,124 @@
+{
+  "$schema_note": "E7 ledger head-commitment conformance vectors. SHARED CORPUS — vendored by the S7v Rust independent verifier (terrene-foundation/envoy-ledger-verifier) per specs/independent-verifier.md ~198-200 + specs/runtime-abstraction.md E7. This JSON is the SINGLE source of truth: the Python harness (tests/conformance/test_e5_e7.py) loads it AND S7v vendors the same bytes, so the two never diverge. Each vector replays its ordered `appends` (entry_type + content) into ONE EnvoyLedger, then snapshots head_commitment(). head_commitment() is BOTH byte-identical across kailash-py / kailash-rs-bindings (same injected ledger instance) AND monotonic non-decreasing in head_sequence across the append sequence. expected_head_sequence_progression[i] is the head_sequence after appends[0..=i] (1-indexed count of appends). The Decision on shared-corpus packaging: a separately-consumable JSON fixture (NOT a git-submodule pin, NOT an inline-in-test corpus) — rationale in the test-module docstring + PR body.",
+  "family": "E7",
+  "method": "head_commitment",
+  "spec": "specs/runtime-abstraction.md E7 (head-commitment monotonicity) + specs/ledger.md Head commitment + specs/independent-verifier.md ~198-200 (S7v reuse)",
+  "vectors": [
+    {
+      "vector_id": "e7-01-single-append",
+      "description": "One append; head_sequence becomes 1. Minimal non-empty chain.",
+      "appends": [
+        {"entry_type": "RoleEnvelopeCreated", "content": {"envelope_version": 1}}
+      ],
+      "expected_head_sequence_progression": [1]
+    },
+    {
+      "vector_id": "e7-02-two-appends",
+      "description": "Two appends; head_sequence 1 then 2 (strictly increasing).",
+      "appends": [
+        {"entry_type": "t1", "content": {"v": 1}},
+        {"entry_type": "t2", "content": {"v": 2}}
+      ],
+      "expected_head_sequence_progression": [1, 2]
+    },
+    {
+      "vector_id": "e7-03-three-appends",
+      "description": "Three appends across distinct entry types; 1->2->3.",
+      "appends": [
+        {"entry_type": "PostExecutionOutcome", "content": {"action": "read", "ok": true}},
+        {"entry_type": "RefusalRecorded", "content": {"action": "delete", "reason": "envelope"}},
+        {"entry_type": "GrantPending", "content": {"action": "write", "principal_id": "p-1"}}
+      ],
+      "expected_head_sequence_progression": [1, 2, 3]
+    },
+    {
+      "vector_id": "e7-04-five-appends",
+      "description": "Five appends; head_sequence walks 1..5 monotonically.",
+      "appends": [
+        {"entry_type": "t", "content": {"i": 0}},
+        {"entry_type": "t", "content": {"i": 1}},
+        {"entry_type": "t", "content": {"i": 2}},
+        {"entry_type": "t", "content": {"i": 3}},
+        {"entry_type": "t", "content": {"i": 4}}
+      ],
+      "expected_head_sequence_progression": [1, 2, 3, 4, 5]
+    },
+    {
+      "vector_id": "e7-05-identical-content-distinct-entries",
+      "description": "Three appends with IDENTICAL content; sequence still strictly increases (head_sequence is per-append, not content-dependent).",
+      "appends": [
+        {"entry_type": "Heartbeat", "content": {"beat": true}},
+        {"entry_type": "Heartbeat", "content": {"beat": true}},
+        {"entry_type": "Heartbeat", "content": {"beat": true}}
+      ],
+      "expected_head_sequence_progression": [1, 2, 3]
+    },
+    {
+      "vector_id": "e7-06-unicode-content",
+      "description": "Append carrying unicode content (NFC pipeline must canonicalize identically across runtimes); 1->2.",
+      "appends": [
+        {"entry_type": "Note", "content": {"label": "café", "city": "東京"}},
+        {"entry_type": "Note", "content": {"label": "mañana"}}
+      ],
+      "expected_head_sequence_progression": [1, 2]
+    },
+    {
+      "vector_id": "e7-07-nested-content",
+      "description": "Deeply nested content dict; head_sequence 1 (canonical-form independence from nesting).",
+      "appends": [
+        {"entry_type": "Nested", "content": {"l1": {"l2": {"l3": {"leaf": 1}}}}}
+      ],
+      "expected_head_sequence_progression": [1]
+    },
+    {
+      "vector_id": "e7-08-numeric-microdollar",
+      "description": "Integer-microdollar financial content across two appends; 1->2.",
+      "appends": [
+        {"entry_type": "BudgetReserved", "content": {"amount_micros": 1000000}},
+        {"entry_type": "BudgetRecorded", "content": {"amount_micros": 999999999999}}
+      ],
+      "expected_head_sequence_progression": [1, 2]
+    },
+    {
+      "vector_id": "e7-09-key-ordering",
+      "description": "Content authored with keys in non-sorted order across two appends; canonicalization sorts identically on both runtimes; 1->2.",
+      "appends": [
+        {"entry_type": "Ordered", "content": {"z": 1, "m": 2, "a": 3}},
+        {"entry_type": "Ordered", "content": {"b": 1, "a": 2}}
+      ],
+      "expected_head_sequence_progression": [1, 2]
+    },
+    {
+      "vector_id": "e7-10-long-chain",
+      "description": "Eight appends; head_sequence walks 1..8 monotonically (longest E7 chain).",
+      "appends": [
+        {"entry_type": "c", "content": {"n": 1}},
+        {"entry_type": "c", "content": {"n": 2}},
+        {"entry_type": "c", "content": {"n": 3}},
+        {"entry_type": "c", "content": {"n": 4}},
+        {"entry_type": "c", "content": {"n": 5}},
+        {"entry_type": "c", "content": {"n": 6}},
+        {"entry_type": "c", "content": {"n": 7}},
+        {"entry_type": "c", "content": {"n": 8}}
+      ],
+      "expected_head_sequence_progression": [1, 2, 3, 4, 5, 6, 7, 8]
+    },
+    {
+      "vector_id": "e7-11-bool-null-content",
+      "description": "Content carrying bool + explicit null; two appends 1->2.",
+      "appends": [
+        {"entry_type": "Flags", "content": {"enabled": true, "parent": null}},
+        {"entry_type": "Flags", "content": {"enabled": false}}
+      ],
+      "expected_head_sequence_progression": [1, 2]
+    },
+    {
+      "vector_id": "e7-12-array-content",
+      "description": "Content carrying an array; single append; head_sequence 1.",
+      "appends": [
+        {"entry_type": "Caps", "content": {"capabilities": ["read", "write", "list"]}}
+      ],
+      "expected_head_sequence_progression": [1]
+    }
+  ]
+}
