@@ -30,7 +30,6 @@ from envoy.runtime.conformance import (
     canonical_hash,
     score_byte_identity,
 )
-from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
 from envoy.runtime.contract_tier import (
     ContractTier,
     MissingContractTierError,
@@ -40,6 +39,7 @@ from envoy.runtime.contract_tier import (
     tier_of,
 )
 from envoy.runtime.dispatch_observation import observe, record_dispatch
+from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
 from envoy.runtime.protocol import KailashRuntime
 from tests.conformance import harness
 
