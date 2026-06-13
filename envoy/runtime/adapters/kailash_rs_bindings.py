@@ -619,15 +619,19 @@ class KailashRsBindingsRuntime:
         tool_name: str,
         args: dict[str, Any],
     ) -> Any:
-        """specs/session-state.md § `first_time_action_gate`. Byte-identical
-        (deterministic first-seen check).
+        """specs/session-state.md § `first_time_action_gate` (WS-6 S5o).
+        Byte-identical (deterministic first-seen check).
 
-        Substrate-gated: the session-state first-time-action gate is wired in
-        shard S5o. Raises unconditionally — no shipped class exposes
-        `first_time_action_gate`."""
-        raise _substrate_not_ready(
-            "first_time_action_gate", "S5o", "session-state first-time-action gate"
+        Delegates to the SAME pure gate
+        (`envoy.runtime.observed_state.first_time_action_gate`) the kailash-py
+        adapter uses, so the `GateResult` is byte-identical across runtimes by
+        construction — there is no rs-specific gate logic to drift. The pure gate
+        does no I/O; the store-wired orchestration is `SessionObservedStateGate`."""
+        from envoy.runtime.observed_state import (  # noqa: PLC0415
+            first_time_action_gate as _gate,
         )
+
+        return _gate(session, tool_name, args)
 
     def grant_moment_surface(self, request: Any) -> Any:
         """specs/grant-moment.md dispatch; channel-adapter routing. The rendered

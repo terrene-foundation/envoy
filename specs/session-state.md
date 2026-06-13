@@ -226,9 +226,15 @@ T-019 (velocity ratchet across session boundary) has its dedicated regression te
 
 ## Out of scope (this phase)
 
-The full `SessionObservedState` cache surface (tool-call fingerprints, first-time-action gate, goal-reconfirmation counter) is NOT wired in Phase 01 — `KailashRuntime.first_time_action_gate` is a typed Phase-02 stub on both adapters ("requires Wave-2 session state + Grant"; `envoy/runtime/adapters/kailash_py.py`), and `SessionObservedState` is referenced as Phase-04 scope at `envoy/model/errors.py`. The following test surfaces land with the Phase-02 session-state substrate (+ Phase-03 two-phase signing) and are NOT present in Phase 01:
+The `SessionObservedState` first-time-action gate ships in Phase-02 S5o:
+`KailashRuntime.first_time_action_gate` on both adapters delegates to the pure
+`envoy.runtime.observed_state` gate (fingerprint canonicalization, AST
+pre-authorized-pattern match, goal-reconfirmation threshold), and the store-wired
+`envoy.runtime.observed_state_gate.SessionObservedStateGate` persists/loads the
+cache through Region 2 (see `specs/session-runtime.md` § SessionObservedState
+first-time-action gate). The following test surfaces land with later shards
+(+ Phase-03 two-phase signing) and are NOT present in Phase 01:
 
-- First-time-action gate RECOGNITION — the fingerprint-canonicalization + AST pre-authorized-pattern match + goal-reconfirmation gate (Phase-02 S5o). The boundary SIGNAL + the T-013 cache RESET that the gate consumes are shipped (S5b — see § Session-lifecycle boundary signal above).
 - ReasoningCommit byte-identity ACROSS runtimes (BET-6 — Phase 02 wires the second runtime; Phase 01 has the single `kailash-py` runtime path tested above).
 - Orphan Phase-A TTL (Phase-03 two-phase signing).
 - ReasoningCommit preimage-mismatch detection (`ReasoningCommitPreimageMismatchError` — Phase-02 runtime reasoning-context observation).
