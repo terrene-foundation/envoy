@@ -317,6 +317,38 @@ not-pending message), then write; a request that is absent or already terminal
 decision. A row that races to terminal between the read and the write surfaces
 the same refusal (the `resolve_pending_grant` `KeyError` from the CAS).
 
+## Session-lifecycle boundary signal (S5b)
+
+`envoy.runtime.session_boundary.SessionBoundarySignal` is the lifecycle emitter
+for the `session_boundary_crossed` Ledger entry, the shared signal S5o (the
+observed-state gate) and S6c (the `chat` resident loop) both consume. Constructed
+with an injected `EnvoyLedger` + `SessionRouter`,
+`cross(trigger, session_id_prior, session_id_next=None)`:
+
+1. Maps the trigger to its transition — `unlock` / `cli_start` → `start`;
+   `cli_end` / `idle_timeout` / `user_lock` / `channel_disconnect` → `end`
+   (an unknown trigger raises `ValueError`).
+2. Derives the boundary counts from the prior session's observed-state blob
+   (`load_observed_state`) and the store's `count_pending_grants()`, and appends
+   the signed `session_boundary_crossed` entry (`session-boundary/1.0`) via the
+   `EnvoyLedger` envelope.
+3. On an `end` transition, applies the **T-013 reset** to the prior session's
+   durable Region-2 blob — `reset_session_observed_state` clears
+   `tool_calls_made` + `goal_reconfirmation.tool_calls_since_reconfirm` and drops
+   `scope: session` `pre_authorized_patterns` (keeping `cross_session`), then
+   `snapshot_observed_state` persists the cleared blob. The counts are captured in
+   the signed entry BEFORE the reset, so the audit row keeps the end-of-session
+   totals while the next session's first identical tool call is first-time-action
+   again.
+
+The reset contract + the `is_recognized_fingerprint` recognition predicate are
+exported from `envoy.runtime` and the reusable invariant assertion lives at
+`tests/support/t013.py`; S5o and S6c reuse them rather than re-deriving the reset
+(`rules/specs-authority.md` Rule 5b). The observed-state gate semantics
+themselves (fingerprint canonicalization, AST pattern match, goal-reconfirmation
+threshold) are owned by S5o. The owning-spec for the entry schema + the T-013
+invariant is `specs/session-state.md` § session_boundary_crossed.
+
 ## `SessionRouter.list_pending_grants` (S4g-1 read surface)
 
 `list_pending_grants() -> list[PendingGrantRow]` returns every `state='pending'`
@@ -340,6 +372,13 @@ The cross-process resolution codec `resolution_to_json` / `resolution_from_json`
 is exported from `envoy.grant_moment` (it owns the `ResolutionShape` types). The
 runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
 `envoy/grant_moment/runtime.py`.
+
+The S5b session-lifecycle boundary surface is exported from
+`envoy.runtime.session_boundary` (also re-exported from `envoy.runtime`):
+`SessionBoundarySignal`, `SessionBoundaryResult`, `reset_session_observed_state`,
+`is_recognized_fingerprint`, `boundary_transition`, `START_TRIGGERS`,
+`END_TRIGGERS`, `ALL_TRIGGERS`, `SESSION_BOUNDARY_ENTRY_TYPE`,
+`SESSION_BOUNDARY_SCHEMA_VERSION`.
 
 ## Test location
 
@@ -394,6 +433,6 @@ runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
   surface + `list_pending_grants`; the persisted last-approved-timestamp +
   monotonic baseline (forward-skew detection) and the 3-deep delegation-tree
   persistence are the security-hardening half, in S4g-2.
-- SessionObservedState first-time-action gate + reset-on-boundary writes (S5o).
+- SessionObservedState first-time-action GATE — fingerprint canonicalization, AST pre-authorized-pattern match, goal-reconfirmation threshold (S5o). The boundary signal + the T-013 reset-on-boundary write that the gate consumes are shipped (S5b — see § Session-lifecycle boundary signal above).
 - Multi-device materialized-index rebuild-from-replay (`specs/data-model.md:99`,
   Phase-02+).

@@ -51,6 +51,18 @@ from envoy.runtime.session import (
     SessionRouter,
     session_db_path,
 )
+from envoy.runtime.session_boundary import (
+    ALL_TRIGGERS,
+    END_TRIGGERS,
+    SESSION_BOUNDARY_ENTRY_TYPE,
+    SESSION_BOUNDARY_SCHEMA_VERSION,
+    START_TRIGGERS,
+    SessionBoundaryResult,
+    SessionBoundarySignal,
+    boundary_transition,
+    is_recognized_fingerprint,
+    reset_session_observed_state,
+)
 
 __all__ = [
     # Protocol + adapters
@@ -67,6 +79,17 @@ __all__ = [
     "PENDING_GRANT_STATES",
     "SESSION_SIGNING_KEY_ID",
     "session_db_path",
+    # WS-6 S5b — session-lifecycle boundary signal + T-013 reset
+    "SessionBoundarySignal",
+    "SessionBoundaryResult",
+    "reset_session_observed_state",
+    "is_recognized_fingerprint",
+    "boundary_transition",
+    "START_TRIGGERS",
+    "END_TRIGGERS",
+    "ALL_TRIGGERS",
+    "SESSION_BOUNDARY_ENTRY_TYPE",
+    "SESSION_BOUNDARY_SCHEMA_VERSION",
     # Errors (spec § Error taxonomy + Envoy-internal)
     "RuntimeError",
     "RuntimeNotReadyError",

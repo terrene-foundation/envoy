@@ -181,6 +181,12 @@ def reasoning_commit(session, reasoning_context, rule_ids):
 
 `SessionObservedState` is in-memory during session + snapshot to a 0o600 vault-sibling SQLite store (`<vault-stem>.session.db`, `session_observed_state` table) at every Ledger append, so a crash mid-session preserves orphan-phase-A tracking. The snapshot blob is stored as canonical JSON; the resolution rows the same store holds are signed with an OS-keychain Ed25519 session key (a trust anchor distinct from the ledger signing key), not encrypted-at-rest. Never synced to other devices (each device has its own session cache).
 
+## Session-lifecycle boundary signal (`envoy.runtime.session_boundary`)
+
+`envoy.runtime.session_boundary.SessionBoundarySignal` is the lifecycle emitter for the `session_boundary_crossed` Ledger entry across all six triggers. `cross(trigger, session_id_prior, session_id_next=None)` maps the trigger to its transition (`unlock` / `cli_start` → `start`; `cli_end` / `idle_timeout` / `user_lock` / `channel_disconnect` → `end`), derives `tool_call_count_observed` / `orphan_phase_a_count` / `unresolved_grants_deferred` from the prior session's observed-state blob + the store's pending-grant count, and appends the signed entry via the `EnvoyLedger` envelope (the ledger device key; the existing Boundary-Conversation shamir checkpoint at `envoy/boundary_conversation/runtime.py` is a distinct ritual-internal use of the same entry type). The trigger enum is fail-loud — an unknown trigger raises `ValueError`, never a silent default.
+
+The **T-013 cache reset** is the shared contract `reset_session_observed_state(blob)`: crossing a boundary clears `tool_calls_made` and `goal_reconfirmation.tool_calls_since_reconfirm`, and drops `scope: session` `pre_authorized_patterns` while keeping `scope: cross_session` ones. On an `end` transition `cross()` applies the reset to the prior session's durable region (after the counts are captured in the signed entry, so the audit row keeps the end-of-session totals). The reset + the `is_recognized_fingerprint` membership predicate (the gate's recognition branch, line 120) are the SHARED contract S5o (the observed-state gate) and S6c (the `chat` resident loop) reuse — neither re-derives the reset; the reusable invariant assertion lives at `tests/support/t013.py`. The observed-state gate semantics (fingerprint canonicalization, AST pre-authorized-pattern match, goal-reconfirmation threshold) are S5o; this signal owns the boundary emission + the reset only.
+
 ## Orphan Phase-A tracking
 
 Per specs/ledger.md §Two-phase signing, Phase A intents without matching Phase B are tracked in `pending_phase_a_orphans`. TTL is 30 days. At next session start, specs/grant-moment.md surfaces orphan resolution.
@@ -211,16 +217,20 @@ Phase 01 ships the `ReasoningCommit` and `session_boundary_crossed` Ledger entri
 - `tests/tier2/test_boundary_conversation_per_state_ledger_entries.py` — each S1..S9 transition emits a `ReasoningCommit` (`assert len(reasoning) >= 8`); S8 emits `session_boundary_crossed`; full chain verifies end-to-end (`test_chain_verifies_end_to_end`).
 - `tests/tier3/test_boundary_conversation_full_path.py` — the full ritual path exercising the per-state Ledger schedule end-to-end.
 
+The Phase-02 session-lifecycle emitter + T-013 reset (S5b) are tested by:
+
+- `tests/tier1/test_session_boundary_reset.py` — the pure reset contract + trigger taxonomy + the `is_recognized_fingerprint` predicate (offline).
+- `tests/tier2/test_session_boundary_signal_wiring.py` — all six triggers emit a chain-verifying signed `session_boundary_crossed` entry against a real file-backed `EnvoyLedger`; an `end` trigger resets the prior session's durable observed-state region (T-013, via the shared `tests/support/t013.py` invariant); the entry carries the derived counts.
+
 T-019 (velocity ratchet across session boundary) has its dedicated regression test under `tests/regression/` (`test_t019*`).
 
 ## Out of scope (this phase)
 
 The full `SessionObservedState` cache surface (tool-call fingerprints, first-time-action gate, goal-reconfirmation counter) is NOT wired in Phase 01 — `KailashRuntime.first_time_action_gate` is a typed Phase-02 stub on both adapters ("requires Wave-2 session state + Grant"; `envoy/runtime/adapters/kailash_py.py`), and `SessionObservedState` is referenced as Phase-04 scope at `envoy/model/errors.py`. The following test surfaces land with the Phase-02 session-state substrate (+ Phase-03 two-phase signing) and are NOT present in Phase 01:
 
-- First-time-action gate recognition + reset on session boundary (Phase-02 session-state cache).
+- First-time-action gate RECOGNITION — the fingerprint-canonicalization + AST pre-authorized-pattern match + goal-reconfirmation gate (Phase-02 S5o). The boundary SIGNAL + the T-013 cache RESET that the gate consumes are shipped (S5b — see § Session-lifecycle boundary signal above).
 - ReasoningCommit byte-identity ACROSS runtimes (BET-6 — Phase 02 wires the second runtime; Phase 01 has the single `kailash-py` runtime path tested above).
 - Orphan Phase-A TTL (Phase-03 two-phase signing).
-- `session_boundary_crossed` emission on all 6 triggers (Phase 01 exercises the S8 ritual-suspend trigger; the idle-timeout / user-lock / channel-disconnect triggers land with the long-running session model, Phase-02 hooks item 9).
 - ReasoningCommit preimage-mismatch detection (`ReasoningCommitPreimageMismatchError` — Phase-02 runtime reasoning-context observation).
 - Dedicated T-013 / T-015 threat tests (Phase-01 carries structural mitigations in this spec; the full-matrix threat-coverage gate is the Phase-02 deferral per `workspaces/phase-01-mvp/journal/0053`).
 
