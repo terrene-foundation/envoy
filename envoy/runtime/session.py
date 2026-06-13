@@ -606,6 +606,48 @@ class SessionRouter:
             )
             return False
 
+    async def list_pending_grants(self) -> list[PendingGrantRow]:
+        """List every row still in ``state=pending`` for this principal, newest first.
+
+        The read surface ``envoy grant list`` (S4g) consumes: a SEPARATE CLI
+        invocation opens a fresh router over the same on-disk vault and sees the
+        pending rows a prior (requesting) process wrote via ``put_pending_grant``.
+        Returns ``[]`` when nothing is pending. Uses the
+        ``ix_pending_grant_principal_state (principal_id, state, updated_at)``
+        index so the listing is an index scan, not a table scan. Resolved
+        (``resolved`` / ``expired``) rows are excluded — only requests actually
+        waiting for the user's decision are surfaced.
+        """
+        self._require_open()
+        rows = await asyncio.to_thread(self._sync_list_pending_grants)
+        return [
+            PendingGrantRow(
+                request_id=row["request_id"],
+                state=row["state"],
+                request_json=row["request_json"],
+                version=row["version"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                resolution_json=row["resolution_json"],
+                resolution_sig=row["resolution_sig"],
+            )
+            for row in rows
+        ]
+
+    def _sync_list_pending_grants(self) -> list[sqlite3.Row]:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "SELECT request_id, state, request_json, resolution_json, "
+                "resolution_sig, version, created_at, updated_at "
+                "FROM pending_grant WHERE principal_id = ? AND state = 'pending' "
+                "ORDER BY updated_at DESC, request_id ASC",
+                (self._principal_id,),
+            )
+            return cur.fetchall()
+        finally:
+            conn.close()
+
     async def count_pending_grants(self) -> int:
         """Count rows still in ``state=pending`` for this principal.
 

@@ -285,13 +285,56 @@ OPTIMIZATION of the poll cadence, NOT a correctness parameter: the store is
 authority and the monotonic-version guard holds at any cadence, so tuning the
 interval cannot change which resolution is observed, only how soon.
 
+## `grant` CLI answer surface (S4g-1)
+
+`envoy grant` (`envoy/cli/grant.py`) is the human-answering half of the
+cross-process Grant Moment flow: Envoy issues a Grant Moment in one process
+(writing a `state=pending` row), and the user answers it in a SEPARATE `envoy
+grant` invocation. Three subcommands, all resolving identity + vault + keyring
+the same way `envoy init` does (`--principal` / `ENVOY_PRINCIPAL_ID`, `--vault` /
+`ENVOY_VAULT_PATH`, the `ENVOY_KEYRING` selector — unset → OS keychain, `memory`
+→ in-process ephemeral, any other value → exit 32):
+
+- **`envoy grant list`** — reads `SessionRouter.list_pending_grants()` and renders
+  each pending request (request_id, tool_name, why_asking, novelty_class,
+  issued_at) with its one-line `approve` / `deny` command. Exits 0 with a
+  friendly note when nothing is pending.
+- **`envoy grant approve <request-id>`** — records an `ApproveResolution`.
+- **`envoy grant deny <request-id> [--reason ...]`** — records a
+  `DeclineResolution` (optional plain-language reason).
+
+Division of labor: the answering CLI ONLY records WHICH `ResolutionShape` the
+user chose — it calls `SessionRouter.resolve_pending_grant`, which signs the
+resolution with the session key. It NEVER produces the delegation-key-signed
+`GrantMomentResult`; that is the requesting process's M3 job, which reconstructs
+the shape from the poll (S4r) and finalizes the signed Ledger entry.
+
+Cross-process double-resolve defense is the store's `state='pending'`
+compare-and-set: `approve`/`deny` first read the row (to recover the requesting
+principal's `principal_genesis_id` for the resolution AND to give a precise
+not-pending message), then write; a request that is absent or already terminal
+(`resolved` / `expired`) is REFUSED with exit 40, never re-flipping a settled
+decision. A row that races to terminal between the read and the write surfaces
+the same refusal (the `resolve_pending_grant` `KeyError` from the CAS).
+
+## `SessionRouter.list_pending_grants` (S4g-1 read surface)
+
+`list_pending_grants() -> list[PendingGrantRow]` returns every `state='pending'`
+row for this principal, newest first (`updated_at DESC, request_id ASC`), via the
+`ix_pending_grant_principal_state` index. Resolved / expired rows are excluded —
+only requests actually awaiting a decision surface. A fresh process over the same
+vault sees the durable tail a prior (requesting) process wrote (the cross-process
+read-back the `grant list` CLI consumes).
+
 ## Public surface
 
 `envoy.runtime.session` exports (also re-exported from `envoy.runtime`):
 `SessionRouter`, `PendingGrantRow`, `PENDING_GRANT_STATES`,
 `SESSION_SIGNING_KEY_ID`, `session_db_path`. `SessionRouter` now also exposes
-`resolve_pending_grant` (S4r write half); `PendingGrantRow` carries
-`resolution_json`.
+`resolve_pending_grant` (S4r write half) and `list_pending_grants` (S4g-1 read
+half); `PendingGrantRow` carries `resolution_json` + `resolution_sig`. The
+`grant` CLI group is exported from `envoy.cli.grant` and registered on the root
+group in `envoy/cli/main.py`.
 
 The cross-process resolution codec `resolution_to_json` / `resolution_from_json`
 is exported from `envoy.grant_moment` (it owns the `ResolutionShape` types). The
@@ -317,6 +360,20 @@ runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
   poll-timeout emits the byte-identical Phase-A row + `GrantMomentExpiredError`
   and NO extra ledger row vs the Phase-01 future path). Real file-backed SQLite +
   real codec; no mocking.
+- `tests/tier2/test_grant_cli_answer_flow.py` — Tier-2 S4g-1 `grant` CLI answer
+  surface: `SessionRouter.list_pending_grants` (pending-only, newest-first,
+  cross-process read-back); the `grant list` / `approve` / `deny` CLI against a
+  real file-backed store with the `ENVOY_KEYRING=memory` headless seam (list
+  renders pending requests with their answer commands; approve/deny flip the
+  durable row to `resolved` carrying the correct `ResolutionShape`; an unknown or
+  already-answered request is refused with exit 40); and the end-to-end resume
+  through `grant`'s `_answer_pending_grant` helper (a session-key-signed
+  resolution is picked up + verified fail-closed by the requesting runtime's S4r
+  poll). All-sync `asyncio.run` (matching `test_ledger_cli_export.py`) so the
+  CliRunner-invoked command's internal `asyncio.run` never nests.
+- `tests/e2e/test_envoy_cli_packaging_acceptance.py` — `grant` added to
+  `REGISTERED_AS_OF_F5` (9 of 10 subcommands wired; the strict-xfail for `grant`
+  flipped to PASS).
 
 ## Cross-references
 
@@ -332,10 +389,11 @@ runtime wiring is `EnvoyGrantMomentRuntime(session_router=...)` —
 
 ## Out of scope (separate shards extend this spec)
 
-- `grant` CLI read surface (`grant list` / `grant approve|deny`) + the
-  back-pressure ceiling + cross-process nonce dedup (S4g). S4r ships the
-  rendezvous codec + poll + the `resolve_pending_grant` write primitive the
-  `grant` CLI drives; the CLI subcommand + its UX are S4g.
+- `grant` velocity-raise monotonic-skew defense + 3-deep delegation-tree
+  persistence (S4g-2). S4g-1 ships the `grant list` / `approve` / `deny` answer
+  surface + `list_pending_grants`; the persisted last-approved-timestamp +
+  monotonic baseline (forward-skew detection) and the 3-deep delegation-tree
+  persistence are the security-hardening half, in S4g-2.
 - SessionObservedState first-time-action gate + reset-on-boundary writes (S5o).
 - Multi-device materialized-index rebuild-from-replay (`specs/data-model.md:99`,
   Phase-02+).
