@@ -2,27 +2,24 @@
 
 ## Where we are
 
-Phase-02, phase **implement**. Wave-2 **batch-3 COMPLETE** (PRs #101–#104, codify
-#105); residual codify debt CLOSED (journal/0020, #106). **S6a SPLIT — structural
-half DONE** (user-approved): `feat/s6a-envelope-check-structural` ships the pure
-structural `envelope_check` engine; conformance **N1+N2+N3-structural+N5 flipped
-green** (~46 xfails → pass). Next implementation step: **S6b** (envelope-intersection,
-`intersect_envelopes` confirmed present) OR the deferred classifier/masking shard.
+Phase-02, phase **implement**. This session: **S6a SPLIT — structural
+envelope-check engine landed** (PR #107; conformance N1/N2/N3-structural/N5
+green); residual codify debt closed (#106, journal/0020); **S6c name-clash
+resolved + upstream #514 verified-already-closed** (#108, journal/0022). main
+clean. **Next: S6b** (envelope-intersection — buildable now).
 
 ## Read first
 
-1. `todos/active/_index.md` — batch scope + value-ranking.
-2. `todos/active/02-m2-ws6-durable-substrate.md` § S6a **SCOPE AMENDMENT** (the split: structural done; masking/T-005/semantic deferred) + the S6b/S6c shards.
-3. `todos/active/01-m1-ws1-runtime-pluggability.md` — `RS_BINDINGS_ENABLED` flag-flip gate (NOT ready; the classifier/masking + two-phase-signing + grant_moment_surface lanes still xfail-gated).
-4. `specs/session-runtime.md` § "Structural envelope-check engine (S6a)" (the verdict schema + structural/semantic partition + posture-floor) + § S5o gate.
-5. `journal/0019` (batch-3 patterns); `journal/0020` (S4g-1/S5b/S3a); `journal/0021` (the S6a SDK-gap + split rationale).
+1. `todos/active/_index.md` — scope + value-ranking (M2 shards incl. new S6d).
+2. `todos/active/02-m2-ws6-durable-substrate.md` § S6a **SCOPE AMENDMENT** (split: structural done; S6d = classifier/masking/trust deferred) + the S6b section.
+3. `specs/session-runtime.md` § "Structural envelope-check engine (S6a)" — verdict schema + structural/semantic partition + posture-floor.
+4. `journal/0021` (S6a SDK-gap + split rationale) + `journal/0022` (S6c→S6d resolution + #514-already-closed).
+5. `todos/active/01-m1-ws1-runtime-pluggability.md` — `RS_BINDINGS_ENABLED` flag-flip gate (NOT ready).
 
 ## In-flight state
 
-- **S6a structural engine LANDED** (PR #107; `envoy/runtime/envelope_check.py`; both adapters delegate → byte-identical). N1/N2/N3-structural/N5 conformance lanes pass; reviewer + security-reviewer both APPROVE (security MED-1 content-type fail-closed fixed in-shard; MED-2 cache-consumer assumption documented in `specs/session-runtime.md` § S6a for the **S6d** wiring).
-- **✅ S6c name-clash RESOLVED (journal/0022):** canonical ids — **S6c = `chat` resident loop** (unchanged); **S6d = the deferred classifier/trust-verification surface** (classifier ensemble, `@classify`/`apply_read_classification`/MaskingStrategy masking, T-005, N3-semantic, subset-proof verifier). The classifier-meaning "S6c" was renamed → "S6d" across active code/tests/specs; `_VALID_SHARD_TOKENS = {S5o, S6a, S6c, S6d}`.
-- **✅ Upstream "file it" RESOLVED (journal/0022) — did NOT file:** verified `esperie-enterprise/kailash-rs#514` (the binding-exposure issue) ALREADY EXISTS and is **CLOSED** (2026-04-24). No duplicate filed. The masking-shard (S6d) blocker is a **binding-VERSION** question — #514 closed yet `apply_read_classification` absent from the installed `kailash` 2.29.3. Resolve by verifying which binding version shipped #514 + upgrading, OR (if closed-without-shipping) reopening/commenting on #514 (a user-gated cross-repo WRITE).
-- **Still gated, unchanged:** `grant_moment_surface` (N4 rendered text) + two-phase signing (E6) on S6a; S6d (classifier surface) on the #514 binding; S6b (envelope-intersection — buildable now, `intersect_envelopes` present).
+- This `.session-notes` write is the only uncommitted change (main protected; next session's first PR carries it).
+- **S6d** (classifier/masking/trust surface) BLOCKED on the **kailash-rs#514 binding**: #514 is CLOSED but `apply_read_classification` is absent from the installed `kailash` 2.29.3 — a binding-VERSION question (journal/0022).
 
 ## Outstanding ledger (forest)
 
@@ -36,23 +33,22 @@ green** (~46 xfails → pass). Next implementation step: **S6b** (envelope-inter
 | P7  | S10 security deferrals M2/L1/L2 → S11         | `journal/0011`; `threat-model.md:52`                  | queued — land with S11          |
 | P9  | `sqlite_perms` WAL/SHM window                  | `journal/0012` redteam LOW                            | queued — trust-store hardening  |
 | P11 | Genesis write-once TOCTOU → CAS               | PR #93 security I-1                                   | queued — with multi-device      |
-| P12 | Session-store encryption-at-rest — S5o-enc    | `specs/session-state.md` §Persistence; `journal/0016` | OWNED — lands WITH S6*/vault-unlock (S5o now populates Region-2) |
+| P12 | Session-store encryption-at-rest — S5o-enc    | `specs/session-state.md` §Persistence; `journal/0016` | OWNED — lands WITH vault-unlock key lifecycle |
 | P13 | Fingerprint `name‖args` unframed seam         | S5o security-reviewer LOW (`journal/0019`)            | spec-owner — breaks N6 + needs kailash-rs coord |
+| P14 | S6d classifier/masking/trust-verification shard| `specs/classification-policy.md` §Out-of-scope; `journal/0022` | BLOCKED — kailash-rs#514 binding (CLOSED but absent in 2.29.3) |
 
-Closed this session: `P10` → terrene-foundation/kailash-py#1318 filed; receipt `journal/0018`.
+Closed this session: none (P-ledger unchanged — S6a/S6c/#514 were shards/follow-ups, see Where we are + journal/0021–0022).
 
 ## Traps
 
-- Tests: `uv run --no-sync pytest …` (bare `uv run` re-syncs/drops extras + pyenv 3.13 shim). Fresh worktree: `UV_PYTHON=.venv/bin/python uv sync --extra dev` once. CI = py3.11 + py3.13.
-- WS-6 shards are SAME-class serialized (touch `runtime.py`/`ledger/facade.py`/store) — NEVER worktree-parallelize within WS-6; conformance families DO parallelize (disjoint `tests/conformance/` files).
-- Conformance agents MUST verify the wired surface EMPIRICALLY (`harness.resolve_runtime` → `RuntimeNotReadyError`); a planning-time "buildable" claim drifts (N1/N2 were fully S6a-gated this session).
-- CI mypy gate is `mypy envoy/` ONLY; test files error under standalone mypy yet ship — do NOT add inconsistent type-ignores.
-- `journal/` is codify-branch-only — acquire a `codify/<id>-<date>` branch first.
-- admin-merge: a CI-retriggering push parks `tests-gate` as "expected" → `gh pr checks <N> --watch` then `gh pr merge --admin`.
+- Tests: `uv run --no-sync pytest …` (bare `uv run` re-syncs/drops extras + pyenv 3.13 shim). CI = py3.11 + py3.13.
+- WS-6 shards are SAME-class serialized (`runtime.py`/`ledger/facade.py`/store) — NEVER worktree-parallelize within WS-6; conformance families DO (disjoint files).
+- Conformance/seam work MUST verify the wired surface EMPIRICALLY (`harness.resolve_runtime` → `RuntimeNotReadyError`); planning-time "buildable" drifts (journal/0021 — S6a's whole SDK-gap was missed by the todo).
+- CI mypy gate is `mypy envoy/` ONLY; test files error under standalone mypy yet ship — do NOT add inconsistent type-ignores. pyright in-editor flags ALL imports unresolvable (env artifact) — ignore; mypy is the gate.
+- `journal/` is integrity-guard-BLOCKED off a codify branch: the branch MUST be EXACTLY `codify/<display_id>-<date>` (no suffix) WITH an active `acquireCodifyLease` — else hard block.
+- admin-merge: docs-only PRs path-skip tests (admin-merge on `tests-gate` parked); code PRs run the py3.11/py3.13 matrix (`gh pr checks <N> --watch` then `--admin --merge`).
 
 ## Open questions for the human
 
-- **S6a scope decision: RESOLVED 2026-06-14** — user approved the SPLIT; structural `envelope_check` engine shipped (PR #107).
-- **S6c name clash: RESOLVED 2026-06-14** (journal/0022) — S6c=chat, S6d=deferred classifier/trust surface; renamed across active code/tests/specs.
-- **Upstream "file it": RESOLVED 2026-06-14** (journal/0022) — `kailash-rs#514` already CLOSED; no duplicate filed. **OPEN for the user:** is the masking surface in a `kailash` version >2.29.3 (→ upgrade the pin) or was #514 closed-without-shipping (→ reopen/comment, a user-gated cross-repo write)? Verifying which needs a binding-version check / a cross-repo read grant.
-- **Next shard pick (for the fresh session):** **S6b** (envelope-intersection — buildable now, `intersect_envelopes` confirmed present) is the recommended next; alternatives are S6d (classifier/masking — blocked on the #514 binding) or S4g-2 (grant hardening).
+- **S6d / #514:** is `apply_read_classification` in a `kailash` version >2.29.3 (→ upgrade the pin) or was #514 closed-without-shipping (→ reopen/comment, a user-gated cross-repo write)? Verifying needs a binding-version check / cross-repo read grant.
+- **Next pick:** S6b (recommended — buildable, `intersect_envelopes` present) vs S6d (blocked on #514) vs S4g-2 (grant hardening)?
