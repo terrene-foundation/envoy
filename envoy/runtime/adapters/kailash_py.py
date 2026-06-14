@@ -49,6 +49,7 @@ import logging
 from typing import Any, cast
 
 from envoy.envelope.canonical_bytes import canonical_bytes
+from envoy.runtime.adapters._async_cascade_bridge import run_coro_blocking
 from envoy.runtime.errors import Phase02SubstrateNotWiredError
 
 logger = logging.getLogger(__name__)
@@ -192,29 +193,29 @@ class KailashPyRuntime:
         return self._trust_store.get_chain(record)
 
     def trust_cascade_revoke(self, root_id: str) -> set[str]:
-        """Forward to a sync trust store's `revoke` + collect cascaded ids.
+        """Forward to the trust store's `revoke` + collect cascaded ids.
 
         The `KailashRuntime` Protocol declares `trust_cascade_revoke` SYNC
         (`specs/runtime-abstraction.md:31` — `(str) -> set[str]`, byte-identical
-        SET equality for cross-runtime conformance). The Phase-01 real backing
-        store `envoy.trust.store.TrustStoreAdapter.revoke` is `async def`; a
-        sync Protocol method cannot drive it without an event-loop bridge that
-        is ITSELF the Phase-02 substrate (a naive `asyncio.run()` raises under
-        the async cross-channel flows EC-8 exercises). When handed an async
-        store, this method detects the returned coroutine, closes it to avoid
-        an unawaited-coroutine leak, and raises the typed Phase02 error —
-        NEVER silently returns an empty set. A silent empty cascade would
-        invisibly violate the EC-2 + EC-8(c) cascade hard-constraint (a revoked
-        parent leaving its children alive). When a sync Protocol-satisfying
-        store is supplied (a future T-01-15 sync wrapper), its RevocationResult
-        is unpacked directly — no silent default.
+        SET equality for cross-runtime conformance). The real backing store
+        `envoy.trust.store.TrustStoreAdapter.revoke` is `async def`. F12-b's
+        sync↔async bridge (`_async_cascade_bridge.run_coro_blocking`) drives the
+        returned coroutine to completion on a dedicated worker-thread event loop
+        — loop-safe whether or not this sync call fires from inside an async
+        cross-channel flow (the EC-8 hazard a naive `asyncio.run()` cannot
+        handle). A sync Protocol-satisfying store's RevocationResult is unpacked
+        directly. Either path unpacks `revoked_agents` with NO silent `[]`
+        default — a missing attribute is a loud contract violation, never a
+        silent empty cascade that would violate the EC-2 + EC-8(c) hard
+        constraint (a revoked parent leaving its children alive).
         """
         if self._trust_store is None:
             raise Phase02SubstrateNotWiredError(
                 "trust_cascade_revoke: requires a trust store; pass "
                 "`trust_store=` to KailashPyRuntime(...). The store MUST expose "
-                "a SYNC `revoke(*, agent_id, reason, revoked_by) -> RevocationResult` "
-                f"per the sync Protocol contract; tracked at {_TODO_WAVE_2}"
+                "`revoke(*, agent_id, reason, revoked_by) -> RevocationResult` "
+                "(sync or async — F12-b bridges the async case); "
+                f"tracked at {_TODO_WAVE_2}"
             )
         result = self._trust_store.revoke(
             agent_id=root_id,
@@ -222,21 +223,14 @@ class KailashPyRuntime:
             revoked_by="envoy.runtime.kailash_py",
         )
         if inspect.iscoroutine(result):
-            # Async store handed to a sync Protocol method. Close the coroutine
-            # so it does not leak a "coroutine was never awaited" RuntimeWarning,
-            # then fail loud — do NOT fall back to an empty revoked set.
-            result.close()
-            raise Phase02SubstrateNotWiredError(
-                "trust_cascade_revoke: the wired trust store's `revoke` is async, "
-                "but the KailashRuntime Protocol method is sync per "
-                "specs/runtime-abstraction.md:31. The sync<->async bridge is the "
-                "Phase-02 substrate; until it lands, cascade revocation routes "
-                "through the async TrustStoreAdapter + CascadeRevocationOrchestrator "
-                f"directly, NOT this facade; tracked at {_TODO_PHASE_02}"
-            )
-        # Sync store path: RevocationResult MUST expose `revoked_agents`. No
-        # silent `[]` default — a missing attribute is a contract violation
-        # (loud AttributeError), not an empty revoke.
+            # Async store + sync Protocol method (the real Phase-02 case:
+            # envoy.trust.store.TrustStoreAdapter.revoke is `async def`). Drive
+            # the coroutine to completion on a dedicated worker-thread loop
+            # (F12-b bridge) — loop-safe inside or outside a running loop, and
+            # NEVER a silent empty cascade.
+            result = run_coro_blocking(result)
+        # RevocationResult MUST expose `revoked_agents`. No silent `[]` default —
+        # a missing attribute is a contract violation (loud AttributeError).
         return set(result.revoked_agents)
 
     def trust_verify_subset_proof(self, parent: Any, sub: Any) -> Any:

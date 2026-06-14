@@ -232,10 +232,17 @@ in the Wave-4 milestone per `workspaces/phase-01-mvp/briefs/00-phase-01-mvp-scop
 * `tests/e2e/test_grant_moment_3_resolution_shapes_with_cascade.py` —
   EC-2 acceptance gate (3 resolution shapes execute end-to-end through the
   runtime facade) + EC-8 cascade-revocation anchor (root + 3 expected
-  descendants — Phase 01 exercises the runtime's verification half of
-  the contract; the BFS itself lives in upstream
-  `kailash.trust.cascade_revoke`). Phase 02 lifts the test to a literal
-  3-deep delegation tree once Trust Vault container persistence lands.
+  descendants). The cascade runs against a real `TrustStoreAdapter`
+  delegation tree, driven through the runtime facade `revoke_prior_grant`
+  → `CascadeRevocationOrchestrator.revoke_and_verify` →
+  `KailashPyRuntime.trust_cascade_revoke` → the sync↔async bridge
+  (`envoy.runtime.adapters._async_cascade_bridge.run_coro_blocking`) →
+  the async `TrustStoreAdapter.revoke` (BFS in upstream
+  `kailash.trust.cascade_revoke`). The bridge drives the async revoke on a
+  dedicated worker-thread event loop, so a user-initiated revocation reaches
+  every descendant whether or not it fires from inside an async cross-channel
+  flow (the EC-8(c) constraint: a revoked Day-1 parent cannot leave its Day-6
+  cross-channel children alive).
 * `tests/integration/test_grant_moment_cross_channel_confirm_failed.py` —
   `CrossChannelConfirmFailedError` runtime raise paths (analyst-R1 HIGH-1):
   missing confirm leg AND confirm-channel-same-as-decided collapse.
