@@ -1,76 +1,125 @@
-# Session Notes — 2026-06-12
+# Session Notes — 2026-06-13 (batch-3 COMPLETE)
 
 ## Where we are
 
-**Wave-2 `/redteam` CONVERGED** (this session): 0 CRIT / 0 HIGH, 2 consecutive
-clean rounds; 24 findings fixed → **PR #96** (`test/redteam-phase02-wave2-gate`,
-25 commits, +1939/-333) — AWAITING HUMAN MERGE to protected main. `/codify` →
-journals 0016 (convergence DECISION) + 0017 (3 reusable patterns) on **this
-codify PR** (`codify/jack-hong-2026-06-12`). New deliverable: `ENVOY_KEYRING`
-headless keyring-backend override (fail-closed allowlist) — closes the live
-keychain foot-gun the user hit. Gate receipts: 2098 passed/9 skipped/2 xfailed,
-mypy+pyright+ruff clean, 0 WARN+.
+Phase-02 Wave-2 **batch-3 COMPLETE**. This session ran the approved full parallel
+plan — the **WS-6 serial head (S5o)** inline + the **M1 conformance parallel
+wave (S2b/S2c/S3b)** as a 3-agent worktree wave, concurrently. **All four PRs
+merged to `main` (664b193):**
 
-Prior: batch-2 (S8e+S9a+S4i) PR #93; ruff sweep PR #94; codify PR #95
-(journals 0014/0015). main green; venv kailash 2.29.3 / Python 3.13.
+- **S5o** — SessionObservedState first-time-action gate. **PR #104 merged.**
+  Two layers: the PURE `envoy/runtime/observed_state.py` (fingerprint =
+  `sha256(NFC(tool_name) || JCS(args))` via the envelope canonical pipeline →
+  byte-identical across runtimes; `first_time_action_gate` reusing S5b's
+  `is_recognized_fingerprint`; fail-closed `match_ast`; goal-reconfirm gate) +
+  the store-wired `envoy/runtime/observed_state_gate.py::SessionObservedStateGate`
+  over the S4s Region-2 store. BOTH adapters' `first_time_action_gate` delegate
+  to the one pure gate. security-reviewer + reviewer both APPROVE.
+- **S2b N1–N3** (PR #101), **S2c N4–N6** (PR #102), **S3b E5–E7** (PR #103) —
+  cross-runtime conformance vectors. reviewer APPROVE on all three.
 
-**Next (in order):** (1) merge PR #96 + this codify PR; (2) Wave-2 batch-3 —
-M1 conformance families S2b/S2c/S3a/S3b + the WS-6 serial chain
-(S4g-1→S5b→S5o→S6*→S6c). When implementing `chat`/`grant` (WS-6 CLI verbs),
-thread the `resolve_keyring_backend` seam per journal/0017 Pattern 1 (make it a
-batch-3 acceptance criterion so the keychain foot-gun is closed at implement
-time, not re-found at redteam).
+Phase: implement. Merged main: 319 passed + 87 xfailed on the conformance+runtime
+surface; full suite was 2303 passed pre-merge.
 
 ## Read first
 
-1. `workspaces/phase-02-distribution/journal/0014` — batch-2 receipt: what
-   landed, the two in-PR security fixes, the interrupted-wave lesson.
-2. `workspaces/phase-02-distribution/journal/0015` — kailash × Python-3.14
-   breakage, the `.python-version`/`UV_PYTHON` traps, P10 upstream rec.
-3. `workspaces/phase-02-distribution/todos/active/_index.md` — status line
-   current through batch-2; batch-3 = S2b/S2c/S3a/S3b + S4g-1.
-4. `specs/session-runtime.md` § Genesis write — key convention S4g-1/S5o consume.
-5. `workspaces/phase-02-distribution/todos/active/02-m2-ws6-durable-substrate.md`
-   § SAME-CLASS SERIALIZATION — read BEFORE launching any WS-6 shard.
+1. `todos/active/_index.md` — batch scope + value-ranking.
+2. `todos/active/02-m2-ws6-durable-substrate.md` § SAME-CLASS SERIALIZATION + the
+   S6a/S6b/S6c shards (serial head: **S6a next** — unblocks the conformance xfails).
+3. `todos/active/01-m1-ws1-runtime-pluggability.md` — the flag-flip gate
+   (`RS_BINDINGS_ENABLED` flips only after the FULL byte-identical corpus is green;
+   most of it is still xfail-gated on S6a/S6c — NOT ready to flip).
+4. `specs/session-runtime.md` § SessionObservedState first-time-action gate (S5o,
+   incl. the pattern-AST grammar) + § Region 1/2.
+5. PRs #101–#104 — the receipts + review verdicts.
 
 ## In-flight state
 
-- This `.session-notes` rewrite is the only uncommitted change (main is
-  protected; next session's codify/wrapup PR carries it).
+- Only this `.session-notes` write is uncommitted; main is protected — next
+  session's codify/wrapup PR carries it.
+- **S5o gate is WIRED.** `first_time_action_gate` no longer raises; it moved OUT
+  of the rs shape-parity `SUBSTRATE_GATED_METHODS` set (13 → **12** gated). Both
+  adapters delegate to `envoy.runtime.observed_state.first_time_action_gate`.
+- **Conformance corpus is authored-and-ready behind honest xfails.** The
+  buildable-NOW lanes are LIVE: N3-structural (dispatch observation), N6
+  (fingerprint + boundary content_hash), **E7 head-commitment monotonicity**
+  (live loop on a real EnvoyLedger; vectors at `tests/fixtures/conformance/e7/head_commitment_vectors.json`
+  — the SHARED corpus S7v reuses). The rest are `xfail(strict=False)` naming
+  their gating shard: **N1/N2/N4/N5 → S6a** (`envelope_check` / `grant_moment_surface`),
+  **N3-semantic → S6c** (`classifier_invoke`), **E5 → S6c**, **E6 → S6a**.
+  Wired-set guard tests pin the gated→wired flip so landing the engine surfaces
+  loudly (drop the xfail markers then).
+- Codify journal entries NOT yet written for: **S4g-1, S5b, S3a, S5o** + the
+  session's orchestration patterns (parallel-serial-head; empirical-wired-verification
+  in agents; shared-pure-gate-dual-adapter-delegation). Capture in a future
+  `/codify` (acquire the codify lease + `codify/<id>-<date>` branch first).
+
+## Next session — WS-6 serial chain continues: S6a → S6b → S6c
+
+- **Serial head (inline, SAME-class serialized — touch `ledger/facade.py` / store):**
+  **S6a** (ClassificationPolicy Tier-2, `@classify`, T-005 ensemble fail-closed)
+  → S6b (full envelope-intersection) → S6c (`chat` resident loop, 10th CLI command,
+  real-boundary-fires-reset integration). **S6a is the highest-value next step:**
+  it flips the conformance xfails N1/N2/N4/N5 (+ E6 via two-phase) from xfail to
+  live AND is the classification engine the spec defers. S6c is LAST (depends on
+  S4r+S5b+S5o — all landed).
+- **Isolatable now:** **S7v** (Rust verifier, separate repo `terrene-foundation/envoy-ledger-verifier`)
+  — unblocked since S3b/E7 landed the shared E7 corpus; MAY run worktree-concurrent
+  with any S6* shard. Closes forest F2 → unblocks F4.
+- **S4g-1 / S4g-2** (grant cross-process flow + velocity-skew hardening) — buildable
+  on the landed S4r rendezvous + S4s store; S4g-2 off the critical path.
 
 ## Outstanding ledger (forest)
 
-| ID  | Item                                                        | Value-anchor (MUST-1 source)                          | Status                         |
-| --- | ----------------------------------------------------------- | ------------------------------------------------------ | ------------------------------ |
-| P1  | WS-2 distribution RELEASE (binary/brew/winget)               | `ROADMAP.md:74`; brief §WS-2                           | BLOCKED — external legal gates |
-| P2  | ADR-0009 runtime-pluggability board endorsement              | brief § external-gate blocker                          | BLOCKED — board/human gate     |
-| P3  | Flagged `/todos` design Qs (N4 scoring, SPAKE2-vs-Noise, ADR-0006) | `todos/active/_index.md` open Qs                 | queued — SPAKE2 due before S13 |
-| P4  | S8 registry persistence → DataFlow `@db.model`               | `journal/0010` reviewer MED                            | DEFERRED-by-design             |
-| P5  | WhatsApp channel PUBLIC launch                               | brief §WS-3 / `ROADMAP.md:94`                          | BLOCKED — business pricing     |
-| P7  | S10 security deferrals M2/L1/L2 → S11 (EC-S11.8/9/10)        | `journal/0011`; `threat-model.md:52`                   | queued — land with S11         |
-| P9  | `sqlite_perms` WAL/SHM window on 3 TrustStoreAdapter stores  | `journal/0012` redteam LOW; `trust-plane-security.md`  | queued — trust-store hardening |
-| P10 | Upstream kailash-py issue: Python-3.14 `__annotate_func__`   | `journal/0015`; zero-tolerance Rule 1 (real SDK defect)| AWAITING USER APPROVAL to file |
-| P11 | Genesis write-once TOCTOU → transactional CAS at store layer | PR #93 security I-1; bounded by `TrustVault.create`    | queued — with multi-device     |
+| ID  | Item                                                          | Status                          |
+| --- | ------------------------------------------------------------ | ------------------------------- |
+| P1  | WS-2 distribution RELEASE (binary/brew/winget)               | BLOCKED — external legal gates  |
+| P2  | ADR-0009 runtime-pluggability board endorsement              | BLOCKED — board/human gate      |
+| P3  | Flagged `/todos` design Qs (N4 scoring, SPAKE2-vs-Noise)     | queued — SPAKE2 due before S13  |
+| P4  | S8 registry persistence → DataFlow `@db.model`               | OWNED — S8-persist todo         |
+| P5  | WhatsApp channel PUBLIC launch                               | BLOCKED — business pricing      |
+| P7  | S10 security deferrals M2/L1/L2 → S11                        | queued — land with S11          |
+| P9  | `sqlite_perms` WAL/SHM window on TrustStoreAdapter           | queued — trust-store hardening  |
+| P10 | Upstream kailash-py issue: Python-3.14 `__annotate_func__`   | FILED — terrene-foundation/kailash-py#1318 (journal/0018 receipt) |
+| P11 | Genesis write-once TOCTOU → transactional CAS                | queued — with multi-device      |
+| P12 | Session-store encryption-at-rest (Region 1/2 cols) — S5o-enc | OWNED — lands WITH S6* / vault-unlock; S5o now provides the populated Region-2 it encrypts |
+| P13 | Fingerprint `name‖args` unframed-concatenation seam          | spec-owner item — changing it breaks N6 byte-identity + needs kailash-rs coordination; NOT a unilateral fix (S5o security-reviewer LOW) |
 
-Closed this session: batch-2 shards + lint debt → receipts PR #93, PR #94,
-`journal/0014`; codify wrapup → PR #95.
+Closed this session: none at forest level (S5o + S2b/S2c/S3b are shards/trees →
+PRs #101–#104, tracked in `todos/active/`, not forest items).
 
 ## Traps
 
-- Tests: `uv run pytest` ONLY. Python 3.14 breaks kailash (`journal/0015`);
-  `.python-version` pins 3.13 — do not remove. Bare `uv run` RE-SYNCS the
-  venv to the pin and DROPS extras; CI uses `UV_PYTHON`.
-- WS-6 shards are SAME-class serialized — never worktree-parallelize within
-  WS-6 (M1 conformance shards ARE parallelizable alongside the serial head).
-- `journal/` = append-only + codify-branch-only; `main` ruleset bypass is
-  EMPTY — even `--admin` can't merge over red CI.
-- Shell cwd drifts into agent worktrees after background-agent completions;
-  resumed worktree agents may run in the MAIN checkout — check `pwd` +
-  `git worktree list` before branch ops.
+- Tests: `uv run --no-sync pytest …` — bare `uv run pytest` re-syncs/drops extras
+  + hits the pyenv 3.13 shim. A FRESH worktree first needs
+  `UV_PYTHON=.venv/bin/python uv sync --extra dev` once. CI runs py3.11 + py3.13.
+- WS-6 shards are SAME-class serialized (touch `runtime.py`/`ledger/facade.py`/the
+  store) — NEVER worktree-parallelize within WS-6; M1 conformance families
+  parallelize (disjoint `tests/conformance/` files on the landed seam) — proven
+  this session (3-agent wave, zero contention).
+- CI mypy gate is `mypy envoy/` ONLY; test files are NOT in the mypy `files`
+  surface (the merged S5b/S3a/S5o tests all error under standalone `mypy <testfile>`
+  yet ship — do NOT add inconsistent type-ignores to match a non-gate).
+- Conformance agents MUST verify the wired surface EMPIRICALLY (call
+  `harness.resolve_runtime("kailash-rs-bindings")`, check for `RuntimeNotReadyError`)
+  — do NOT trust a "buildable" claim; this session N1/N2 turned out fully S6a-gated
+  despite the prior note calling them buildable.
+- `match_ast` `prefix` directive does NOT normalize paths (`/safe/` matches
+  `/safe/../etc/passwd`) — pattern authors own traversal (documented in the
+  `observed_state.py` grammar docstring).
+- `journal/` is codify-branch-only (integrity-guard) — acquire the codify lease +
+  `codify/<id>-<date>` branch before any journal write.
+- Parallel agent waves hit the server-side concurrency throttle — cold-start ≤3
+  agents (3 conformance agents this session ran clean).
+- admin-merge: a push that re-triggers CI puts the required `tests-gate` check in
+  "expected" state, so `gh pr merge --admin` is refused until the test matrix
+  settles — `gh pr checks <N> --watch` then admin-merge (this session: #104).
 
 ## Open questions for the human
 
-- P10: approve the upstream kailash-py filing? Body assembles from
-  `journal/0015` per `upstream-issue-hygiene.md` Rule 3.
-- Batch-3 default (approved index order): M1 families parallel + S4g-1
-  serial head — override only if value-rank changed.
+- **P10**: approve the upstream kailash-py Python-3.14 filing? (body from S4i
+  discovery per `upstream-issue-hygiene.md` Rule 3 — human-gated.)
+- Run `/codify` next to capture S4g-1 + S5b + S3a + S5o institutional knowledge
+  (the shared-contract pattern, the rs-test-seam pattern, the parallel-serial-head
+  orchestration, the shared-pure-gate dual-adapter pattern, the empirical-wired
+  verification discipline)?
