@@ -70,6 +70,7 @@ import logging
 from typing import Any, cast
 
 from envoy.envelope.canonical_bytes import canonical_bytes
+from envoy.runtime.adapters._async_cascade_bridge import run_coro_blocking
 from envoy.runtime.errors import (
     RsBindingsNotAvailableInPhase01Error,
     RuntimeNotReadyError,
@@ -251,23 +252,24 @@ class KailashRsBindingsRuntime:
         return self._trust_store.get_chain(record)
 
     def trust_cascade_revoke(self, root_id: str) -> set[str]:
-        """Forward to a SYNC trust store's `revoke` + collect cascaded ids.
+        """Forward to the trust store's `revoke` + collect cascaded ids.
 
         The Protocol declares `trust_cascade_revoke` SYNC
         (`specs/runtime-abstraction.md:31` — `(str) -> set[str]`, byte-identical
-        SET equality). Mirrors `kailash_py.trust_cascade_revoke`: when handed an
-        async store, the returned coroutine is detected and closed (no
-        unawaited-coroutine leak) and a typed error is raised — NEVER a silent
-        empty cascade (a silent empty set would invisibly violate the EC-2 /
-        EC-8(c) cascade hard-constraint). A sync store's RevocationResult is
-        unpacked directly; a missing `revoked_agents` attribute is a loud
-        AttributeError, not an empty default."""
+        SET equality). Mirrors `kailash_py.trust_cascade_revoke` exactly via the
+        SAME F12-b bridge: when handed an async store, the returned coroutine is
+        driven to completion on a dedicated worker-thread loop
+        (`_async_cascade_bridge.run_coro_blocking`) — loop-safe inside or outside
+        a running loop — NEVER a silent empty cascade (a silent empty set would
+        invisibly violate the EC-2 / EC-8(c) cascade hard-constraint). A sync
+        store's RevocationResult is unpacked directly; a missing `revoked_agents`
+        attribute is a loud AttributeError, not an empty default."""
         if self._trust_store is None:
             raise RuntimeNotReadyError(
                 "trust_cascade_revoke: requires a trust store; pass "
                 "`trust_store=` to KailashRsBindingsRuntime(...). The store MUST "
-                "expose a SYNC `revoke(*, agent_id, reason, revoked_by) -> "
-                "RevocationResult` per the sync Protocol contract."
+                "expose `revoke(*, agent_id, reason, revoked_by) -> "
+                "RevocationResult` (sync or async — F12-b bridges the async case)."
             )
         result = self._trust_store.revoke(
             agent_id=root_id,
@@ -275,17 +277,12 @@ class KailashRsBindingsRuntime:
             revoked_by="envoy.runtime.kailash_rs_bindings",
         )
         if inspect.iscoroutine(result):
-            # Async store handed to a sync Protocol method. Close the coroutine
-            # so it does not leak a "coroutine was never awaited" RuntimeWarning,
-            # then fail loud — do NOT fall back to an empty revoked set.
-            result.close()
-            raise RuntimeNotReadyError(
-                "trust_cascade_revoke: the wired trust store's `revoke` is "
-                "async, but the KailashRuntime Protocol method is sync per "
-                "specs/runtime-abstraction.md:31. Cascade revocation routes "
-                "through the async TrustStoreAdapter + "
-                "CascadeRevocationOrchestrator directly, NOT this facade."
-            )
+            # Async store + sync Protocol method (the real Phase-02 case).
+            # Drive the coroutine to completion on a dedicated worker-thread
+            # loop (F12-b shared bridge) — loop-safe inside or outside a running
+            # loop, NEVER a silent empty cascade. Mirrors `kailash_py` exactly
+            # via the SAME helper so the two adapters cannot drift.
+            result = run_coro_blocking(result)
         return set(result.revoked_agents)
 
     def trust_verify_subset_proof(self, parent: Any, sub: Any) -> Any:

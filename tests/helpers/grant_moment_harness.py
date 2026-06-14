@@ -107,6 +107,7 @@ async def make_runtime(
     velocity_raise_cooling_off_seconds: int = 24 * 60 * 60,
     dedup_store_ceiling: int = 100_000,
     cascade_responses: dict[str, set[str]] | None = None,
+    cascade_orchestrator: object | None = None,
     trust_store: StubTrustStore | None = None,
     plan_suspension_bridge: PlanSuspensionBridge | None = None,
     session_router: object | None = None,
@@ -140,7 +141,10 @@ async def make_runtime(
     adapters = tuple(RecordingChannelAdapter(channel_id=cid) for cid in adapter_channel_ids)
     handoff = ChannelHandoff(adapters=adapters, primary_channel_id=primary_channel_id)
 
-    cascade = CascadeRevocationOrchestrator(
+    # A caller may inject a real CascadeRevocationOrchestrator (wired to a real
+    # KailashPyRuntime + TrustStoreAdapter) to drive the F12-b bridge end-to-end;
+    # otherwise the deterministic stub-backed orchestrator is used.
+    cascade = cascade_orchestrator or CascadeRevocationOrchestrator(
         runtime=StubTrustRuntime(cascade_responses=cascade_responses or {})
     )
 

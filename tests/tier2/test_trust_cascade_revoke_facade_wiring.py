@@ -28,44 +28,30 @@ a real-shape ``RevocationResult``) — per `rules/testing.md` § "Protocol
 Adapters", a class satisfying a Protocol at runtime with deterministic output
 is NOT a mock.
 
-The async-store behavior pinned here (raise typed error, NEVER silent-empty)
-is the F10 fix: the sync Protocol method cannot drive the async
-``TrustStoreAdapter.revoke`` without an event-loop bridge that is itself the
-Phase-02 substrate; the honest disposition is a loud typed error, because a
-silent empty revoked-set invisibly violates the EC-2 + EC-8(c) cascade
-hard-constraint (a revoked parent leaving its children alive).
+The async-store path is now driven by F12-b's sync↔async bridge
+(`envoy.runtime.adapters._async_cascade_bridge.run_coro_blocking`): the sync
+Protocol method drives the async ``revoke`` coroutine to completion on a
+dedicated worker-thread event loop and returns the real revoked set — NEVER a
+silent empty set (which would invisibly violate the EC-2 + EC-8(c) cascade
+hard-constraint). The async-store coverage here uses a Protocol-Satisfying
+Deterministic *async* store (a plain class with ``async def revoke``) so the
+bridge's coroutine-driving is exercised without DB/event-loop affinity
+confounds; the real ``TrustStoreAdapter``-through-the-facade cascade is the
+e2e lift at ``tests/e2e/test_grant_moment_3_resolution_shapes_with_cascade.py``.
 """
 
 from __future__ import annotations
 
 import warnings
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 
 from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.runtime.errors import Phase02SubstrateNotWiredError
-from envoy.trust.store import TrustStoreAdapter
-
-
-@pytest.fixture
-async def real_trust_store(
-    tmp_path: Path,
-) -> AsyncGenerator[TrustStoreAdapter, None]:
-    """Real kailash-backed TrustStoreAdapter (async ``revoke``). NO mock."""
-    adapter = TrustStoreAdapter(
-        vault_path=tmp_path / "f10-vault.dat",
-        principal_id="f10-cascade-principal",
-    )
-    await adapter.initialize()
-    yield adapter
-    await adapter.close()
-
 
 # ---------------------------------------------------------------------------
-# Protocol-Satisfying Deterministic Adapter — sync store (NOT a mock)
+# Protocol-Satisfying Deterministic Adapters — sync + async stores (NOT mocks)
 # ---------------------------------------------------------------------------
 
 
@@ -76,6 +62,30 @@ class _SyncRevocationResult:
 
     revoked_agents: list[str]
     success: bool = True
+
+
+@dataclass
+class _AsyncTrustStore:
+    """Protocol-Satisfying Deterministic Adapter — an ASYNC trust store.
+
+    Mirrors the production ``envoy.trust.store.TrustStoreAdapter.revoke`` SHAPE
+    (``async def revoke(*, agent_id, reason, revoked_by) -> RevocationResult``)
+    without its DB/event-loop affinity, so the F12-b bridge's coroutine-driving
+    is exercised deterministically. Per `rules/testing.md` § Tier 2 (NO
+    mocking) — this is a real object satisfying the structural async-store shape,
+    not an ``unittest.mock``. The real ``TrustStoreAdapter``-through-the-facade
+    cascade is the e2e lift (see module docstring)."""
+
+    revoked_by_root: dict[str, list[str]] = field(default_factory=dict)
+    calls: list[tuple[str, str, str]] = field(default_factory=list)
+
+    async def revoke(
+        self, *, agent_id: str, reason: str, revoked_by: str
+    ) -> _SyncRevocationResult:
+        self.calls.append((agent_id, reason, revoked_by))
+        return _SyncRevocationResult(
+            revoked_agents=list(self.revoked_by_root.get(agent_id, []))
+        )
 
 
 @dataclass
@@ -113,36 +123,70 @@ class TestNoStoreGuard:
 
 
 # ---------------------------------------------------------------------------
-# Async-store path — the F10 fix: honest typed error, NEVER silent-empty
+# Async-store path — F12-b: the sync facade drives the async revoke via the
+# worker-thread bridge and returns the REAL revoked set, never silent-empty.
 # ---------------------------------------------------------------------------
 
 
-class TestAsyncStoreHonestDefer:
-    async def test_async_store_raises_typed_error_not_silent_empty(
-        self, real_trust_store: TrustStoreAdapter
-    ) -> None:
-        """The only real backing store is async. Driving it from the sync
-        Protocol method MUST raise the typed error — NOT return an empty set
-        (the pre-fix bug, which silently violated EC-8(c))."""
-        runtime = KailashPyRuntime(trust_store=real_trust_store)
-        with pytest.raises(Phase02SubstrateNotWiredError) as exc_info:
-            runtime.trust_cascade_revoke("agent-root")
-        msg = str(exc_info.value)
-        # The error names the sync<->async bridge as the Phase-02 substrate.
-        assert "async" in msg
-        assert "specs/runtime-abstraction.md" in msg
+class TestAsyncStoreDrivenViaBridge:
+    def test_async_store_revoked_set_returned_via_bridge(self) -> None:
+        """The production backing store is async. The sync Protocol method MUST
+        drive its ``revoke`` coroutine to completion via the F12-b bridge and
+        return the real revoked set — the EC-8(c) shape: revoking the Day-1
+        root returns the Day-6 child. NOT a typed error (pre-F12-b), NOT a
+        silent empty set (the pre-F10 bug)."""
+        store = _AsyncTrustStore(
+            revoked_by_root={"agent-day1-root": ["agent-day1-root", "agent-day6-child"]}
+        )
+        runtime = KailashPyRuntime(trust_store=store)
 
-    async def test_async_store_does_not_leak_unawaited_coroutine_warning(
-        self, real_trust_store: TrustStoreAdapter
-    ) -> None:
-        """Regression guard: the pre-fix code called the async ``revoke``
-        without awaiting it, leaking a 'coroutine was never awaited'
-        RuntimeWarning at GC. The fix closes the coroutine before raising."""
-        runtime = KailashPyRuntime(trust_store=real_trust_store)
+        revoked = runtime.trust_cascade_revoke("agent-day1-root")
+
+        assert revoked == {"agent-day1-root", "agent-day6-child"}
+        assert isinstance(revoked, set)
+        # Externally observable: the async store received the forwarded call
+        # with the runtime's canonical reason + revoked_by attribution.
+        assert store.calls == [
+            ("agent-day1-root", "envoy.runtime.cascade_revoke", "envoy.runtime.kailash_py")
+        ]
+
+    async def test_async_store_driven_from_inside_a_running_loop(self) -> None:
+        """The EC-8 hazard: a cross-channel flow calls the sync facade from
+        INSIDE a running event loop (this test body). The bridge MUST still
+        drive the async revoke — a naive ``asyncio.run()`` would raise here."""
+        store = _AsyncTrustStore(
+            revoked_by_root={"root": ["root", "child-1", "child-2", "child-3"]}
+        )
+        runtime = KailashPyRuntime(trust_store=store)
+
+        revoked = runtime.trust_cascade_revoke("root")
+
+        assert revoked == {"root", "child-1", "child-2", "child-3"}
+
+    def test_async_store_empty_result_is_genuine_not_silent_fallback(self) -> None:
+        """An empty revoked set from the real async engine (idempotent no-op on
+        an unknown root) is GENUINE — the coroutine actually ran. Distinct from
+        the pre-F10 silent fallback that never called the store at all."""
+        store = _AsyncTrustStore(revoked_by_root={})
+        runtime = KailashPyRuntime(trust_store=store)
+
+        revoked = runtime.trust_cascade_revoke("agent-unknown")
+
+        assert revoked == set()
+        assert store.calls == [
+            ("agent-unknown", "envoy.runtime.cascade_revoke", "envoy.runtime.kailash_py")
+        ]
+
+    def test_async_store_does_not_leak_unawaited_coroutine_warning(self) -> None:
+        """The bridge AWAITS the coroutine to completion (it does not close-
+        and-discard), so no 'coroutine was never awaited' RuntimeWarning leaks
+        at GC."""
+        store = _AsyncTrustStore(revoked_by_root={"root": ["root", "child"]})
+        runtime = KailashPyRuntime(trust_store=store)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            with pytest.raises(Phase02SubstrateNotWiredError):
-                runtime.trust_cascade_revoke("agent-root")
+            revoked = runtime.trust_cascade_revoke("root")
+        assert revoked == {"root", "child"}
         unawaited = [w for w in caught if "never awaited" in str(w.message)]
         assert unawaited == [], (
             f"async store path leaked unawaited-coroutine warning(s): "

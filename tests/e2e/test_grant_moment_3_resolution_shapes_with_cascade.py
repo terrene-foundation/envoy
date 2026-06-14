@@ -13,6 +13,9 @@ This is the T-03-55 acceptance gate per
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from envoy.grant_moment import (
@@ -22,6 +25,11 @@ from envoy.grant_moment import (
     DeclineResolution,
     GrantMomentOutcome,
 )
+from envoy.grant_moment.cascade_orchestrator import CascadeRevocationOrchestrator
+from envoy.runtime.adapters._async_cascade_bridge import run_coro_blocking
+from envoy.runtime.adapters.kailash_py import KailashPyRuntime
+from envoy.trust.store import TrustStoreAdapter
+from envoy.trust.types import DelegationRequest, GenesisSeed
 from tests.helpers.grant_moment_harness import (
     DEFAULT_PRINCIPAL_ID,
     make_issue_kwargs,
@@ -139,26 +147,13 @@ class TestEC2ThreeResolutionShapes:
 
 @pytest.mark.asyncio
 class TestEC8CascadeRevocation:
-    """EC-8 anchor: cascade revocation of a Day-1 grant reaches every
-    descendant in a 3-deep delegation tree.
+    """EC-8 anchor: the CascadeRevocationOrchestrator's verification half —
+    complete-vs-missing — exercised through ``revoke_prior_grant``. The literal
+    real-engine cascade (the F12-b lift) is ``TestEC8CascadeRevocationRealInfra``
+    below; these stub-backed tests pin the orchestrator's verify-or-raise
+    contract in isolation (a Protocol-Satisfying Deterministic stub per
+    `rules/testing.md` § Tier 2, NOT a mock).
     """
-
-    async def test_cascade_revoke_succeeds_when_runtime_returns_all_descendants(
-        self,
-    ) -> None:
-        # Configure the stub runtime to return all 3 descendants on cascade.
-        runtime, *_ = await make_runtime(
-            cascade_responses={
-                "root-grant-id": {"child-1", "child-2", "child-3"},
-            }
-        )
-        result = runtime.revoke_prior_grant(
-            root_id="root-grant-id",
-            expected_descendants=frozenset({"child-1", "child-2", "child-3"}),
-        )
-        assert result.complete
-        assert result.revoked_ids == frozenset({"child-1", "child-2", "child-3"})
-        assert result.missing_descendants == frozenset()
 
     async def test_cascade_revoke_raises_when_descendant_is_missing(self) -> None:
         runtime, *_ = await make_runtime(
@@ -219,3 +214,158 @@ class TestEC8CascadeRevocation:
         )
         with pytest.raises(ValueError, match="cascade_orchestrator"):
             runtime_no_cascade.revoke_prior_grant(root_id="root", expected_descendants=frozenset())
+
+
+# Day-1 root + three Day-6 children — the literal "root + 3 expected
+# descendants" tree the spec (`specs/grant-moment.md` § test list) describes.
+_ROOT = "alice-day1-root@example"
+_CHILDREN = (
+    "bob-day6-telegram@example",
+    "carol-day6-slack@example",
+    "dave-day6-cli@example",
+)
+
+
+def _build_real_cascade_runtime(vault):
+    """Build a grant-moment runtime whose CascadeRevocationOrchestrator is wired
+    to a real (fresh, NOT-initialized) ``TrustStoreAdapter`` over ``vault``.
+
+    Returns ``(runtime, store)``. The adapter is deliberately left
+    uninitialized: the F12-b bridge lazily initializes it on its worker thread
+    (``revoke``'s ``if not self._initialized`` guard), so every SQLite op for
+    the cascade runs on ONE thread against the persisted vault — no cross-thread
+    connection reuse. The caller MUST ``run_coro_blocking(store.close())`` to
+    release the worker-thread handles (`rules/testing.md` § Test Resource
+    Cleanup).
+    """
+
+    async def _build():
+        store = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
+        orchestrator = CascadeRevocationOrchestrator(
+            runtime=KailashPyRuntime(trust_store=store)
+        )
+        runtime, *_ = await make_runtime(cascade_orchestrator=orchestrator)
+        return runtime, store
+
+    return asyncio.run(_build())
+
+
+class TestEC8CascadeRevocationRealInfra:
+    """EC-8(c) cascade through the REAL trust store, driven through the runtime
+    facade ``revoke_prior_grant`` via the F12-b sync↔async bridge.
+
+    This is the spec's Phase-02 lift (`specs/grant-moment.md`): the EC-8 cascade
+    assertion was previously stubbed (``cascade_responses`` on
+    ``StubTrustRuntime``); it now seeds a real ``TrustStoreAdapter`` delegation
+    tree and revokes the root through the production binding chain
+    ``revoke_prior_grant`` → ``CascadeRevocationOrchestrator.revoke_and_verify``
+    → ``KailashPyRuntime.trust_cascade_revoke`` → F12-b bridge → async
+    ``TrustStoreAdapter.revoke``. NO mocking (`rules/testing.md` § Tier 2/3).
+
+    This is a SYNC test by design: it seeds on a throwaway ``asyncio.run`` loop
+    (persisting to the on-disk SQLite vault), then drives the SYNC
+    ``revoke_prior_grant`` from a thread with NO running loop. The bridge runs
+    the async revoke on a dedicated worker thread that lazily initializes a
+    fresh adapter against the persisted vault — exactly the production CLI
+    shape (a ``asyncio.run``-wrapped command driving the sync facade).
+    """
+
+    def test_revoke_root_cascades_to_all_three_real_descendants(self, tmp_path) -> None:
+        vault = tmp_path / "ec8-real-vault.dat"
+
+        async def _seed() -> None:
+            adapter = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
+            await adapter.initialize()
+            await adapter.seed_genesis(
+                GenesisSeed(
+                    principal_id=_ROOT,
+                    authority_id="authority-ec8-real",
+                    capabilities=("read_email", "send_email", "draft_response"),
+                    expires_at=datetime.now(tz=timezone.utc) + timedelta(days=30),
+                    metadata={"authority_name": "day-1 root", "channel": "cli"},
+                )
+            )
+            for child, cap, channel in zip(
+                _CHILDREN,
+                ("send_email", "read_email", "draft_response"),
+                ("telegram", "slack", "cli"),
+                strict=True,
+            ):
+                await adapter.record_delegation(
+                    DelegationRequest(
+                        delegator_id=_ROOT,
+                        delegatee_id=child,
+                        task_id=f"task-day6-{channel}",
+                        capabilities=(cap,),
+                        metadata={"channel": channel, "day": 6},
+                    )
+                )
+            await adapter.close()
+
+        asyncio.run(_seed())
+
+        runtime, store = _build_real_cascade_runtime(vault)
+
+        # Drive the REAL cascade through the sync facade — the bridge runs the
+        # async revoke on its worker-thread loop.
+        try:
+            result = runtime.revoke_prior_grant(
+                root_id=_ROOT,
+                expected_descendants=frozenset(_CHILDREN),
+            )
+            # The cascade actually revoked the descendants (NOT a silent-empty set).
+            assert result.complete, f"missing descendants: {result.missing_descendants}"
+            assert frozenset(_CHILDREN) <= result.revoked_ids
+            assert result.missing_descendants == frozenset()
+        finally:
+            # Release the worker-thread SQLite handles the bridge opened during
+            # revoke (per `rules/testing.md` § Test Resource Cleanup).
+            run_coro_blocking(store.close())
+
+    def test_revoke_incomplete_tree_raises_cascade_incomplete(self, tmp_path) -> None:
+        """When the real engine revokes FEWER descendants than expected (a
+        child was never delegated), ``revoke_and_verify`` raises
+        ``CascadeIncompleteError`` naming the missing descendant — the real
+        engine driving the orchestrator's verify-or-raise contract end-to-end."""
+        vault = tmp_path / "ec8-incomplete-vault.dat"
+
+        async def _seed() -> None:
+            adapter = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
+            await adapter.initialize()
+            await adapter.seed_genesis(
+                GenesisSeed(
+                    principal_id=_ROOT,
+                    authority_id="authority-ec8-incomplete",
+                    capabilities=("read_email", "send_email"),
+                    expires_at=datetime.now(tz=timezone.utc) + timedelta(days=30),
+                    metadata={"authority_name": "day-1 root", "channel": "cli"},
+                )
+            )
+            # Only ONE child is actually delegated.
+            await adapter.record_delegation(
+                DelegationRequest(
+                    delegator_id=_ROOT,
+                    delegatee_id=_CHILDREN[0],
+                    task_id="task-day6-telegram",
+                    capabilities=("send_email",),
+                    metadata={"channel": "telegram", "day": 6},
+                )
+            )
+            await adapter.close()
+
+        asyncio.run(_seed())
+
+        runtime, store = _build_real_cascade_runtime(vault)
+
+        try:
+            # Expect all three, but only one was delegated → incomplete.
+            with pytest.raises(CascadeIncompleteError) as exc:
+                runtime.revoke_prior_grant(
+                    root_id=_ROOT,
+                    expected_descendants=frozenset(_CHILDREN),
+                )
+            # The two un-delegated children are named as missing.
+            assert _CHILDREN[1] in exc.value.result.missing_descendants
+            assert _CHILDREN[2] in exc.value.result.missing_descendants
+        finally:
+            run_coro_blocking(store.close())

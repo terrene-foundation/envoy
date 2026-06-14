@@ -93,9 +93,10 @@ def shared_device_keypair() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Protocol-Satisfying Deterministic sync trust stores (E3 / E4).
 #
-# The rs + py adapters' trust_cascade_revoke / trust_verify_chain are SYNC and
-# require a SYNC store (an async store's coroutine is detected + closed + the
-# adapter raises). These plain classes satisfy the SYNC store shape with
+# The rs + py adapters' trust_cascade_revoke / trust_verify_chain are SYNC. A
+# SYNC store's RevocationResult is unpacked directly; an ASYNC store's coroutine
+# is driven to completion via the F12-b bridge (the adapter no longer raises on
+# an async store). These plain classes satisfy the SYNC store shape with
 # deterministic output — NOT mocks (`rules/testing.md` § Protocol Adapters).
 # The SAME store instance is injected into BOTH runtimes per vector, so the
 # seeded graph / verdict is byte-identical across runtimes by construction; the
