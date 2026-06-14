@@ -2,26 +2,30 @@
 
 ## Where we are
 
-Phase-02, phase **implement**. This session: **S5o-enc (session-store payload
-encryption-at-rest) LANDED** (PR #110; reviewer + security-reviewer approved — no
-CRIT/HIGH, 2 MEDIUM doc-fixes in-shard; CI green py3.11/py3.13). main clean + synced.
-**Key-source was a user-gated fork:** spec said "vault-derived", but `grant`/`chat`
-never unlock the vault → co-owner chose **keychain-gated** AES-256-GCM (no passphrase
-prompt on one-shot CLIs). The session-store payload columns (`request_json` /
-`resolution_json` / `state_json`) are now ciphertext on disk; local-file-read residual
-CLOSED. **Next: S4g-2** (grant hardening — the only remaining in-repo buildable WS-6
-shard) OR **S7v** (cross-repo — needs context-switch/authorization).
+Phase-02, phase **implement**. This session landed TWO shards: **S5o-enc**
+(session-store payload encryption-at-rest, keychain-gated — PR #110) and **S4g-2
+velocity half** (durable + forward-skew-immune velocity-raise cooling-off ratchet —
+PR #112). Both: reviewer + security-reviewer approved (no CRIT/HIGH; MEDIUM fixes
+in-shard); CI green py3.11/py3.13. main clean + synced.
+**S4g-2 was split (empirical):** the velocity half is real new code (persisted
+`velocity_raise_ratchet` table + monotonic baseline replacing the in-memory dict a
+restart silently reset). The **delegation half → S4g-2b, BLOCKED on F12-b** (the
+sync↔async cascade bridge: `revoke_prior_grant` is sync, real trust-store `revoke`
+is async) + needs multi-adapter Genesis orchestration. F12-a already proves the real
+cascade engine. **Next: S7v** (cross-repo — needs context-switch/authorization) is
+the last named WS-6 forest item; the in-repo WS-6 buildables are now exhausted (S6b
+Wave-3-deferred, S6d #514-blocked, S4g-2b F12-b-blocked, S5o-enc + S4g-2 done).
 
 ## Read first
 
 1. `todos/active/_index.md` — scope + value-ranking (M2 row + the wave batches).
-2. `todos/active/02-m2-ws6-durable-substrate.md` — § S5o-enc (✅ COMPLETE + verification), § S4g-2 (next buildable), § S6b (⚠️ Wave-3 deferral), § S7v (cross-repo).
+2. `todos/active/02-m2-ws6-durable-substrate.md` — § S4g-2 (✅ velocity COMPLETE + verification + the S4g-2b split), § S5o-enc (✅ COMPLETE), § S6b (⚠️ Wave-3 deferral), § S7v (cross-repo).
 3. `specs/session-runtime.md` § "Region encryption-at-rest (S5o-enc)" — the shipped key contract + the keychain-vs-vault deviation note.
 4. `journal/0021` (S6a split) + `journal/0022` (S6c/S6d naming + #514).
 
 ## In-flight state
 
-- This `.session-notes` write + the S5o-enc COMPLETE marker in the milestone file are the only uncommitted changes (main protected; carry them in the next docs PR).
+- This `.session-notes` write + the S4g-2 COMPLETE marker in the milestone file are the only uncommitted changes (main protected; carry them in the next docs PR).
 
 ## Outstanding ledger (forest)
 
@@ -39,8 +43,10 @@ shard) OR **S7v** (cross-repo — needs context-switch/authorization).
 | P14 | S6d classifier/masking/trust-verification shard| `specs/classification-policy.md` §Out-of-scope; `journal/0022` | BLOCKED — kailash-rs#514 (CLOSED but absent in 2.29.3) |
 | P15 | S6b full envelope-intersection + clearance-map| `02-m2-ws6...md` §S6b; `envelope/compiler.py:296-308` | DEFERRED to Wave-3 — orphan-risk (no live consumer; lossy clearance round-trip) |
 | P16 | S5o-enc residual: same-user+keychain decrypt  | `threat-model.md` § Residual (post-S5o-enc)           | documented — device-compromise class, out of local-file-read scope |
+| P17 | S4g-2b 3-deep delegation literal-cascade e2e   | `02-m2-ws6...md` §S4g-2b; `grant-moment.md:237`        | BLOCKED — gated on F12-b (sync↔async cascade bridge) + multi-adapter Genesis |
+| P18 | F12-b sync↔async cascade facade bridge         | `journal/0042` (F12-a scope note)                     | queued — unblocks S4g-2b + EC-8 user-reachable cascade |
 
-Closed this session: **P12 (session-store encryption-at-rest) — S5o-enc LANDED, PR #110.**
+Closed this session: **P12 (session-store encryption-at-rest) — S5o-enc, PR #110.** **S4g-2 velocity half — PR #112** (delegation half → P17, blocked on F12-b/P18).
 
 ## Traps
 
@@ -53,5 +59,8 @@ Closed this session: **P12 (session-store encryption-at-rest) — S5o-enc LANDED
 
 ## Open questions for the human
 
-- **Next pick:** **S4g-2** (grant velocity-skew + 3-deep delegation-tree persistence — buildable in-repo now, S4g-1 done, ~180 LOC, ≤3 invariants) is the only remaining WS-6 shard executable from this repo. **S7v** (Rust verifier, closes forest F2→F4) lives in the SEPARATE repo `terrene-foundation/envoy-ledger-verifier` — needs a context-switch (open a session there) or a user-authorized bounded cross-repo grant (5-condition exception per `repo-scope-discipline.md`). **S6d** stays blocked on kailash-rs#514 (CLOSED but absent in installed 2.29.3 — a binding-VERSION check).
+- **Next pick — in-repo WS-6 buildables are EXHAUSTED.** S5o-enc ✅, S4g-2 velocity ✅; remaining WS-6 items are all blocked: S6b (Wave-3-deferred, orphan-risk), S6d (kailash-rs#514), S4g-2b (F12-b/P18), S7v (cross-repo). The actionable next moves need a human decision:
+  - **F12-b (P18)** — the sync↔async cascade bridge — is buildable IN-REPO and unblocks S4g-2b (P17) AND user-reachable EC-8 cascade. Likely the highest-value in-repo next pick. Confirm scope before starting (it's a runtime facade change, not yet sharded at `/todos`).
+  - **S7v** (Rust verifier, closes forest F2→F4) lives in the SEPARATE repo `terrene-foundation/envoy-ledger-verifier` — needs a context-switch (open a session there) or a user-authorized bounded cross-repo grant (5-condition exception per `repo-scope-discipline.md`).
+  - Or move to another milestone (M3 WS-4 / M4 WS-5 / M5 WS-3) — re-value-rank at `/todos` per `rules/wave-loop.md` G4.
 - **S6d / #514:** is `apply_read_classification` in a `kailash` >2.29.3 (→ upgrade pin) or closed-without-shipping (→ reopen, a user-gated cross-repo write)? Needs a binding-version check.
