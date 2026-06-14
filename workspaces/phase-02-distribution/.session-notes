@@ -2,18 +2,19 @@
 
 ## Where we are
 
-Phase-02, **implement**. Two shards landed this session: S5o-enc (session-store
-encryption-at-rest, keychain-gated — PR #110) + S4g-2 velocity half (durable +
-skew-immune velocity-raise cooling-off ratchet — PR #112). main clean + synced.
-**In-repo WS-6 buildables are now EXHAUSTED** — every remaining WS-6 item is
-blocked (see ledger). The next pick is a human decision (see Open questions).
+Phase-02, **implement**. This session: (1) promoted the prior session's 3
+SessionEnd journal stubs → durable entries `journal/0023`–`0025` (PR #114, via
+`/codify` lease flow); (2) landed **F12-b** — the sync↔async cascade-revoke
+facade bridge — **and S4g-2b** (the 3-deep real-infra cascade e2e lift) in one
+shard (PR #115). main clean + synced. The next pick is a human decision (see
+Open questions).
 
 ## Read first
 
-1. `todos/active/02-m2-ws6-durable-substrate.md` — § S4g-2 (✅ + S4g-2b/F12-b split), § S5o-enc (✅), § S6b/S7v (blocked).
+1. `todos/active/02-m2-ws6-durable-substrate.md` — § S4g-2b (✅ COMPLETE w/ F12-b + the **F12-c precondition**), § S4g-2 (✅), § S6b/S7v (blocked).
 2. `todos/active/_index.md` — milestone value-ranking (M1–M6).
-3. `specs/session-runtime.md` § "Region encryption-at-rest (S5o-enc)" — shipped key contract + the keychain-vs-vault deviation note.
-4. `journal/0021`+`0022` — S6a split, S6c/S6d naming, kailash-rs#514.
+3. `journal/0023`–`0025` — S5o-enc keychain-gating decision + review trust-boundary; S4g-2 velocity ratchet.
+4. `envoy/runtime/adapters/_async_cascade_bridge.py` — the F12-b bridge (`run_coro_blocking`, worker-thread loop, bounded wait).
 
 ## Outstanding ledger (forest)
 
@@ -31,20 +32,22 @@ blocked (see ledger). The next pick is a human decision (see Open questions).
 | P14 | S6d classifier/masking shard | `journal/0022`; classification-policy spec | BLOCKED — kailash-rs#514 |
 | P15 | S6b envelope-intersection | `02-m2-ws6…md` §S6b | DEFERRED Wave-3 (orphan-risk) |
 | P16 | S5o-enc same-user+keychain residual | `threat-model.md` §Residual | documented (device-compromise) |
-| P17 | S4g-2b 3-deep delegation e2e | `02-m2-ws6…md` §S4g-2b; `grant-moment.md:237` | BLOCKED — F12-b (P18) |
-| P18 | F12-b sync↔async cascade bridge | `journal/0042` | queued — IN-REPO buildable; unblocks P17 + EC-8 |
+| P19 | F12-c production CLI revoke entrypoint | `02-m2-ws6…md` §S4g-2b (F12-c) | queued — IN-REPO; **precondition first** (see below) |
 
-Closed this session: `P12` (S5o-enc) → PR #110; S4g-2 velocity half → PR #112.
+Closed this session: **P17** (S4g-2b 3-deep e2e) + **P18** (F12-b bridge) → PR #115; journal-stub promotion → PR #114.
 
 ## Traps
 
 - Tests: `ENVOY_KEYRING=memory uv run --no-sync pytest …`. CI = py3.11+3.13. `.python-version` pinned 3.13.
-- Keychain: thread ONE backend into EVERY consumer; SessionRouter now loads TWO keychain keys (signing + encryption). Cross-process CLI tests MUST share one backend (`ENVOY_KEYRING=memory` mints a fresh dict per `resolve_keyring_backend()` call) — see `test_grant_cli_answer_flow.py::cli_shares_seeder_keychain`.
-- "Buildable" MUST be verified EMPIRICALLY — S6a/S6b/S6c/S5o-enc/S4g-2 ALL drifted (spec/SDK surface present, consumer/scope wrong). Check the real consumer, not the todo's claim.
+- **F12-b bridge thread-affinity:** `run_coro_blocking` runs the async revoke on a fresh WORKER thread per call (deliberate — makes it re-entrant + loop-safe; a shared executor would deadlock on re-entrancy). stdlib `sqlite3` is thread-affine, so any code driving the bridge MUST pass a FRESH / lazily-initialised `TrustStoreAdapter` (let the worker thread `initialize()` it), NEVER a pre-initialised one. Tests seed via a throwaway `asyncio.run` (persists to the on-disk vault) then drive the sync facade; cleanup is `run_coro_blocking(store.close())` in a `finally` (verify with `-W error::ResourceWarning`).
+- **F12-c precondition (security-reviewer MED-3):** before wiring `revoke_prior_grant` to a real `envoy grant revoke` CLI, EITHER drive a fresh adapter through the bridge (tested-safe) OR move the kailash chain/posture sub-stores to per-operation connections (the `store.py:944-956` bc/digest precedent). A pre-initialised adapter + the bridge = cross-thread `sqlite3` reuse → `ProgrammingError` or silent no-op write (retained authority).
+- Keychain: thread ONE backend into EVERY consumer; SessionRouter loads TWO keychain keys (signing + encryption). Cross-process CLI tests MUST share one backend (`ENVOY_KEYRING=memory` mints a fresh dict per `resolve_keyring_backend()` call).
+- "Buildable" MUST be verified EMPIRICALLY — S6a/S6b/S6c/S5o-enc/S4g-2 ALL drifted. Check the real consumer, not the todo's claim. (S4g-2b's "multi-adapter Genesis" framing was also an over-statement — the spec mandates breadth-3 root+3-children, single adapter.)
 - WS-6 shards SAME-class serialized (runtime.py/store) — never worktree-parallelize within WS-6.
 - admin-merge: docs PRs path-skip the matrix; code PRs run py3.11/py3.13 (`gh pr checks <N> --watch`).
+- The SessionEnd hook auto-stubs journal-worthy commits into `journal/.pending/` — next session promotes (via `/codify` lease) or discards. The old `.session-notes` cited `journal/0042` (F12-b scope note) which never existed; F12-b's durable record is PR #115 + this note + the SessionEnd stub.
 
 ## Open questions for the human
 
-- **Next pick — in-repo WS-6 exhausted.** Recommend **F12-b (P18)** — sync↔async cascade bridge, IN-REPO, unblocks S4g-2b + user-reachable EC-8; needs scope confirmation (not yet sharded at /todos). Alternatives: **S7v** (cross-repo — context-switch/authorization) or switch milestone (M3/M4/M5, re-rank at /todos per `wave-loop.md` G4).
+- **Next pick — in-repo WS-6 is again the question.** Remaining IN-REPO buildables: **F12-c** (P19 — production CLI revoke; needs its store-connection precondition resolved first, itself a buildable shard) · **P4** S8 registry persistence (OWNED) · **P9** sqlite_perms WAL/SHM · **P11** Genesis TOCTOU→CAS · **P7** S10 deferrals · **P13** fingerprint seam. Cross-repo / external: **S7v**, **P14** (#514 binding-version), P1/P2/P5. Recommend re-ranking at `/todos` per `value-prioritization.md` MUST-1 before picking — most queued items lack a fresh value-anchor re-validation.
 - **S6d / #514:** is `apply_read_classification` in kailash >2.29.3 (→ upgrade pin) or closed-without-shipping (→ reopen, a cross-repo write)? Binding-version check.
