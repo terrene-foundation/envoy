@@ -460,7 +460,17 @@ class SessionRouter:
         """Return the AES-256 payload-encryption key bytes, or raise if the
         router was not opened (open() loads the key). Centralises the None-guard
         so every encrypt/decrypt site fails with one clear message rather than an
-        opaque AttributeError on ``None`` (zero-tolerance Rule 3a)."""
+        opaque AttributeError on ``None`` (zero-tolerance Rule 3a).
+
+        Residency caveat (honest): this returns an IMMUTABLE ``bytes`` copy, and
+        ``AESGCM`` copies the key again into the OpenSSL context. Those copies
+        cannot be zeroized (Python ``bytes`` are immutable; the OpenSSL copy is
+        opaque), so ``close()``'s zeroize of the backing ``bytearray`` minimises
+        but does NOT fully eliminate key residency — it matches the vault's
+        best-effort master-key handling, not a hard guarantee. A heap-reading
+        attacker (kernel/hypervisor memory compromise) is explicitly out of scope
+        per ``specs/threat-model.md`` § Out of scope; the threat this key closes
+        is local-FILE read, where the key never touches the file."""
         if self._enc_key is None:
             raise RuntimeError(
                 "SessionRouter payload encryption key unavailable — call "
@@ -821,6 +831,18 @@ class SessionRouter:
         index so the listing is an index scan, not a table scan. Resolved
         (``resolved`` / ``expired``) rows are excluded — only requests actually
         waiting for the user's decision are surfaced.
+
+        Trust boundary: the displayed ``request_json`` is confidentiality-protected
+        (encrypted-at-rest) but NOT authenticity-protected. The AAD binds a
+        ciphertext to its (table, row, column) so it cannot be SHUFFLED within the
+        store, but a writer who ALSO holds the encryption key (a co-resident
+        process that read the keychain) can craft a valid ``request_json``
+        ciphertext with arbitrary plaintext — only ``resolution_json`` is signed
+        (``resolution_sig``). This listing is therefore ADVISORY: the actual
+        decision is gated on the signed resolution verified on the strict poll path
+        (``GrantMomentRuntime`` § Resolution authenticity), never on the displayed
+        request. A caller MUST NOT treat a listed grant as authorized without that
+        signed-resolution gate.
         """
         self._require_open()
         rows = await asyncio.to_thread(self._sync_list_pending_grants)
