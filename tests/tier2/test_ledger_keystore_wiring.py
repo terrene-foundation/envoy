@@ -24,13 +24,17 @@ from kailash.trust.key_manager import InMemoryKeyManager
 
 from envoy.ledger.keystore import (
     KEYRING_SERVICE_NAMESPACE,
+    KEYRING_SERVICE_NAMESPACE_SESSION_ENC,
     LedgerKeyCorruptError,
     LedgerKeySchemaVersionError,
     LedgerKeystoreError,
     LedgerKeyUnavailableError,
     load_or_create_ledger_key_manager,
+    load_or_create_session_encryption_key,
     principal_genesis_id,
 )
+
+SESSION_ENC_KEY_ID = "envoy-session-encryption-key"
 
 SIGNING_KEY_ID = "envoy-digest-signing-key"
 PRINCIPAL = "alice@example.com"
@@ -172,3 +176,84 @@ class TestLedgerKeystore:
         # call hops away in the facade.
         mgr = InMemoryKeyManager()
         assert isinstance(getattr(mgr, "_public_keys", None), dict)
+
+
+async def _load_enc(backend: _MemBackend, principal: str = PRINCIPAL) -> bytes:
+    return await load_or_create_session_encryption_key(
+        principal_id=principal,
+        key_id=SESSION_ENC_KEY_ID,
+        keyring_backend=backend,
+    )
+
+
+class TestSessionEncryptionKeystore:
+    """The S5o-enc payload-encryption key loader — mirrors the ledger signing
+    key's keychain-gated, fail-loud lifecycle, for a raw 32-byte AES-256 key."""
+
+    async def test_first_call_mints_persists_32_byte_key(self) -> None:
+        backend = _MemBackend()
+        key = await _load_enc(backend)
+        assert isinstance(key, bytes) and len(key) == 32
+        # External effect: a record lives under the SESSION-ENC namespace (NOT
+        # the signing-key namespace — key separation).
+        account = f"{principal_genesis_id(PRINCIPAL)}:{SESSION_ENC_KEY_ID}"
+        assert backend.get_password(KEYRING_SERVICE_NAMESPACE_SESSION_ENC, account) is not None
+        assert backend.get_password(KEYRING_SERVICE_NAMESPACE, account) is None
+
+    async def test_reload_returns_same_key_cross_process(self) -> None:
+        backend = _MemBackend()
+        key1 = await _load_enc(backend)  # "process 1" mints
+        key2 = await _load_enc(backend)  # "process 2" reloads
+        assert key2 == key1  # durable, not a fresh random key each open
+
+    async def test_distinct_principals_get_distinct_keys(self) -> None:
+        backend = _MemBackend()
+        ka = await _load_enc(backend, principal="alice@example.com")
+        kb = await _load_enc(backend, principal="bob@example.com")
+        assert ka != kb
+
+    async def test_keychain_unavailable_is_fail_loud(self) -> None:
+        with pytest.raises(LedgerKeyUnavailableError):
+            await _load_enc(_FailingBackend())
+
+    async def test_unparseable_record_is_fail_loud(self) -> None:
+        with pytest.raises(LedgerKeyCorruptError):
+            await _load_enc(_FixedRecordBackend("not-json-{{{"))
+
+    async def test_missing_key_field_is_fail_loud(self) -> None:
+        with pytest.raises(LedgerKeyCorruptError):
+            await _load_enc(_FixedRecordBackend('{"schema": "envoy-session-enc-key/1"}'))
+
+    async def test_non_base64_key_is_fail_loud(self) -> None:
+        with pytest.raises(LedgerKeyCorruptError):
+            await _load_enc(
+                _FixedRecordBackend(
+                    '{"schema": "envoy-session-enc-key/1", "key": "not base64 !!!"}'
+                )
+            )
+
+    async def test_wrong_length_key_is_fail_loud(self) -> None:
+        # base64 of 16 bytes (AES-128) — wrong size; MUST refuse, never use it.
+        import base64
+
+        short = base64.b64encode(b"\x00" * 16).decode("ascii")
+        with pytest.raises(LedgerKeyCorruptError):
+            await _load_enc(
+                _FixedRecordBackend(
+                    '{"schema": "envoy-session-enc-key/1", "key": "' + short + '"}'
+                )
+            )
+
+    async def test_unknown_schema_is_fail_loud(self) -> None:
+        with pytest.raises(LedgerKeySchemaVersionError):
+            await _load_enc(
+                _FixedRecordBackend(
+                    '{"schema": "envoy-session-enc-key/2", "key": "AAAA"}'
+                )
+            )
+
+    async def test_invalid_key_id_rejected(self) -> None:
+        with pytest.raises(LedgerKeystoreError):
+            await load_or_create_session_encryption_key(
+                principal_id=PRINCIPAL, key_id="evil:key", keyring_backend=_MemBackend()
+            )

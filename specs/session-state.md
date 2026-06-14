@@ -179,7 +179,7 @@ def reasoning_commit(session, reasoning_context, rule_ids):
 
 ## Persistence
 
-`SessionObservedState` is in-memory during session + snapshot to a 0o600 vault-sibling SQLite store (`<vault-stem>.session.db`, `session_observed_state` table) at every Ledger append, so a crash mid-session preserves orphan-phase-A tracking. The snapshot blob is stored as canonical JSON; the resolution rows the same store holds are signed with an OS-keychain Ed25519 session key (a trust anchor distinct from the ledger signing key), not encrypted-at-rest. Never synced to other devices (each device has its own session cache).
+`SessionObservedState` is in-memory during session + snapshot to a 0o600 vault-sibling SQLite store (`<vault-stem>.session.db`, `session_observed_state` table) at every Ledger append, so a crash mid-session preserves orphan-phase-A tracking. The snapshot blob is stored AES-256-GCM-encrypted-at-rest under a keychain-gated key (`SESSION_ENCRYPTION_KEY_ID`); the resolution rows the same store holds are ALSO signed with an OS-keychain Ed25519 session key (a trust anchor distinct from the ledger signing key) — signing (tamper-evidence) and encryption (confidentiality) are complementary, layered defense-in-depth. Never synced to other devices (each device has its own session cache).
 
 ## Session-lifecycle boundary signal (`envoy.runtime.session_boundary`)
 

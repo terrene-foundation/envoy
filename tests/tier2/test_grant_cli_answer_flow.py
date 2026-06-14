@@ -103,6 +103,28 @@ def backend() -> _MemBackend:
     return _MemBackend()
 
 
+@pytest.fixture
+def cli_shares_seeder_keychain(
+    backend: _MemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI invocation MUST resolve to the SAME keychain as the seeding
+    runtime so the session-store encryption key (S5o-enc) matches — production
+    runs one shared OS keychain, but ``ENVOY_KEYRING=memory`` mints a fresh
+    in-process store per ``resolve_keyring_backend()`` call, so without this the
+    CLI gets a different enc key and cannot decrypt the rows the seeder wrote.
+    Patching the grant CLI's resolver to the shared ``backend`` fixture models
+    the production single-keychain invariant the ``_MemBackend`` docstring
+    describes. (Before S5o-enc the CLI ``list`` read plaintext and needed no key,
+    so the divergence was invisible.)
+
+    Requested EXPLICITLY (not autouse) by tests that seed rows then read them
+    through the CLI — the keyring-selector guard tests MUST keep the real
+    resolver so a bad ``ENVOY_KEYRING`` value still exits 32."""
+    monkeypatch.setattr(
+        "envoy.cli.grant.resolve_keyring_backend", lambda *a, **k: backend
+    )
+
+
 async def _open_router(vault_path: Path, backend: _MemBackend) -> SessionRouter:
     router = SessionRouter(
         vault_path=vault_path, principal_id=DEFAULT_PRINCIPAL_ID, keyring_backend=backend
@@ -207,7 +229,7 @@ class TestGrantCliList:
         assert "Nothing is waiting" in result.output
 
     def test_list_renders_pending_with_answer_commands(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         ids = _sync(_issue_n_pending(vault_path, backend, 2))
         result = CliRunner().invoke(cli, ["grant", "list"], env=_cli_env(vault_path))
@@ -221,7 +243,7 @@ class TestGrantCliList:
         assert "send_email" in result.output
 
     def test_list_surfaces_malformed_row_with_marker(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         """A pending row whose request_json is corrupt (store corruption — the
         issue path always writes a well-formed object) is surfaced LOUDLY with a
@@ -252,7 +274,7 @@ class TestGrantCliList:
 
 class TestGrantCliApproveDeny:
     def test_approve_flips_row_to_resolved_with_approve_shape(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         [rid] = _sync(_issue_n_pending(vault_path, backend, 1))
         result = CliRunner().invoke(cli, ["grant", "approve", rid], env=_cli_env(vault_path))
@@ -275,7 +297,7 @@ class TestGrantCliApproveDeny:
         _sync(_readback())
 
     def test_deny_flips_row_to_resolved_with_decline_shape_and_reason(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         [rid] = _sync(_issue_n_pending(vault_path, backend, 1))
         result = CliRunner().invoke(
@@ -298,7 +320,7 @@ class TestGrantCliApproveDeny:
         _sync(_readback())
 
     def test_deny_already_resolved_refused_exit_40(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         """Per-verb symmetry with approve: a deny on an already-resolved request
         is REFUSED (exit 40), the settled decision is immutable."""
@@ -333,7 +355,7 @@ class TestGrantCliApproveDeny:
         assert "No request with id" in result.output
 
     def test_approve_already_resolved_refused_exit_40(
-        self, vault_path: Path, backend: _MemBackend
+        self, vault_path: Path, backend: _MemBackend, cli_shares_seeder_keychain: None
     ) -> None:
         """The cross-process double-resolve guard: a second answer on an
         already-resolved request is REFUSED (exit 40), the settled decision is

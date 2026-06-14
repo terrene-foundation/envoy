@@ -21,7 +21,23 @@ bootstrap.py:108,116`` → ``ledger/bootstrap.py:100``):
 2. **SessionObservedState region** — the durable snapshot of
    ``specs/session-state.md`` § Persistence ("snapshot to Trust Vault encrypted
    at every Ledger append, so a crash mid-session preserves orphan-phase-A
-   tracking"). Stored as an opaque canonical-JSON blob keyed by ``session_id``.
+   tracking"). Stored keyed by ``session_id``.
+
+Encryption-at-rest (S5o-enc): the payload columns — ``request_json`` /
+``resolution_json`` (Region 1) and ``state_json`` (Region 2) — are AES-256-GCM
+ciphertext on disk under a keychain-gated key (``SESSION_ENCRYPTION_KEY_ID`` via
+``load_or_create_session_encryption_key``), NOT canonical-JSON plaintext. A
+local-file read recovers only ciphertext; the key lives in the OS keychain, not
+the file. The key is keychain-gated (NOT vault-passphrase-gated) so the
+short-lived one-shot CLI processes (``grant approve`` in a fresh process) decrypt
+with no typed passphrase, exactly as the Ed25519 ``resolution_sig`` signing key
+is keychain-gated. Index/key columns (``request_id`` / ``session_id`` /
+``principal_id`` / ``state`` / ``version`` / timestamps / ``ttl_expires_at``)
+stay cleartext so lookups, the ``CHECK`` constraint, and the lost-update
+``version`` re-check keep working. Encryption is transparent at the public API —
+callers pass/receive plaintext canonical JSON; the ``resolution_sig`` is signed
+over (and verified against) that plaintext, layered over encryption as
+complementary defense-in-depth (tamper-evidence + confidentiality), not a swap.
 
 The router is SHORT-LIVED, not a daemon — no socket, no PID, no lockfile
 lifecycle. Continuity comes from the on-disk projection, not a resident
@@ -61,18 +77,25 @@ will use; S4s opens it and proves it survives restart.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from kailash.trust.key_manager import InMemoryKeyManager
 
 from envoy.grant_moment.resolution import resolution_signing_payload
-from envoy.ledger.keystore import load_or_create_ledger_key_manager
+from envoy.ledger.keystore import (
+    load_or_create_ledger_key_manager,
+    load_or_create_session_encryption_key,
+)
 from envoy.trust.sqlite_perms import chmod_sqlite_family
 
 logger = logging.getLogger(__name__)
@@ -85,6 +108,94 @@ logger = logging.getLogger(__name__)
 # chain. The value is a FIXED constant (matching the ledger's "do NOT change the
 # value, it would orphan signed state" discipline at ``ledger/bootstrap.py:57``).
 SESSION_SIGNING_KEY_ID = "envoy-session-signing-key"
+
+# The AES-256 encryption key the SessionRouter re-opens per process to
+# encrypt-at-rest the payload columns (S5o-enc). Namespaced DISTINCTLY from the
+# signing key so encryption and signing never share key material in the keychain
+# (key separation) and so the encryption key has its own rotation/destroy
+# surface. Like the signing key, the value is a FIXED constant — changing it
+# would orphan every encrypted-at-rest row.
+SESSION_ENCRYPTION_KEY_ID = "envoy-session-encryption-key"
+
+# On-disk ciphertext token format for the encrypted payload columns. A versioned
+# prefix so a future format migration is detectable, followed by
+# base64(nonce ‖ AES-256-GCM ciphertext ‖ tag). The prefix also makes the
+# read path REFUSE a non-encrypted (legacy plaintext) value loudly rather than
+# silently accepting it — no plaintext-acceptance downgrade (zero-tolerance Rule 3).
+_ENC_PREFIX = "enc:v1:"
+_ENC_NONCE_LEN = 12  # AES-256-GCM standard 96-bit nonce
+
+# Surfaced in the read-back ``request_json`` of a row whose encrypted payload
+# could not be decrypted, ONLY on the tolerant listing path (``grant list``).
+# It is deliberately NOT valid JSON so the CLI's wire-format reader treats the
+# row as malformed and renders a loud "inspect before approving" marker rather
+# than silently displaying attacker-controlled or corrupt content. The strict
+# read path (``get_pending_grant``, used by the security-critical poll) does NOT
+# substitute this — it raises ``SessionStoreEncryptionError`` (fail-closed).
+_UNDECRYPTABLE_PAYLOAD_SENTINEL = "<undecryptable: session-store payload did not verify>"
+
+
+class SessionStoreEncryptionError(Exception):
+    """A session-store payload column could not be encrypted/decrypted.
+
+    Raised on: a payload-column read that is NOT in the ``enc:v1:`` format
+    (legacy-plaintext row or tampered prefix — fail-loud, never silently treat
+    raw bytes as plaintext), a base64-decode failure, or an AES-256-GCM tag
+    verification failure (wrong key / tampered ciphertext / wrong AAD binding).
+    All three are definitive security refusals: the row is rejected, never
+    returned as if intact.
+    """
+
+
+def _enc_aad(*, table: str, key: str, column: str) -> bytes:
+    """Additional-authenticated-data binding a ciphertext to (table, row-key,
+    column). AES-256-GCM verifies the AAD on decrypt, so a ciphertext lifted from
+    one column/row and pasted into another (same key, same row) fails the tag
+    check — preventing intra-store ciphertext-shuffling. The AAD is NOT secret;
+    it is reconstructed from the row's cleartext primary key on read."""
+    return f"{table}:{key}:{column}".encode()
+
+
+def _encrypt_payload(enc_key: bytes, plaintext: str, *, aad: bytes) -> str:
+    """AES-256-GCM-encrypt ``plaintext`` under ``enc_key`` with a fresh random
+    nonce, returning the ``enc:v1:`` token. The nonce is prepended to the
+    ciphertext+tag and the whole is base64'd into the TEXT column."""
+    nonce = secrets.token_bytes(_ENC_NONCE_LEN)
+    ciphertext = AESGCM(enc_key).encrypt(nonce, plaintext.encode("utf-8"), aad)
+    return _ENC_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def _decrypt_payload(enc_key: bytes, token: str, *, aad: bytes) -> str:
+    """Decrypt an ``enc:v1:`` token produced by :func:`_encrypt_payload`.
+
+    Fail-loud (``SessionStoreEncryptionError``) on a missing/wrong prefix, a
+    base64-decode failure, a too-short token, OR an AES-256-GCM tag failure
+    (wrong key, tampered ciphertext, or AAD mismatch). Never returns the raw
+    bytes as plaintext on failure.
+    """
+    if not token.startswith(_ENC_PREFIX):
+        raise SessionStoreEncryptionError(
+            "session-store payload is not in the enc:v1: format — refusing to "
+            "treat it as plaintext (legacy-plaintext row, or tampered prefix)"
+        )
+    try:
+        raw = base64.b64decode(token[len(_ENC_PREFIX):], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise SessionStoreEncryptionError(
+            f"session-store payload base64 decode failed: {exc}"
+        ) from exc
+    if len(raw) <= _ENC_NONCE_LEN:
+        raise SessionStoreEncryptionError(
+            "session-store payload too short to contain a nonce + ciphertext"
+        )
+    nonce, ciphertext = raw[:_ENC_NONCE_LEN], raw[_ENC_NONCE_LEN:]
+    try:
+        return AESGCM(enc_key).decrypt(nonce, ciphertext, aad).decode("utf-8")
+    except (InvalidTag, ValueError) as exc:
+        raise SessionStoreEncryptionError(
+            "session-store payload AES-256-GCM verification failed — wrong key, "
+            "tampered ciphertext, or AAD mismatch (row rejected)"
+        ) from exc
 
 
 def session_db_path(vault_path: Path | str) -> Path:
@@ -190,6 +301,11 @@ class SessionRouter:
         self._keyring_backend = keyring_backend
         self._db_path = str(session_db_path(self._vault_path))
         self._key_manager: InMemoryKeyManager | None = None
+        # AES-256 payload-column encryption key (S5o-enc). Held as a mutable
+        # bytearray so close() can zeroize it (memory-residency hygiene, per
+        # rules/trust-plane-security.md MUST NOT Rule 3), matching the vault's
+        # master-key handling.
+        self._enc_key: bytearray | None = None
         self._opened = False
 
     # ------------------------------------------------------------------
@@ -262,6 +378,17 @@ class SessionRouter:
             signing_key_id=SESSION_SIGNING_KEY_ID,
             keyring_backend=self._keyring_backend,
         )
+        # Payload-column encryption key (S5o-enc) — same keychain-gated, fail-loud
+        # lifecycle as the signing key above. A fresh process recovers the SAME
+        # key, so a row encrypted in process A decrypts in process B; a process
+        # without keychain access cannot obtain it and so cannot decrypt the store.
+        self._enc_key = bytearray(
+            await load_or_create_session_encryption_key(
+                principal_id=self._principal_id,
+                key_id=SESSION_ENCRYPTION_KEY_ID,
+                keyring_backend=self._keyring_backend,
+            )
+        )
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._sync_init_store)
         self._opened = True
@@ -283,6 +410,12 @@ class SessionRouter:
             if isinstance(keys, dict):
                 keys.clear()
             self._key_manager = None
+        # Zeroize the AES key bytes before releasing the reference (best-effort
+        # residency minimization, matching TrustVault._zeroize on lock()).
+        if self._enc_key is not None:
+            for i in range(len(self._enc_key)):
+                self._enc_key[i] = 0
+            self._enc_key = None
         self._opened = False
 
     def _sync_init_store(self) -> None:
@@ -322,6 +455,28 @@ class SessionRouter:
                 "SessionRouter used before open() — call `await router.open()` "
                 "to re-open the durable store + keychain key first"
             )
+
+    def _require_enc_key(self) -> bytes:
+        """Return the AES-256 payload-encryption key bytes, or raise if the
+        router was not opened (open() loads the key). Centralises the None-guard
+        so every encrypt/decrypt site fails with one clear message rather than an
+        opaque AttributeError on ``None`` (zero-tolerance Rule 3a).
+
+        Residency caveat (honest): this returns an IMMUTABLE ``bytes`` copy, and
+        ``AESGCM`` copies the key again into the OpenSSL context. Those copies
+        cannot be zeroized (Python ``bytes`` are immutable; the OpenSSL copy is
+        opaque), so ``close()``'s zeroize of the backing ``bytearray`` minimises
+        but does NOT fully eliminate key residency — it matches the vault's
+        best-effort master-key handling, not a hard guarantee. A heap-reading
+        attacker (kernel/hypervisor memory compromise) is explicitly out of scope
+        per ``specs/threat-model.md`` § Out of scope; the threat this key closes
+        is local-FILE read, where the key never touches the file."""
+        if self._enc_key is None:
+            raise RuntimeError(
+                "SessionRouter payload encryption key unavailable — call "
+                "`await router.open()` to load the keychain encryption key first"
+            )
+        return bytes(self._enc_key)
 
     @property
     def vault_path(self) -> Path:
@@ -367,9 +522,17 @@ class SessionRouter:
         _validate_session_id(request_id, field="request_id")
         _validate_session_id(session_id, field="session_id")
         _require_json_object(request_json, field="request_json")
+        # Encrypt-at-rest (S5o-enc): the column stores ciphertext; the JSON-object
+        # validation above ran on the plaintext. AAD binds the ciphertext to this
+        # row + column so it cannot be shuffled into another row/column.
+        enc_request = _encrypt_payload(
+            self._require_enc_key(),
+            request_json,
+            aad=_enc_aad(table="pending_grant", key=request_id, column="request_json"),
+        )
         now = _now_iso()
         await asyncio.to_thread(
-            self._sync_put_pending_grant, request_id, session_id, request_json, ttl_expires_at, now
+            self._sync_put_pending_grant, request_id, session_id, enc_request, ttl_expires_at, now
         )
 
     def _sync_put_pending_grant(
@@ -423,14 +586,56 @@ class SessionRouter:
         row = await asyncio.to_thread(self._sync_get_pending_grant, request_id)
         if row is None:
             return None
+        return self._row_to_pending_grant(row)
+
+    def _row_to_pending_grant(
+        self, row: sqlite3.Row, *, tolerate_corrupt: bool = False
+    ) -> PendingGrantRow:
+        """Build a read-back ``PendingGrantRow`` from a raw DB row, decrypting the
+        encrypted-at-rest payload columns (``request_json`` always; ``resolution_json``
+        when the row is resolved). Decryption is transparent at the store boundary
+        — callers (S4r poll, ``grant list``) see plaintext canonical JSON, and the
+        ``resolution_sig`` they verify was signed over that same plaintext.
+
+        ``tolerate_corrupt`` selects the failure mode for an undecryptable payload:
+
+        - ``False`` (default — the strict read path ``get_pending_grant`` consumes,
+          which the security-critical poll drives): re-raise ``SessionStoreEncryptionError``
+          so a forged / corrupt row fails CLOSED.
+        - ``True`` (the ``grant list`` UI path): substitute
+          ``_UNDECRYPTABLE_PAYLOAD_SENTINEL`` for the undecryptable payload so a
+          single bad row is surfaced as malformed (the CLI renders a loud marker)
+          WITHOUT aborting the whole listing. A read-only UI never executes a
+          decision, so resilience-over-fail-closed is correct here; the security
+          gate stays on the strict poll path.
+        """
+        enc_key = self._require_enc_key()
+        request_id = row["request_id"]
+
+        def _decrypt_col(value: str, column: str) -> str:
+            try:
+                return _decrypt_payload(
+                    enc_key,
+                    value,
+                    aad=_enc_aad(table="pending_grant", key=request_id, column=column),
+                )
+            except SessionStoreEncryptionError:
+                if tolerate_corrupt:
+                    return _UNDECRYPTABLE_PAYLOAD_SENTINEL
+                raise
+
+        request_json = _decrypt_col(row["request_json"], "request_json")
+        resolution_json = row["resolution_json"]
+        if resolution_json is not None:
+            resolution_json = _decrypt_col(resolution_json, "resolution_json")
         return PendingGrantRow(
-            request_id=row["request_id"],
+            request_id=request_id,
             state=row["state"],
-            request_json=row["request_json"],
+            request_json=request_json,
             version=row["version"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            resolution_json=row["resolution_json"],
+            resolution_json=resolution_json,
             resolution_sig=row["resolution_sig"],
         )
 
@@ -497,11 +702,20 @@ class SessionRouter:
             SESSION_SIGNING_KEY_ID,
             resolution_signing_payload(request_id, resolution_json),
         )
+        # Sign over the PLAINTEXT (above), THEN encrypt-at-rest (S5o-enc): the
+        # signature anchors the plaintext a reader recovers after decrypt, so the
+        # encryption layer is transparent to signature verification. The sig +
+        # ciphertext land atomically in the single UPDATE below.
+        enc_resolution = _encrypt_payload(
+            self._require_enc_key(),
+            resolution_json,
+            aad=_enc_aad(table="pending_grant", key=request_id, column="resolution_json"),
+        )
         now = _now_iso()
         new_version = await asyncio.to_thread(
             self._sync_resolve_pending_grant,
             request_id,
-            resolution_json,
+            enc_resolution,
             resolution_sig,
             state,
             now,
@@ -617,22 +831,25 @@ class SessionRouter:
         index so the listing is an index scan, not a table scan. Resolved
         (``resolved`` / ``expired``) rows are excluded — only requests actually
         waiting for the user's decision are surfaced.
+
+        Trust boundary: the displayed ``request_json`` is confidentiality-protected
+        (encrypted-at-rest) but NOT authenticity-protected. The AAD binds a
+        ciphertext to its (table, row, column) so it cannot be SHUFFLED within the
+        store, but a writer who ALSO holds the encryption key (a co-resident
+        process that read the keychain) can craft a valid ``request_json``
+        ciphertext with arbitrary plaintext — only ``resolution_json`` is signed
+        (``resolution_sig``). This listing is therefore ADVISORY: the actual
+        decision is gated on the signed resolution verified on the strict poll path
+        (``GrantMomentRuntime`` § Resolution authenticity), never on the displayed
+        request. A caller MUST NOT treat a listed grant as authorized without that
+        signed-resolution gate.
         """
         self._require_open()
         rows = await asyncio.to_thread(self._sync_list_pending_grants)
-        return [
-            PendingGrantRow(
-                request_id=row["request_id"],
-                state=row["state"],
-                request_json=row["request_json"],
-                version=row["version"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                resolution_json=row["resolution_json"],
-                resolution_sig=row["resolution_sig"],
-            )
-            for row in rows
-        ]
+        # Tolerant build: a single undecryptable row is surfaced as malformed
+        # (sentinel request_json → CLI marker) rather than aborting the whole
+        # listing. The security gate is the strict poll path, not this UI read.
+        return [self._row_to_pending_grant(row, tolerate_corrupt=True) for row in rows]
 
     def _sync_list_pending_grants(self) -> list[sqlite3.Row]:
         conn = self._connect()
@@ -693,8 +910,14 @@ class SessionRouter:
         self._require_open()
         _validate_session_id(session_id, field="session_id")
         _require_json_object(state_json, field="state_json")
+        # Encrypt-at-rest (S5o-enc): AAD binds the ciphertext to this session row.
+        enc_state = _encrypt_payload(
+            self._require_enc_key(),
+            state_json,
+            aad=_enc_aad(table="session_observed_state", key=session_id, column="state_json"),
+        )
         now = _now_iso()
-        await asyncio.to_thread(self._sync_snapshot_observed_state, session_id, state_json, now)
+        await asyncio.to_thread(self._sync_snapshot_observed_state, session_id, enc_state, now)
 
     def _sync_snapshot_observed_state(self, session_id: str, state_json: str, now: str) -> None:
         conn = self._connect()
@@ -729,7 +952,13 @@ class SessionRouter:
         row = await asyncio.to_thread(self._sync_load_observed_state, session_id)
         if row is None:
             return None
-        return str(row["state_json"])
+        # Decrypt-at-rest (S5o-enc): transparent to callers — S5o sees plaintext
+        # canonical JSON, exactly as the pre-encryption store returned.
+        return _decrypt_payload(
+            self._require_enc_key(),
+            str(row["state_json"]),
+            aad=_enc_aad(table="session_observed_state", key=session_id, column="state_json"),
+        )
 
     def _sync_load_observed_state(self, session_id: str) -> sqlite3.Row | None:
         conn = self._connect()
@@ -767,8 +996,10 @@ def _require_json_object(blob: str, *, field: str) -> None:
 
 __all__ = [
     "PENDING_GRANT_STATES",
+    "SESSION_ENCRYPTION_KEY_ID",
     "SESSION_SIGNING_KEY_ID",
     "PendingGrantRow",
     "SessionRouter",
+    "SessionStoreEncryptionError",
     "session_db_path",
 ]
