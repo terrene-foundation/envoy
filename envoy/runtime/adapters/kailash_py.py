@@ -287,7 +287,7 @@ class KailashPyRuntime:
         byte-identical to the rs adapter by construction (shared pure delegation —
         journal/0019 Pattern 1). The structural slice never dispatches the
         classifier. SEMANTIC slice (action carries `content` bytes to classify):
-        dispatches the classifier ensemble, substrate-gated on S6c.
+        dispatches the classifier ensemble, substrate-gated on S6d.
         """
         from envoy.runtime.envelope_check import (  # noqa: PLC0415
             envelope_check_structural,

@@ -305,7 +305,7 @@ class TestPhase02StubsRaiseTypedErrors:
     def test_envelope_check_semantic_slice_raises_typed(
         self, kailash_py_runtime: KailashPyRuntime
     ) -> None:
-        # SEMANTIC slice (action carries `content` to classify) is S6c-gated until
+        # SEMANTIC slice (action carries `content` to classify) is S6d-gated until
         # the classifier ensemble lands.
         with pytest.raises(Phase02SubstrateNotWiredError):
             kailash_py_runtime.envelope_check(

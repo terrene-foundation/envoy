@@ -19,10 +19,10 @@ green** (~46 xfails → pass). Next implementation step: **S6b** (envelope-inter
 
 ## In-flight state
 
-- **S6a structural engine LANDED** (`envoy/runtime/envelope_check.py`; both adapters delegate → byte-identical). N1/N2/N3-structural/N5 conformance lanes pass; reviewer + security-reviewer both APPROVE (security MED-1 content-type fail-closed fixed in-shard; MED-2 cache-consumer assumption documented in `specs/session-runtime.md` § S6a for the S6c wiring).
-- **DEFERRED (still gated on upstream `kailash-rs#514`):** the classifier/masking shard — `@classify`/`apply_read_classification`/`MaskingStrategy` + T-005 ensemble + N3-semantic. Its value-anchored AC is RETAINED verbatim in the S6a todo. The binding exposes none of that surface.
-- **UNRESOLVED — S6c token collision** (flag for next `/todos` re-rank): conformance/adapters tag the classifier gate "S6c" but the milestone S6c is the `chat` loop — the deferred classifier/masking work needs its own shard id.
-- **Still gated, unchanged this shard:** `grant_moment_surface` (N4 rendered text), the two-phase signing engine (E6), S6b (envelope-intersection — buildable: `intersect_envelopes` present).
+- **S6a structural engine LANDED** (PR #107; `envoy/runtime/envelope_check.py`; both adapters delegate → byte-identical). N1/N2/N3-structural/N5 conformance lanes pass; reviewer + security-reviewer both APPROVE (security MED-1 content-type fail-closed fixed in-shard; MED-2 cache-consumer assumption documented in `specs/session-runtime.md` § S6a for the **S6d** wiring).
+- **✅ S6c name-clash RESOLVED (journal/0022):** canonical ids — **S6c = `chat` resident loop** (unchanged); **S6d = the deferred classifier/trust-verification surface** (classifier ensemble, `@classify`/`apply_read_classification`/MaskingStrategy masking, T-005, N3-semantic, subset-proof verifier). The classifier-meaning "S6c" was renamed → "S6d" across active code/tests/specs; `_VALID_SHARD_TOKENS = {S5o, S6a, S6c, S6d}`.
+- **✅ Upstream "file it" RESOLVED (journal/0022) — did NOT file:** verified `esperie-enterprise/kailash-rs#514` (the binding-exposure issue) ALREADY EXISTS and is **CLOSED** (2026-04-24). No duplicate filed. The masking-shard (S6d) blocker is a **binding-VERSION** question — #514 closed yet `apply_read_classification` absent from the installed `kailash` 2.29.3. Resolve by verifying which binding version shipped #514 + upgrading, OR (if closed-without-shipping) reopening/commenting on #514 (a user-gated cross-repo WRITE).
+- **Still gated, unchanged:** `grant_moment_surface` (N4 rendered text) + two-phase signing (E6) on S6a; S6d (classifier surface) on the #514 binding; S6b (envelope-intersection — buildable now, `intersect_envelopes` present).
 
 ## Outstanding ledger (forest)
 
@@ -52,7 +52,7 @@ Closed this session: `P10` → terrene-foundation/kailash-py#1318 filed; receipt
 
 ## Open questions for the human
 
-- **S6a scope decision: RESOLVED 2026-06-14** — user approved the SPLIT; structural `envelope_check` engine shipped (`feat/s6a-envelope-check-structural`). Remaining open items below.
-- **Deferred classifier/masking shard — file `kailash-rs#514` upstream?** The masking/T-005/semantic half is gated on the rs binding exposing `apply_read_classification`/`ClassificationPolicy`. Filing the upstream gap needs an explicit user-authorized + journaled grant per `repo-scope-discipline.md` + `upstream-issue-hygiene.md` (NOT yet filed).
-- **S6c token collision** — at the next `/todos` re-rank, assign the deferred classifier/masking work its own shard id (distinct from the milestone S6c `chat` loop).
-- **Next shard pick:** S6b (envelope-intersection, buildable now) vs the deferred classifier shard (blocked on #514) vs S4g-2?
+- **S6a scope decision: RESOLVED 2026-06-14** — user approved the SPLIT; structural `envelope_check` engine shipped (PR #107).
+- **S6c name clash: RESOLVED 2026-06-14** (journal/0022) — S6c=chat, S6d=deferred classifier/trust surface; renamed across active code/tests/specs.
+- **Upstream "file it": RESOLVED 2026-06-14** (journal/0022) — `kailash-rs#514` already CLOSED; no duplicate filed. **OPEN for the user:** is the masking surface in a `kailash` version >2.29.3 (→ upgrade the pin) or was #514 closed-without-shipping (→ reopen/comment, a user-gated cross-repo write)? Verifying which needs a binding-version check / a cross-repo read grant.
+- **Next shard pick (for the fresh session):** **S6b** (envelope-intersection — buildable now, `intersect_envelopes` confirmed present) is the recommended next; alternatives are S6d (classifier/masking — blocked on the #514 binding) or S4g-2 (grant hardening).

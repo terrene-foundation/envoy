@@ -17,7 +17,7 @@ methods, **18 are genuinely wired** in S2a — the signing surface
 (`ledger_*`, `head_commitment`), the budget surface (`budget_*`), the trust-
 store-backed surface (`trust_verify_chain`, `trust_cascade_revoke`), and the
 lifecycle methods. The remaining **13 are substrate-gated**: their backing
-engine does NOT exist yet (it ships in shard S5o / S6a / S6c), so they raise a
+engine does NOT exist yet (it ships in shard S5o / S6a / S6d), so they raise a
 typed `RuntimeNotReadyError` naming the gating shard — UNCONDITIONALLY, NOT
 gated on whether a `trust_store=` was injected. (An earlier draft forwarded
 these 13 to `self._trust_store.<same name>`, a surface no shipped class
@@ -92,7 +92,7 @@ def _substrate_not_ready(method: str, shard: str, surface: str) -> RuntimeNotRea
     """Build the typed not-ready error for a substrate-gated Protocol method.
 
     Used by the 13 methods whose backing engine ships in a later shard
-    (S5o / S6a / S6c). These methods raise UNCONDITIONALLY — there is NO shipped
+    (S5o / S6a / S6d). These methods raise UNCONDITIONALLY — there is NO shipped
     class that provides the gated surface, so forwarding to
     ``self._trust_store.<method>`` would only surface an opaque ``AttributeError``
     when the documented dependency injection is supplied (and a
@@ -293,11 +293,11 @@ class KailashRsBindingsRuntime:
 
         Substrate-gated: the subset-proof verifier (the runtime-signed
         `runtime_verification_signature` surface E5 hashes) is the sub-agent-
-        delegation engine wired in shard S6c. Raises unconditionally — no shipped
+        delegation engine wired in shard S6d. Raises unconditionally — no shipped
         class exposes `verify_subset_proof`, so forwarding would surface an opaque
         AttributeError under the documented DI."""
         raise _substrate_not_ready(
-            "trust_verify_subset_proof", "S6c", "sub-agent-delegation subset-proof verifier"
+            "trust_verify_subset_proof", "S6d", "sub-agent-delegation subset-proof verifier"
         )
 
     # ------------------------------------------------------------------
@@ -333,7 +333,7 @@ class KailashRsBindingsRuntime:
         byte-identical by construction (shared pure delegation, journal/0019
         Pattern 1; the structural slice never dispatches the classifier). SEMANTIC
         slice (action carries `content` bytes to classify) dispatches the classifier
-        ensemble — substrate-gated on S6c."""
+        ensemble — substrate-gated on S6d."""
         from envoy.runtime.envelope_check import (  # noqa: PLC0415
             envelope_check_structural,
             is_semantic_action,
@@ -341,7 +341,7 @@ class KailashRsBindingsRuntime:
 
         if is_semantic_action(action):
             raise _substrate_not_ready(
-                "envelope_check", "S6c", "classifier ensemble (semantic slice)"
+                "envelope_check", "S6d", "classifier ensemble (semantic slice)"
             )
         return envelope_check_structural(envelope, action)
 
@@ -455,29 +455,29 @@ class KailashRsBindingsRuntime:
         """Semantically-equivalent classifier verdict (N3 semantic slice). 2+
         classifiers per ensemble mandatory.
 
-        Substrate-gated: the classifier ensemble is wired in shard S6c. Raises
+        Substrate-gated: the classifier ensemble is wired in shard S6d. Raises
         unconditionally — no shipped class exposes `classifier_invoke`."""
         raise _substrate_not_ready(
-            "classifier_invoke", "S6c", "classifier ensemble"
+            "classifier_invoke", "S6d", "classifier ensemble"
         )
 
     def ensemble_aggregate(self, verdicts: list[Any], policy: Any) -> Any:
         """Byte-identical aggregation; disagreement fails CLOSED by default.
 
-        Substrate-gated: the ensemble aggregator is wired in shard S6c. Raises
+        Substrate-gated: the ensemble aggregator is wired in shard S6d. Raises
         unconditionally — no shipped class exposes `ensemble_aggregate`."""
         raise _substrate_not_ready(
-            "ensemble_aggregate", "S6c", "classifier ensemble aggregator"
+            "ensemble_aggregate", "S6d", "classifier ensemble aggregator"
         )
 
     def classifier_registry_resolve(self, registry_id: str) -> Any:
         """Fetch + verify 2-of-N steward signatures + hash-match per
         specs/foundation-ops.md.
 
-        Substrate-gated: the classifier registry is wired in shard S6c. Raises
+        Substrate-gated: the classifier registry is wired in shard S6d. Raises
         unconditionally — no shipped class exposes `classifier_registry_resolve`."""
         raise _substrate_not_ready(
-            "classifier_registry_resolve", "S6c", "classifier steward registry"
+            "classifier_registry_resolve", "S6d", "classifier steward registry"
         )
 
     # ------------------------------------------------------------------

@@ -22,10 +22,10 @@ empirically, not assumed):
   is asserted monotonic non-decreasing. E7 vectors come from the SHARED JSON
   fixture (``tests/fixtures/conformance/e7/``) the S7v Rust verifier also vendors.
 
-- **E5 (trust_verify_subset_proof) is substrate-gated on shard S6c** — the
+- **E5 (trust_verify_subset_proof) is substrate-gated on shard S6d** — the
   sub-agent-delegation subset-proof verifier. The full 20-vector ADVERSARIAL
-  corpus is authored + collected NOW (real value the moment S6c lands); the
-  cross-runtime byte-identity test is ``xfail(strict=False)`` naming S6c.
+  corpus is authored + collected NOW (real value the moment S6d lands); the
+  cross-runtime byte-identity test is ``xfail(strict=False)`` naming S6d.
 
 - **E6 (phase_a_sign_intent / phase_b_sign_outcome / phase_a_orphan_resolve) is
   substrate-gated on shard S6a** — the two-phase signing engine. The 13-vector
@@ -33,7 +33,7 @@ empirically, not assumed):
   ``xfail(strict=False)`` naming S6a.
 
 A wired-set guard test (``test_e5_e7_methods_wired_state_matches_spec``) pins the
-gated→wired flip: when S6a/S6c land and the methods stop raising
+gated→wired flip: when S6a/S6d land and the methods stop raising
 ``RuntimeNotReadyError``, this test surfaces the change (mirrors S3a's
 ``test_e1_e4_methods_are_all_in_the_wired_set``).
 
@@ -237,11 +237,11 @@ async def test_e7_monotonicity_violation_is_detectable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# E5 — Subset-proof verification (substrate-gated on S6c → xfail).
+# E5 — Subset-proof verification (substrate-gated on S6d → xfail).
 #
-# trust_verify_subset_proof(parent, sub) ships in shard S6c. The 20-vector
+# trust_verify_subset_proof(parent, sub) ships in shard S6d. The 20-vector
 # ADVERSARIAL corpus is authored + collected NOW; the cross-runtime byte-identity
-# test is xfail(strict=False) until S6c wires the engine. When S6c lands, the
+# test is xfail(strict=False) until S6d wires the engine. When S6d lands, the
 # method stops raising RuntimeNotReadyError and this test flips to a real pass
 # (xfail strict=False ⇒ an unexpected pass is reported, not a failure).
 # ---------------------------------------------------------------------------
@@ -252,8 +252,8 @@ _E5: list[SubsetProofVector] = e5_vectors()
 
 @pytest.mark.xfail(
     strict=False,
-    reason="substrate-gated on shard S6c (sub-agent-delegation subset-proof verifier); "
-    "rs + py adapters both raise RuntimeNotReadyError until S6c wires the engine",
+    reason="substrate-gated on shard S6d (sub-agent-delegation subset-proof verifier); "
+    "rs + py adapters both raise RuntimeNotReadyError until S6d wires the engine",
 )
 @pytest.mark.parametrize(
     "svector", _E5, ids=[f"{RUNTIME_UNDER_TEST}-{sv.vector.vector_id}" for sv in _E5]
@@ -265,9 +265,9 @@ def test_e5_subset_proof_byte_identical(svector: SubsetProofVector) -> None:
     rejection verdict + the runtime_verification_signature bytes E5 hashes MUST be
     byte-identical across kailash-py and kailash-rs-bindings.
 
-    Substrate-gated on S6c: until the subset-proof verifier lands, both adapters
+    Substrate-gated on S6d: until the subset-proof verifier lands, both adapters
     raise RuntimeNotReadyError (xfail). The corpus is real value authored now so
-    the loop is green the moment S6c wires the engine."""
+    the loop is green the moment S6d wires the engine."""
     ref = harness.resolve_runtime(REFERENCE)
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     assert ref is not None and rut is not None
@@ -342,7 +342,7 @@ def test_e5_e7_methods_wired_state_matches_spec() -> None:
     surfaces here — mirrors S3a's ``test_e1_e4_methods_are_all_in_the_wired_set``).
 
     E7 (``head_commitment``) is WIRED — it runs the live byte-identity loop above.
-    E5 (``trust_verify_subset_proof``) is gated on S6c; E6
+    E5 (``trust_verify_subset_proof``) is gated on S6d; E6
     (``phase_a_sign_intent`` / ``phase_b_sign_outcome`` /
     ``phase_a_orphan_resolve``) is gated on S6a. When a gating shard lands and a
     method stops raising ``RuntimeNotReadyError``, this test fails LOUD so the
@@ -352,8 +352,8 @@ def test_e5_e7_methods_wired_state_matches_spec() -> None:
     assert isinstance(rut, KailashRsBindingsRuntime)
     assert isinstance(py, KailashPyRuntime)
 
-    # E5 — substrate-gated on S6c (both runtimes raise RuntimeNotReadyError).
-    with pytest.raises(RuntimeNotReadyError, match="S6c"):
+    # E5 — substrate-gated on S6d (both runtimes raise RuntimeNotReadyError).
+    with pytest.raises(RuntimeNotReadyError, match="S6d"):
         rut.trust_verify_subset_proof({}, {})
 
     # E6 — substrate-gated on S6a (all three methods raise RuntimeNotReadyError).

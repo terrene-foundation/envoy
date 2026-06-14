@@ -485,8 +485,8 @@ the classifier ensemble.
 
 **Structural-vs-semantic partition.** `is_semantic_action(action)` returns True iff
 the action carries `content` (bytes) to be classified. The adapters route a
-semantic action to the classifier ensemble (substrate-gated on S6c — raises a
-typed not-ready error naming S6c); a structural (content-free) action is evaluated
+semantic action to the classifier ensemble (substrate-gated on S6d — raises a
+typed not-ready error naming S6d); a structural (content-free) action is evaluated
 here. This is the `specs/runtime-abstraction.md` § Contract-partition contract: the
 N3 structural slice's "structural ⇒ no classifier dispatch" invariant holds by
 construction (the structural path never reaches a dispatch site).
@@ -516,13 +516,13 @@ invalidation properties (`envelope_version`, `algorithm_identifier`,
 `classifier_ensemble_versions`, `posture_level`, `principal_genesis_id`); a change
 to ANY one flips the key (cache invalidation), an unrelated edit does not. Distinct
 from the posture-ceiling input below — this `posture_level` is the top-level
-cache-key property. **Cache-consumer contract (S6c — security review MED-2):**
+cache-key property. **Cache-consumer contract (S6d — security review MED-2):**
 `field_allowlist_per_model` is deliberately NOT one of the five (the set is the
 N5/`runtime-abstraction.md`-mandated invalidation axes), so two envelopes differing
 ONLY in their field allowlist hash to the SAME `cache_key`. Any future verdict
 cache keyed on `cache_key` therefore RELIES on the envelope compiler incrementing
 `envelope_version` whenever `field_allowlist_per_model` changes — otherwise a
-tightened allowlist could serve a stale, over-permissive cached verdict. The S6c
+tightened allowlist could serve a stale, over-permissive cached verdict. The S6d
 cache wiring MUST verify that invariant (or key the cache on `(cache_key,
 action-shape, allowlist-hash)`) before memoizing the full verdict.
 

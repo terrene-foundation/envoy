@@ -18,7 +18,7 @@ from __future__ import annotations
 # kailash_py is the sole production runtime while this flag is False. The
 # kailash_rs_bindings adapter has 18/31 Protocol methods genuinely wired; the
 # remaining 13 are substrate-gated and raise a typed `RuntimeNotReadyError`
-# naming their gating shard (S5o/S6a/S6c) when invoked — so flipping this True
+# naming their gating shard (S5o/S6a/S6c/S6d) when invoked — so flipping this True
 # before those shards land surfaces a clear, shard-named not-ready error from
 # the gated methods (the 18 wired methods work), by design.
 RS_BINDINGS_ENABLED: bool = False

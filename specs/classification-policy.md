@@ -60,12 +60,12 @@ expose it — there is no `kailash.dataflow` / `apply_read_classification` /
 `MaskingStrategy` / `Classification`-enum surface in the installed binding
 (verified by live import + package grep); the binding exposure is tracked
 kailash-rs#514 and has not shipped. Envoy's consumer code therefore cannot call
-the masking surface yet; it lands with the classifier/masking shard (S6c). The
+the masking surface yet; it lands with the classifier/masking shard (S6d). The
 PACT clearance/envelope surface that IS present in the binding
 (`kailash.trust.pact`: `effective_clearance`, `can_access`,
 `compute_effective_envelope`, `intersect_envelopes`, `ClearanceSpec`) backs the
 structural envelope-check engine (S6a — `envoy.runtime.envelope_check`); the
-field-level read-masking half is the S6c deferral recorded under § Out of scope.
+field-level read-masking half is the S6d deferral recorded under § Out of scope.
 
 ## `format_record_id_for_event(policy, model_name, record_id, pk_field)`
 

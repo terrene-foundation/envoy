@@ -50,7 +50,7 @@ ASYNC_METHODS: tuple[str, ...] = (
 )
 
 # The 11 substrate-gated methods (ENVOY-P2-W2G-002): their backing engine ships
-# in a later shard (S6a / S6c), so each raises RuntimeNotReadyError
+# in a later shard (S6a / S6d), so each raises RuntimeNotReadyError
 # UNCONDITIONALLY (regardless of whether trust_store= is injected), naming the
 # gating shard in the message. Genuinely-wired methods (trust_sign,
 # envelope_intersect, runtime_sign/verify, envelope_canonical_form, ledger_*,
@@ -61,7 +61,7 @@ ASYNC_METHODS: tuple[str, ...] = (
 # `envoy.runtime.envelope_check` both adapters delegate to), so it is WIRED for
 # structural actions — covered by tests/conformance/test_n1_n3.py + test_n4_n6.py
 # (the N1/N2/N3-structural/N5 lanes) + the gated-status guard there. Its SEMANTIC
-# slice (action carries `content`) still raises S6c, but the method is no longer
+# slice (action carries `content`) still raises S6d, but the method is no longer
 # UNCONDITIONALLY gated, so it leaves this set (mirrors first_time_action_gate).
 SUBSTRATE_GATED_METHODS: tuple[str, ...] = (
     "envelope_re_read_checkpoint",
@@ -80,7 +80,7 @@ SUBSTRATE_GATED_METHODS: tuple[str, ...] = (
 # The set of shard tokens any substrate-gated message is allowed to name. The
 # W2G-002 contract is "the message names a gating shard" — assert membership,
 # not a single hardcoded value, so a shard re-assignment does not falsely fail.
-_VALID_SHARD_TOKENS: frozenset[str] = frozenset({"S5o", "S6a", "S6c"})
+_VALID_SHARD_TOKENS: frozenset[str] = frozenset({"S5o", "S6a", "S6c", "S6d"})
 
 
 # Methods whose Protocol declaration is sync `def`.
@@ -478,7 +478,7 @@ def test_substrate_gated_method_raises_typed_not_ready_with_shard(
     adapter: KailashRsBindingsRuntime, name: str
 ) -> None:
     """Each substrate-gated method raises `RuntimeNotReadyError` and the message
-    names the gating engine-shard (S5o / S6a / S6c) so the gap is discoverable.
+    names the gating engine-shard (S5o / S6a / S6c / S6d) so the gap is discoverable.
 
     `adapter` has NO trust_store injected. The message MUST name BOTH the method
     and a valid shard token so a future `grep` enumerates the unwired surface.
