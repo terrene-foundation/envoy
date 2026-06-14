@@ -532,6 +532,56 @@ principal-current posture (`action.principal_posture`) on the ladder
 `OBSERVED < SUPERVISED < TRUSTED < AUTONOMOUS` (lower = more restrictive); `None`
 when either posture is absent or off-ladder.
 
+## `chat` resident loop contract (`envoy.runtime.chat` — S6c)
+
+`ChatResidentLoop` is the resident receive-loop behind `envoy chat` (the 10th
+canonical CLI command). It is a TRANSPORT/CACHE over the durable store, never the
+authority: the store (Region 1 pending-grant sub-store + Region 2
+SessionObservedState) is the single source of truth, so the loop holds no
+authoritative state and a crash mid-conversation loses nothing.
+
+**Lifecycle.** Constructed with an injected channel adapter + S5b boundary signal
+
+- session id + a message `resolver`, plus the OPTIONAL grant substrate (the
+  grant-moment runtime + the S5o observed-state gate). `run()` starts the adapter,
+  drains `receive_message()` until the iterator ends (channel disconnect), and in
+  `finally` fires the disconnect boundary THEN shuts the adapter down. The
+  boundary-then-teardown order is load-bearing: the session-end T-013 reset is
+  session semantics, the shutdown is transport cleanup.
+
+**Per-turn handling.** The injected `resolver` maps each inbound message to a
+`ChatActionSpec` (the message carries a tool dispatch) or `None` (plain
+conversation). A plain message is acked. An action message runs the S5o
+first-time-action gate: a `RECOGNIZED` verdict proceeds (the loop replies
+immediately); a `FIRST_TIME_REQUIRES_GRANT` verdict drives a Grant Moment —
+`issue_grant_moment` writes the durable pending row, then `await_decision` polls
+the store (the S4r rendezvous, NOT an in-process future) until a SEPARATE process
+(`envoy grant approve`/`deny`) resolves it. On approve the loop caches the
+fingerprint via the gate (`observe`) so a same-session repeat is `RECOGNIZED`.
+
+**Conversation-only mode.** A loop with no grant substrate wired (`runtime` /
+`gate` omitted) acks plain messages with real session-boundary semantics. An
+action spec produced without the substrate raises the typed
+`ChatActionUnsupportedError` (`rules/zero-tolerance.md` Rule 3a) — the honest
+failure, NOT a fabricated grant outcome. The bare `envoy chat` CLI ships this
+conversation surface (it never synthesizes consequence/novelty signals a user did
+not provide); an agent layer injects an action resolver + the grant runtime to
+activate the gate/grant path.
+
+**Crash-recovery contract.** Because the pending row is durable the instant
+`issue_grant_moment` returns and the loop owns no copy of it, a loop killed while
+polling `await_decision` leaves an answerable pending grant in the store: a fresh
+process (`envoy grant`) sees it via `list_pending_grants` and resolves it. The
+store is authority; the resident loop is recoverable transport.
+
+The S6c public surface is exported from `envoy.runtime.chat` (also re-exported
+from `envoy.runtime`): `ChatResidentLoop`, `ChatActionSpec`, `ChatTurnResult`,
+`ChatMessageResolver`, `ChatActionUnsupportedError`. The `chat` CLI group is
+`envoy.cli.chat`, registered on the root group in `envoy/cli/main.py`. Channel
+`send_message` legs (cli / telegram / discord / slack) ship real outbound
+transport; the web SSE/WS leg remains deferred to the Wave-4 Nexus InboundRouter
+shard (`envoy/channels/web.py` `send_message`).
+
 ## Cross-references
 
 - **specs/session-state.md** — SessionObservedState schema + § Persistence

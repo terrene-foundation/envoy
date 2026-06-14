@@ -25,6 +25,13 @@ from __future__ import annotations
 
 from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.runtime.adapters.kailash_rs_bindings import KailashRsBindingsRuntime
+from envoy.runtime.chat import (
+    ChatActionSpec,
+    ChatActionUnsupportedError,
+    ChatMessageResolver,
+    ChatResidentLoop,
+    ChatTurnResult,
+)
 from envoy.runtime.errors import (
     AlgorithmIdentifierMismatchError,
     BudgetExhaustedError,
@@ -113,6 +120,12 @@ __all__ = [
     "record_observation",
     "reconfirm_goal",
     "SessionObservedStateGate",
+    # WS-6 S6c — `chat` resident receive-loop (transport over the durable store)
+    "ChatResidentLoop",
+    "ChatActionSpec",
+    "ChatTurnResult",
+    "ChatMessageResolver",
+    "ChatActionUnsupportedError",
     # Errors (spec § Error taxonomy + Envoy-internal)
     "RuntimeError",
     "RuntimeNotReadyError",
