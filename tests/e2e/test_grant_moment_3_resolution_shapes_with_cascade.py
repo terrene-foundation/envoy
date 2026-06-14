@@ -26,6 +26,7 @@ from envoy.grant_moment import (
     GrantMomentOutcome,
 )
 from envoy.grant_moment.cascade_orchestrator import CascadeRevocationOrchestrator
+from envoy.runtime.adapters._async_cascade_bridge import run_coro_blocking
 from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.trust.store import TrustStoreAdapter
 from envoy.trust.types import DelegationRequest, GenesisSeed
@@ -225,6 +226,30 @@ _CHILDREN = (
 )
 
 
+def _build_real_cascade_runtime(vault):
+    """Build a grant-moment runtime whose CascadeRevocationOrchestrator is wired
+    to a real (fresh, NOT-initialized) ``TrustStoreAdapter`` over ``vault``.
+
+    Returns ``(runtime, store)``. The adapter is deliberately left
+    uninitialized: the F12-b bridge lazily initializes it on its worker thread
+    (``revoke``'s ``if not self._initialized`` guard), so every SQLite op for
+    the cascade runs on ONE thread against the persisted vault — no cross-thread
+    connection reuse. The caller MUST ``run_coro_blocking(store.close())`` to
+    release the worker-thread handles (`rules/testing.md` § Test Resource
+    Cleanup).
+    """
+
+    async def _build():
+        store = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
+        orchestrator = CascadeRevocationOrchestrator(
+            runtime=KailashPyRuntime(trust_store=store)
+        )
+        runtime, *_ = await make_runtime(cascade_orchestrator=orchestrator)
+        return runtime, store
+
+    return asyncio.run(_build())
+
+
 class TestEC8CascadeRevocationRealInfra:
     """EC-8(c) cascade through the REAL trust store, driven through the runtime
     facade ``revoke_prior_grant`` via the F12-b sync↔async bridge.
@@ -279,31 +304,23 @@ class TestEC8CascadeRevocationRealInfra:
 
         asyncio.run(_seed())
 
-        async def _build_runtime():
-            # Fresh, NOT-initialized adapter: the F12-b bridge lazily initializes
-            # it on the worker thread (store.revoke()'s `if not self._initialized`
-            # guard), so every SQLite op for the cascade runs on one thread
-            # against the persisted vault — no cross-thread connection reuse.
-            store = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
-            orchestrator = CascadeRevocationOrchestrator(
-                runtime=KailashPyRuntime(trust_store=store)
-            )
-            runtime, *_ = await make_runtime(cascade_orchestrator=orchestrator)
-            return runtime
-
-        runtime = asyncio.run(_build_runtime())
+        runtime, store = _build_real_cascade_runtime(vault)
 
         # Drive the REAL cascade through the sync facade — the bridge runs the
         # async revoke on its worker-thread loop.
-        result = runtime.revoke_prior_grant(
-            root_id=_ROOT,
-            expected_descendants=frozenset(_CHILDREN),
-        )
-
-        # The cascade actually revoked the descendants (NOT a silent-empty set).
-        assert result.complete, f"missing descendants: {result.missing_descendants}"
-        assert frozenset(_CHILDREN) <= result.revoked_ids
-        assert result.missing_descendants == frozenset()
+        try:
+            result = runtime.revoke_prior_grant(
+                root_id=_ROOT,
+                expected_descendants=frozenset(_CHILDREN),
+            )
+            # The cascade actually revoked the descendants (NOT a silent-empty set).
+            assert result.complete, f"missing descendants: {result.missing_descendants}"
+            assert frozenset(_CHILDREN) <= result.revoked_ids
+            assert result.missing_descendants == frozenset()
+        finally:
+            # Release the worker-thread SQLite handles the bridge opened during
+            # revoke (per `rules/testing.md` § Test Resource Cleanup).
+            run_coro_blocking(store.close())
 
     def test_revoke_incomplete_tree_raises_cascade_incomplete(self, tmp_path) -> None:
         """When the real engine revokes FEWER descendants than expected (a
@@ -338,22 +355,17 @@ class TestEC8CascadeRevocationRealInfra:
 
         asyncio.run(_seed())
 
-        async def _build_runtime():
-            store = TrustStoreAdapter(vault_path=vault, principal_id=_ROOT)
-            orchestrator = CascadeRevocationOrchestrator(
-                runtime=KailashPyRuntime(trust_store=store)
-            )
-            runtime, *_ = await make_runtime(cascade_orchestrator=orchestrator)
-            return runtime
+        runtime, store = _build_real_cascade_runtime(vault)
 
-        runtime = asyncio.run(_build_runtime())
-
-        # Expect all three, but only one was delegated → incomplete.
-        with pytest.raises(CascadeIncompleteError) as exc:
-            runtime.revoke_prior_grant(
-                root_id=_ROOT,
-                expected_descendants=frozenset(_CHILDREN),
-            )
-        # The two un-delegated children are named as missing.
-        assert _CHILDREN[1] in exc.value.result.missing_descendants
-        assert _CHILDREN[2] in exc.value.result.missing_descendants
+        try:
+            # Expect all three, but only one was delegated → incomplete.
+            with pytest.raises(CascadeIncompleteError) as exc:
+                runtime.revoke_prior_grant(
+                    root_id=_ROOT,
+                    expected_descendants=frozenset(_CHILDREN),
+                )
+            # The two un-delegated children are named as missing.
+            assert _CHILDREN[1] in exc.value.result.missing_descendants
+            assert _CHILDREN[2] in exc.value.result.missing_descendants
+        finally:
+            run_coro_blocking(store.close())

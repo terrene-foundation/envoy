@@ -268,8 +268,8 @@ class KailashRsBindingsRuntime:
             raise RuntimeNotReadyError(
                 "trust_cascade_revoke: requires a trust store; pass "
                 "`trust_store=` to KailashRsBindingsRuntime(...). The store MUST "
-                "expose a SYNC `revoke(*, agent_id, reason, revoked_by) -> "
-                "RevocationResult` per the sync Protocol contract."
+                "expose `revoke(*, agent_id, reason, revoked_by) -> "
+                "RevocationResult` (sync or async — F12-b bridges the async case)."
             )
         result = self._trust_store.revoke(
             agent_id=root_id,

@@ -27,7 +27,10 @@ import threading
 
 import pytest
 
-from envoy.runtime.adapters._async_cascade_bridge import run_coro_blocking
+from envoy.runtime.adapters._async_cascade_bridge import (
+    AsyncBridgeTimeoutError,
+    run_coro_blocking,
+)
 
 
 class _BridgeError(RuntimeError):
@@ -86,6 +89,33 @@ class TestRunCoroBlocking:
 
         worker_thread = run_coro_blocking(_capture_thread())
         assert worker_thread != caller_thread
+
+    def test_raises_async_bridge_timeout_when_coroutine_wedges(self) -> None:
+        """A coroutine that does not complete within the wait bound raises a
+        loud ``AsyncBridgeTimeoutError`` — a wedged cascade is NEVER a silent
+        hang (DoS on the revocation control). The wedge is a short bounded sleep
+        so the abandoned worker drains quickly rather than lingering."""
+
+        async def _wedge() -> int:
+            await asyncio.sleep(0.3)
+            return 1
+
+        with pytest.raises(AsyncBridgeTimeoutError, match="did not complete within"):
+            run_coro_blocking(_wedge(), timeout_seconds=0.02)
+
+    def test_coroutine_timeout_error_not_mislabeled_as_bridge_timeout(self) -> None:
+        """A ``TimeoutError`` raised INSIDE the coroutine propagates unchanged —
+        it is NOT mislabelled as an ``AsyncBridgeTimeoutError`` (the
+        ``future.done()`` discriminator distinguishes a wait-bound elapse from a
+        coroutine that raised its own TimeoutError)."""
+
+        async def _raises_inner_timeout() -> None:
+            await asyncio.sleep(0)
+            raise TimeoutError("inner cascade timeout")
+
+        with pytest.raises(TimeoutError, match="inner cascade timeout") as exc:
+            run_coro_blocking(_raises_inner_timeout(), timeout_seconds=5.0)
+        assert not isinstance(exc.value, AsyncBridgeTimeoutError)
 
     def test_does_not_leave_unawaited_coroutine_warning(
         self, recwarn: pytest.WarningsRecorder
