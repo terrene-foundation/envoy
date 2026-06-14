@@ -74,6 +74,25 @@ def test_chat_bad_keyring_selector_exits_32(
     assert result.exit_code == 32, result.output
 
 
+# Null-byte ids are rejected by `_validate_session_id` too, but cannot be injected
+# via env var (the OS refuses an env value containing \x00 before the CLI runs), so
+# the env-driven walk covers path-traversal / separator / hidden-file shapes.
+@pytest.mark.parametrize("bad_sid", ["../escape", "a/b", ".hidden"])
+def test_chat_malformed_session_id_is_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_sid: str
+) -> None:
+    # A path-traversal / null-byte / hidden-file session id is refused at the CLI
+    # boundary with a clean click error (exit != 0), NOT a traceback and NOT a
+    # store traversal (rules/security.md input validation).
+    _env(monkeypatch, tmp_path / "vault.db")
+    monkeypatch.setenv("ENVOY_SESSION_ID", bad_sid)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--log-level", "WARNING", "chat"], input="hi\n")
+    assert result.exit_code != 0
+    assert "session_id" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_chat_missing_principal_is_clean_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

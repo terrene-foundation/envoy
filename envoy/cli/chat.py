@@ -48,6 +48,7 @@ from envoy.ledger.keystore import (
     resolve_keyring_backend,
 )
 from envoy.runtime import ChatResidentLoop, SessionBoundarySignal, SessionRouter
+from envoy.runtime.session import _validate_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,17 @@ def _resolve_vault(vault: str | None) -> pathlib.Path:
 
 
 def _resolve_session_id(session_id: str | None) -> str:
-    return session_id or os.environ.get("ENVOY_SESSION_ID") or uuid.uuid4().hex
+    sid = session_id or os.environ.get("ENVOY_SESSION_ID") or uuid.uuid4().hex
+    # Validate at the CLI boundary so a malformed --session-id surfaces a clean
+    # click error (not a transitive traceback from a downstream store call). The
+    # store guard (`SessionRouter._validate_session_id`) is the structural
+    # defense; this is the explicit user-facing walk (rules/security.md input
+    # validation + rules/user-flow-validation.md).
+    try:
+        _validate_session_id(sid, field="session_id")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return sid
 
 
 def _resolve_keyring_backend_or_exit() -> Any:

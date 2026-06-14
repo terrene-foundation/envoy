@@ -170,7 +170,7 @@ class ChatResidentLoop:
         results: list[ChatTurnResult] = []
         logger.info(
             "chat.loop.start",
-            extra={"session_id": self.session_id, "channel_id": self.adapter.channel_id},
+            extra={"session_id_prefix": self.session_id[:8], "channel_id": self.adapter.channel_id},
         )
         # The resident loop owns the channel transport lifecycle: start it,
         # drain it, shut it down. `startup` is tolerated as idempotent (a
@@ -189,7 +189,7 @@ class ChatResidentLoop:
             await self.adapter.shutdown()
             logger.info(
                 "chat.loop.end",
-                extra={"session_id": self.session_id, "turns": len(results)},
+                extra={"session_id_prefix": self.session_id[:8], "turns": len(results)},
             )
         return results
 
@@ -235,7 +235,7 @@ class ChatResidentLoop:
         request = await self.runtime.issue_grant_moment(**dict(spec.issue_kwargs))
         logger.info(
             "chat.grant.issued",
-            extra={"session_id": self.session_id, "request_id": request.request_id},
+            extra={"session_id_prefix": self.session_id[:8], "request_id_prefix": request.request_id[:8]},
         )
         try:
             resolution = await self.runtime.await_decision(
@@ -244,7 +244,7 @@ class ChatResidentLoop:
         except GrantMomentExpiredError:
             logger.warning(
                 "chat.grant.expired",
-                extra={"session_id": self.session_id, "request_id": request.request_id},
+                extra={"session_id_prefix": self.session_id[:8], "request_id_prefix": request.request_id[:8]},
             )
             return await self._reply(
                 message,
@@ -319,6 +319,6 @@ class ChatResidentLoop:
         except Exception:
             logger.exception(
                 "chat.boundary.cross_failed",
-                extra={"session_id": self.session_id, "trigger": _DISCONNECT_TRIGGER},
+                extra={"session_id_prefix": self.session_id[:8], "trigger": _DISCONNECT_TRIGGER},
             )
             raise
