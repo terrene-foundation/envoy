@@ -25,6 +25,7 @@ Tier-2: real on-disk SessionRouter store + real `cryptography`/keychain backend
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -33,7 +34,11 @@ import pytest
 from envoy.grant_moment import ApproveResolution, VelocityRaiseCoolingOffError
 from envoy.grant_moment.runtime import _PROCESS_BOOT_ID
 from envoy.ledger.keystore import InMemoryKeyringBackend
-from envoy.runtime.session import SessionRouter
+from envoy.runtime.session import (
+    SessionRouter,
+    SessionStoreCorruptError,
+    session_db_path,
+)
 from tests.helpers.grant_moment_harness import (
     DEFAULT_PRINCIPAL_ID,
     make_issue_kwargs,
@@ -189,5 +194,66 @@ class TestCrossBootWallclockFallback:
             )
             with pytest.raises(VelocityRaiseCoolingOffError):
                 await runtime.issue_grant_moment(**_vr_kwargs())
+        finally:
+            await router.close()
+
+
+class TestNonFiniteRatchetIsRejected:
+    """A direct-sqlite tamperer can poison the cleartext ratchet columns with
+    NaN/inf; the read boundary MUST reject them with a typed corruption error
+    (fail-closed), not crash the cooling-off gate with an opaque int() error."""
+
+    # NaN is NOT parametrized: sqlite coerces a bound ``float('nan')`` to NULL,
+    # which the column's NOT NULL constraint already rejects (a second defense
+    # layer). ±inf ARE storable as REAL, so they are the reachable tamper vectors
+    # the finiteness guard must catch.
+    @pytest.mark.parametrize("poison", [float("inf"), float("-inf")])
+    async def test_tampered_nonfinite_timestamp_raises_typed_corruption(
+        self, vault_path: Path, backend: InMemoryKeyringBackend, poison: float
+    ) -> None:
+        router = await _open_router(vault_path, backend)
+        try:
+            await router.record_velocity_approval(
+                principal_id=DEFAULT_PRINCIPAL_ID,
+                wallclock=time.time(),
+                monotonic=time.monotonic(),
+                boot_id=_PROCESS_BOOT_ID,
+            )
+        finally:
+            await router.close()
+
+        # Tamper the monotonic column directly (bypassing the validating writer),
+        # binding a non-finite IEEE-754 float as a parameter (sqlite3 stores +
+        # round-trips nan/inf as REAL).
+        conn = sqlite3.connect(session_db_path(vault_path))
+        try:
+            conn.execute(
+                "UPDATE velocity_raise_ratchet SET last_approved_monotonic = ? "
+                "WHERE principal_id = ?",
+                (poison, DEFAULT_PRINCIPAL_ID),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        reader = await _open_router(vault_path, backend)
+        try:
+            with pytest.raises(SessionStoreCorruptError):
+                await reader.get_velocity_ratchet(DEFAULT_PRINCIPAL_ID)
+        finally:
+            await reader.close()
+
+    async def test_write_path_rejects_nonfinite_input(
+        self, vault_path: Path, backend: InMemoryKeyringBackend
+    ) -> None:
+        router = await _open_router(vault_path, backend)
+        try:
+            with pytest.raises(ValueError, match="finite"):
+                await router.record_velocity_approval(
+                    principal_id=DEFAULT_PRINCIPAL_ID,
+                    wallclock=float("inf"),
+                    monotonic=time.monotonic(),
+                    boot_id=_PROCESS_BOOT_ID,
+                )
         finally:
             await router.close()

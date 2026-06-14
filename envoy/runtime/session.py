@@ -80,6 +80,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -144,6 +145,22 @@ class SessionStoreEncryptionError(Exception):
     verification failure (wrong key / tampered ciphertext / wrong AAD binding).
     All three are definitive security refusals: the row is rejected, never
     returned as if intact.
+    """
+
+
+class SessionStoreCorruptError(Exception):
+    """A session-store row holds a structurally-invalid value a tamperer (or a
+    bug) wrote around the validating writer.
+
+    Raised on read when a numeric column that MUST be finite (the velocity-raise
+    ratchet's wall-clock / monotonic timestamps) holds ``NaN`` / ``±inf``. The
+    velocity table is cleartext operational metadata (no encryption/signature
+    layer), so a direct-sqlite tamperer can poison these columns; an unguarded
+    ``int(time.x() - NaN)`` would raise an OPAQUE ``ValueError`` / ``OverflowError``
+    deep in the cooling-off gate. Surfacing a typed corruption error instead keeps
+    the gate FAIL-CLOSED (no velocity raise is issued) AND actionable. Mirrors the
+    ``math.isfinite()`` boundary-guard discipline (``rules/trust-plane-security.md``
+    MUST Rule 3).
     """
 
 
@@ -1044,6 +1061,12 @@ class SessionRouter:
         self._require_open()
         _validate_session_id(principal_id, field="principal_id")
         _validate_session_id(boot_id, field="boot_id")
+        # Finiteness guard at the write boundary (defense-in-depth): never persist
+        # a NaN/inf timestamp a later cooling-off check would choke on.
+        if not math.isfinite(wallclock):
+            raise ValueError(f"wallclock must be finite (got {wallclock!r})")
+        if not math.isfinite(monotonic):
+            raise ValueError(f"monotonic must be finite (got {monotonic!r})")
         now = _now_iso()
         await asyncio.to_thread(
             self._sync_record_velocity_approval, principal_id, wallclock, monotonic, boot_id, now
@@ -1087,10 +1110,23 @@ class SessionRouter:
         row = await asyncio.to_thread(self._sync_get_velocity_ratchet, principal_id)
         if row is None:
             return None
+        wallclock = row["last_approved_wallclock"]
+        monotonic = row["last_approved_monotonic"]
+        # Read-boundary finiteness guard (load-bearing): the velocity table is
+        # cleartext, so a direct-sqlite tamperer can write NaN/inf here. Reject a
+        # non-finite value as a corrupt/forged row — fail CLOSED with a typed
+        # error (the cooling-off gate refuses to issue) rather than crashing the
+        # gate with an opaque int(NaN)/int(inf) arithmetic error downstream.
+        if not math.isfinite(wallclock) or not math.isfinite(monotonic):
+            raise SessionStoreCorruptError(
+                f"velocity_raise_ratchet row for principal {principal_id!r} has a "
+                "non-finite timestamp (wallclock/monotonic) — corrupt or forged; "
+                "refusing to compute the cooling-off window"
+            )
         return VelocityRatchetRow(
             principal_id=row["principal_id"],
-            last_approved_wallclock=row["last_approved_wallclock"],
-            last_approved_monotonic=row["last_approved_monotonic"],
+            last_approved_wallclock=wallclock,
+            last_approved_monotonic=monotonic,
             boot_id=row["boot_id"],
             updated_at=row["updated_at"],
         )
@@ -1136,6 +1172,7 @@ __all__ = [
     "SESSION_SIGNING_KEY_ID",
     "PendingGrantRow",
     "SessionRouter",
+    "SessionStoreCorruptError",
     "SessionStoreEncryptionError",
     "VelocityRatchetRow",
     "session_db_path",
