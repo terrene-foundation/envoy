@@ -18,8 +18,8 @@ Scope (the S6a SPLIT — see workspaces/phase-02-distribution/journal/0021):
   action verb, allowlist-shape violation). NONE of these dispatch the classifier
   ensemble (``expected_dispatch=False`` in the N3 corpus).
 - The SEMANTIC slice — an action carrying ``content`` bytes that must be classified —
-  is NOT handled here. It dispatches the classifier ensemble in shard S6c; the
-  adapters route a semantic action to the S6c substrate gate. Partition predicate:
+  is NOT handled here. It dispatches the classifier ensemble in shard S6d; the
+  adapters route a semantic action to the S6d substrate gate. Partition predicate:
   :func:`is_semantic_action`.
 
 Source of truth: ``specs/runtime-abstraction.md`` § Conformance vectors N1-N3 +
@@ -119,7 +119,7 @@ def is_semantic_action(action: Any) -> bool:
 
     The partition is structural: a semantic check carries ``content`` (bytes) to be
     classified by the ensemble; a structural check does not. This is the predicate
-    the adapters use to route semantic actions to the S6c classifier gate and
+    the adapters use to route semantic actions to the S6d classifier gate and
     structural actions to :func:`envelope_check_structural`. N3 semantic vectors all
     carry ``content`` bytes; N1/N2/N3-structural vectors never do.
     """
@@ -194,7 +194,7 @@ def _validate_structure(envelope: Any, action: Any) -> str | None:
         if verb is not None and verb not in _KNOWN_ACTION_VERBS:
             return "unknown_action_verb"
         # A present `content` of the WRONG type fails closed (security review
-        # MED-1). The adapters route bytes-`content` to the S6c classifier gate
+        # MED-1). The adapters route bytes-`content` to the S6d classifier gate
         # via is_semantic_action; non-bytes `content` reaching the structural
         # engine signals an intended-but-malformed classification action and MUST
         # NOT receive a free structural allow — reject it like any type mismatch.
@@ -220,7 +220,7 @@ def envelope_check_structural(envelope: Any, action: Any) -> dict[str, Any]:
        distinct verdict (cache invalidation), byte-identically on both runtimes.
 
     MUST NOT be called for a semantic action (:func:`is_semantic_action`) — the
-    adapters route those to the S6c classifier gate before reaching here.
+    adapters route those to the S6d classifier gate before reaching here.
     """
     model = action.get("model") if isinstance(action, dict) else None
 

@@ -32,8 +32,8 @@ Wired-vs-substrate-gated discipline (verified EMPIRICALLY, not assumed — see
 
 - N3 SEMANTIC slice drives the classifier ensemble (`classifier_invoke` via the
   semantic branch of `envelope_check`), raising `RuntimeNotReadyError` naming
-  gating shard **S6c** (the classifier ensemble). Its dispatch + byte-identity
-  test is xfail(S6c).
+  gating shard **S6d** (the classifier ensemble). Its dispatch + byte-identity
+  test is xfail(S6d).
 
 - N3 STRUCTURAL slice's dispatch-observation assertion is LIVE NOW: a
   structural-class check raises the S6a gate BEFORE any `record_dispatch`, so the
@@ -52,7 +52,7 @@ recorder — a deterministic in-process counter, NOT a mock. No ``unittest.mock`
 
 OS-matrix note: every vector is OS-portable (no path separators, no locale
 assumptions). The byte-identity slices run on the macos/ubuntu/windows matrix
-once S6a/S6c land; the dispatch-observation slice is OS-independent (pure
+once S6a/S6d land; the dispatch-observation slice is OS-independent (pure
 in-process counting).
 """
 
@@ -100,11 +100,11 @@ _GATED_ERRORS: tuple[type[Exception], ...] = (
 # S6a LANDED (the structural envelope-check engine): N1/N2/N3-structural drive the
 # structural slice, which now returns a real byte-identical verdict (no longer
 # raises). Their xfail markers were dropped; the gated-status guard below now pins
-# envelope_check as WIRED-for-structural / gated-for-semantic. The only S6a/S6c gate
-# remaining on this surface is the SEMANTIC slice (classifier ensemble → S6c).
-_S6C_REASON = (
-    "substrate-gated on S6c — the classifier ensemble (classifier_invoke) raises "
-    "RuntimeNotReadyError until S6c lands; see runtime-abstraction.md N3 semantic slice"
+# envelope_check as WIRED-for-structural / gated-for-semantic. The only S6a/S6d gate
+# remaining on this surface is the SEMANTIC slice (classifier ensemble → S6d).
+_S6D_REASON = (
+    "substrate-gated on S6d — the classifier ensemble (classifier_invoke) raises "
+    "RuntimeNotReadyError until S6d lands; see runtime-abstraction.md N3 semantic slice"
 )
 
 
@@ -267,14 +267,14 @@ def test_n3_structural_slice_does_not_dispatch_classifier(vector: Any) -> None:
 
 # ---------------------------------------------------------------------------
 # N3 SEMANTIC slice (4 vectors) — classifier MUST dispatch.
-# Substrate-gated on S6c (the classifier ensemble) — xfail until it lands.
+# Substrate-gated on S6d (the classifier ensemble) — xfail until it lands.
 # ---------------------------------------------------------------------------
 
 
 _N3_SEM = n3_semantic_vectors()
 
 
-@pytest.mark.xfail(strict=False, reason=_S6C_REASON)
+@pytest.mark.xfail(strict=False, reason=_S6D_REASON)
 @pytest.mark.parametrize(
     "vector", _N3_SEM, ids=[f"{RUNTIME_UNDER_TEST}-{v.vector_id}" for v in _N3_SEM]
 )
@@ -283,11 +283,11 @@ def test_n3_semantic_slice_dispatches_classifier(vector: Any) -> None:
     classifier ensemble (observed via `dispatch_observation.observe()`), and the
     structured verdict payload MUST be byte-identical across runtimes.
 
-    Substrate-gated on S6c: the classifier ensemble (`classifier_invoke`, reached
+    Substrate-gated on S6d: the classifier ensemble (`classifier_invoke`, reached
     via the semantic branch of `envelope_check`) raises `RuntimeNotReadyError`
-    until S6c wires it, so no `record_dispatch` fires and the observation reads
+    until S6d wires it, so no `record_dispatch` fires and the observation reads
     `dispatched=False` — the assertion `dispatched is True` therefore fails today,
-    which is exactly the xfail (it flips to a real pass when S6c wires the
+    which is exactly the xfail (it flips to a real pass when S6d wires the
     ensemble + the adapters call `record_dispatch` at the dispatch site)."""
     assert vector.expected_dispatch is True, "semantic-slice vector must expect dispatch"
     ref = harness.resolve_runtime(REFERENCE)
@@ -377,7 +377,7 @@ def test_n1_n3_methods_gated_status_is_pinned() -> None:
     WIRED on both adapters — a structural (content-free) action returns a real
     byte-identical verdict, NOT a gate sentinel. The SEMANTIC slice (action carries
     `content` bytes) AND the standalone `classifier_invoke` are still
-    substrate-gated on S6c (the classifier ensemble). When S6c lands, the two
+    substrate-gated on S6d (the classifier ensemble). When S6d lands, the two
     semantic assertions below flip to failures — the loud signal to wire the
     classifier dispatch + drop the N3-semantic xfail."""
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
@@ -393,7 +393,7 @@ def test_n1_n3_methods_gated_status_is_pinned() -> None:
         assert isinstance(verdict, dict)
         assert verdict["verdict_class"] == "structural"
 
-    # envelope_check SEMANTIC slice (action carries `content`) — S6c-gated on BOTH.
+    # envelope_check SEMANTIC slice (action carries `content`) — S6d-gated on BOTH.
     for rt in (py, rut):
         with pytest.raises(_GATED_ERRORS):
             rt.envelope_check(
@@ -401,7 +401,7 @@ def test_n1_n3_methods_gated_status_is_pinned() -> None:
                 {"model": "Document", "requested_fields": ["body"], "content": b"x"},
             )
 
-    # classifier_invoke — S6c-gated on BOTH adapters (N3 semantic dispatch site).
+    # classifier_invoke — S6d-gated on BOTH adapters (N3 semantic dispatch site).
     for rt in (py, rut):
         with pytest.raises(_GATED_ERRORS):
             rt.classifier_invoke("clf-a", b"content", None)

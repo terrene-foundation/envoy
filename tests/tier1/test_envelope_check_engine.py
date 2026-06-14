@@ -75,7 +75,7 @@ class TestStructuralRejects:
 
     def test_content_wrong_type_fails_closed(self) -> None:
         # Security MED-1: a `content` key that is NOT bytes (the adapters route
-        # bytes-content to the S6c classifier gate) must fail closed in the
+        # bytes-content to the S6d classifier gate) must fail closed in the
         # structural engine, NOT receive a free structural allow.
         assert self._reason(
             {"schema": "envelope/1.0"}, {"model": "User", "content": "text-not-bytes"}

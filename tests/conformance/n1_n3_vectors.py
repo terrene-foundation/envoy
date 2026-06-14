@@ -39,8 +39,8 @@ Wired-vs-substrate-gated status (verified empirically against the rs adapter via
   `@pytest.mark.xfail(strict=False, reason="substrate-gated on S6a …")` in the
   driver (`tests/conformance/test_n1_n3.py`).
 - `classifier_invoke` / `ensemble_aggregate` raise `RuntimeNotReadyError` naming
-  gating shard **S6c** — the classifier ensemble ships there. The N3 SEMANTIC
-  slice (which dispatches the classifier) is gated on S6c.
+  gating shard **S6d** — the classifier ensemble ships there. The N3 SEMANTIC
+  slice (which dispatches the classifier) is gated on S6d.
 - The N3 STRUCTURAL slice's dispatch-observation assertion is LIVE NOW: a
   structural-class check raises the S6a gate BEFORE any `record_dispatch`, so the
   cross-runtime invariant "structural ⇒ no classifier dispatch" is observable
@@ -372,8 +372,8 @@ def n2_vectors() -> list[EnvelopeCacheVector]:
 #
 #   - SEMANTIC slice (4 vectors, `expected_dispatch=True`): fixtures whose verdict
 #     REQUIRES dispatching the classifier ensemble (`classifier_invoke`). This
-#     half is substrate-gated on S6c (the classifier ensemble); the driver marks
-#     its dispatch + byte-identity test xfail(S6c).
+#     half is substrate-gated on S6d (the classifier ensemble); the driver marks
+#     its dispatch + byte-identity test xfail(S6d).
 #
 # Each N3 vector carries `expected_dispatch` (True ⇒ semantic, False ⇒ structural)
 # directly on the ConformanceVector row (the schema's N3 field, see
@@ -445,7 +445,7 @@ def _n3_semantic_vectors() -> list[ConformanceVector]:
     Semantic-class checks REQUIRE an LLM-class classifier verdict over content:
     free-text data-access reads, content-classification of an attached payload,
     a redaction decision, and an ambiguous data-sensitivity boundary. Each
-    `expected_dispatch=True`; substrate-gated on S6c (the classifier ensemble).
+    `expected_dispatch=True`; substrate-gated on S6d (the classifier ensemble).
     """
     cases: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
         # Free-text data-access read — content must be classified.
@@ -493,7 +493,7 @@ def n3_structural_vectors() -> list[ConformanceVector]:
 
 
 def n3_semantic_vectors() -> list[ConformanceVector]:
-    """The N3 semantic slice — 4 vectors (classifier MUST dispatch; S6c-gated)."""
+    """The N3 semantic slice — 4 vectors (classifier MUST dispatch; S6d-gated)."""
     vectors = _n3_semantic_vectors()
     assert len(vectors) == 4, f"N3 semantic slice MUST be 4 vectors; got {len(vectors)}"
     return vectors

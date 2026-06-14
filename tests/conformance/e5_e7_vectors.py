@@ -16,9 +16,9 @@ split along the wired-vs-substrate-gated boundary the S2a rs adapter draws:
   20 ADVERSARIAL vectors: each is a FORGED subset-proof a correct verifier MUST
   reject. The ``runtime_verification_signature`` bytes E5 hashes are produced by
   the sub-agent-delegation subset-proof verifier, which is **substrate-gated on
-  shard S6c** (the rs adapter raises ``RuntimeNotReadyError`` naming S6c — see
+  shard S6d** (the rs adapter raises ``RuntimeNotReadyError`` naming S6d — see
   ``kailash_rs_bindings.trust_verify_subset_proof``). The full adversarial corpus
-  is authored NOW so it is ready the moment the S6c engine lands; the
+  is authored NOW so it is ready the moment the S6d engine lands; the
   cross-runtime byte-identity test is ``xfail(strict=False)`` until then.
 
 - **E6 — two-phase signing orphan resolution** (``phase_a_sign_intent`` /
@@ -85,8 +85,8 @@ from envoy.runtime.conformance import ConformanceVector
 #
 # Each vector is the (parent, sub) input pair plus the dimension the forgery
 # escalates (carried for the ground-truth assertion + human auditing). The
-# corpus is authored against the subset-proof verifier that ships in shard S6c;
-# the cross-runtime test is xfail(strict=False) until S6c wires the engine.
+# corpus is authored against the subset-proof verifier that ships in shard S6d;
+# the cross-runtime test is xfail(strict=False) until S6d wires the engine.
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +119,7 @@ def e5_vectors() -> list[SubsetProofVector]:
     """
     # A baseline parent envelope every forged sub is compared against. The shape
     # mirrors the envelope dimensions specs/envelope-model.md enumerates; the
-    # subset-proof verifier (S6c) reads these dimensions.
+    # subset-proof verifier (S6d) reads these dimensions.
     parent: dict[str, Any] = {
         "schema": "envelope/1.0",
         "financial": {"max_micros": 5_000_000},
