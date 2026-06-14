@@ -49,18 +49,21 @@ ASYNC_METHODS: tuple[str, ...] = (
     "head_commitment",
 )
 
-# The 12 substrate-gated methods (ENVOY-P2-W2G-002): their backing engine ships
+# The 11 substrate-gated methods (ENVOY-P2-W2G-002): their backing engine ships
 # in a later shard (S6a / S6c), so each raises RuntimeNotReadyError
 # UNCONDITIONALLY (regardless of whether trust_store= is injected), naming the
 # gating shard in the message. Genuinely-wired methods (trust_sign,
 # envelope_intersect, runtime_sign/verify, envelope_canonical_form, ledger_*,
-# budget_*, trust_verify_chain, trust_cascade_revoke, first_time_action_gate)
-# are NOT in this set. `first_time_action_gate` was S5o-gated; S5o landed the
-# pure gate (`envoy.runtime.observed_state`) both adapters now delegate to, so it
-# is WIRED — covered by tests/tier1/test_observed_state_gate.py + the dual-adapter
-# parity test there, not by the gated raise-tests below.
+# budget_*, trust_verify_chain, trust_cascade_revoke, first_time_action_gate,
+# envelope_check) are NOT in this set. `first_time_action_gate` was S5o-gated; S5o
+# landed the pure gate (`envoy.runtime.observed_state`) both adapters delegate to.
+# `envelope_check` was S6a-gated; S6a landed the structural slice (the pure engine
+# `envoy.runtime.envelope_check` both adapters delegate to), so it is WIRED for
+# structural actions — covered by tests/conformance/test_n1_n3.py + test_n4_n6.py
+# (the N1/N2/N3-structural/N5 lanes) + the gated-status guard there. Its SEMANTIC
+# slice (action carries `content`) still raises S6c, but the method is no longer
+# UNCONDITIONALLY gated, so it leaves this set (mirrors first_time_action_gate).
 SUBSTRATE_GATED_METHODS: tuple[str, ...] = (
-    "envelope_check",
     "envelope_re_read_checkpoint",
     "trust_verify_subset_proof",
     "phase_a_sign_intent",
@@ -275,10 +278,15 @@ def test_sync_method_executes_without_await(adapter: KailashRsBindingsRuntime, n
         "envelope_canonical_form",
         "envelope_intersect",
         "first_time_action_gate",
+        "envelope_check",
     ):
         # Non-substrate-gated forwards (real primitive / binding) + device-key
-        # crypto — they do NOT raise RuntimeNotReadyError, so the generic
-        # substrate-error path below does not apply. Each is exercised by a
+        # crypto + the S5o/S6a-wired pure-delegation gates (first_time_action_gate,
+        # envelope_check structural slice) — they do NOT raise RuntimeNotReadyError
+        # for a content-free call, so the generic substrate-error path below does
+        # not apply. envelope_check is exercised for real by the conformance
+        # N1/N2/N3/N5 drivers; its sync shape is proven by
+        # test_sync_methods_match_protocol_shape. Each is exercised by a
         # dedicated direct-call test by name:
         #   runtime_sign / runtime_verify → test_runtime_sign_returns_real_bytes,
         #       test_runtime_sign_verify_round_trip, test_runtime_sign_without_key_raises
@@ -495,7 +503,7 @@ def test_substrate_gated_method_raises_even_with_trust_store_injected(
 
     Pre-fix, injecting a real backing object that LACKS the phantom method
     surfaced an untyped `AttributeError` (`'X' object has no attribute
-    'envelope_check'`). The deterministic stand-in below exposes NONE of the 12
+    'classifier_invoke'`). The deterministic stand-in below exposes NONE of the 11
     gated names, so the pre-fix code would raise AttributeError; the fixed code
     raises RuntimeNotReadyError UNCONDITIONALLY (it never forwards).
 
@@ -506,7 +514,7 @@ def test_substrate_gated_method_raises_even_with_trust_store_injected(
 
     class _TrustStoreWithoutGatedSurface:
         """A trust-store stand-in exposing only the genuinely-wired surface
-        (get_chain / revoke / check). It deliberately exposes NONE of the 12
+        (get_chain / revoke / check). It deliberately exposes NONE of the 11
         substrate-gated method names, so any attempt to forward to it would
         raise AttributeError — which the fix MUST NOT do."""
 

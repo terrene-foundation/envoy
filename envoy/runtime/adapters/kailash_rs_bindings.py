@@ -327,13 +327,23 @@ class KailashRsBindingsRuntime:
     def envelope_check(self, envelope: Any, action: Any) -> Any:
         """Envelope-check verdict per spec § Envelope.
 
-        Substrate-gated: the structural+semantic check engine (the structural
-        slice (N3) never dispatches the classifier; the semantic slice dispatches
-        it, observed via `envoy.runtime.dispatch_observation`) is wired in shard
-        S6a. Raises unconditionally — no shipped class exposes `check`."""
-        raise _substrate_not_ready(
-            "envelope_check", "S6a", "structural+semantic envelope-check engine"
+        STRUCTURAL slice (S6a): delegates to the shared pure engine
+        `envoy.runtime.envelope_check.envelope_check_structural` — the SAME pure
+        function the kailash-py adapter calls, so the structural verdict is
+        byte-identical by construction (shared pure delegation, journal/0019
+        Pattern 1; the structural slice never dispatches the classifier). SEMANTIC
+        slice (action carries `content` bytes to classify) dispatches the classifier
+        ensemble — substrate-gated on S6c."""
+        from envoy.runtime.envelope_check import (  # noqa: PLC0415
+            envelope_check_structural,
+            is_semantic_action,
         )
+
+        if is_semantic_action(action):
+            raise _substrate_not_ready(
+                "envelope_check", "S6c", "classifier ensemble (semantic slice)"
+            )
+        return envelope_check_structural(envelope, action)
 
     def envelope_re_read_checkpoint(self, envelope: Any, depth: int) -> Any:
         """T-015 envelope re-read checkpoint — re-read from Trust Vault every N

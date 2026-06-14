@@ -475,6 +475,63 @@ boundary crossing, `evaluate` on a previously-recognized fingerprint returns
 `FIRST_TIME_REQUIRES_GRANT` (proven via the shared `tests/support/t013.py`
 invariant, no per-shard reset re-derivation).
 
+## Structural envelope-check engine (`envoy.runtime.envelope_check` — S6a)
+
+The byte-identical STRUCTURAL verdict for `envelope_check(envelope, action)`. A
+single pure function (`envelope_check_structural`) both runtime adapters delegate
+to, so the verdict is byte-identical by construction (the same shared-pure-
+delegation shape as the S5o gate above), and the structural slice NEVER dispatches
+the classifier ensemble.
+
+**Structural-vs-semantic partition.** `is_semantic_action(action)` returns True iff
+the action carries `content` (bytes) to be classified. The adapters route a
+semantic action to the classifier ensemble (substrate-gated on S6c — raises a
+typed not-ready error naming S6c); a structural (content-free) action is evaluated
+here. This is the `specs/runtime-abstraction.md` § Contract-partition contract: the
+N3 structural slice's "structural ⇒ no classifier dispatch" invariant holds by
+construction (the structural path never reaches a dispatch site).
+
+**Verdict shape (byte-identical).** A plain dict with stable keys + sorted field
+lists, canonicalized through `envoy.envelope.canonical_bytes` (JCS-RFC8785 + NFC)
+at scoring time: `schema` (`envoy.envelope-check-verdict/1.0`), `verdict_class`
+(`"structural"`), `outcome`, `model`, `allowed_fields`, `denied_fields`,
+`reject_reason`, `cache_key`, `effective_posture`.
+
+**Structural validation (N3-structural).** First violation (fixed order, so the
+reason is deterministic) yields `outcome="structural_reject"` with `reject_reason`
+one of: `missing_schema`, `malformed_schema` (schema not `envelope/<major>.<minor>`),
+`type_mismatch` (`envelope_version` non-int), `allowlist_shape`
+(`field_allowlist_per_model` not a map), `dimension_out_of_range`
+(`dims.max_depth` > 64), `unknown_action_verb` (a present `verb` outside the
+known data-access grammar), or `malformed_envelope` (non-dict envelope).
+
+**Knowledge-filter gate (N1).** For a well-formed envelope, the action's
+`requested_fields` are partitioned against `field_allowlist_per_model[model]` into
+sorted `allowed_fields` / `denied_fields`; `outcome` is `allow` (none denied),
+`deny` (none allowed), or `partial_deny`. The pre-retrieval over-fetch gate: a
+field absent from the model's allowlist is denied before classification.
+
+**Cache key (N2).** `cache_key` is a `content_hash` over exactly the five
+invalidation properties (`envelope_version`, `algorithm_identifier`,
+`classifier_ensemble_versions`, `posture_level`, `principal_genesis_id`); a change
+to ANY one flips the key (cache invalidation), an unrelated edit does not. Distinct
+from the posture-ceiling input below — this `posture_level` is the top-level
+cache-key property. **Cache-consumer contract (S6c — security review MED-2):**
+`field_allowlist_per_model` is deliberately NOT one of the five (the set is the
+N5/`runtime-abstraction.md`-mandated invalidation axes), so two envelopes differing
+ONLY in their field allowlist hash to the SAME `cache_key`. Any future verdict
+cache keyed on `cache_key` therefore RELIES on the envelope compiler incrementing
+`envelope_version` whenever `field_allowlist_per_model` changes — otherwise a
+tightened allowlist could serve a stale, over-permissive cached verdict. The S6c
+cache wiring MUST verify that invariant (or key the cache on `(cache_key,
+action-shape, allowlist-hash)`) before memoizing the full verdict.
+
+**Posture ceiling (N5).** `effective_posture` is the floor (more-restrictive) of
+the envelope-declared ceiling (`envelope.metadata.posture_level`) and the
+principal-current posture (`action.principal_posture`) on the ladder
+`OBSERVED < SUPERVISED < TRUSTED < AUTONOMOUS` (lower = more restrictive); `None`
+when either posture is absent or off-ladder.
+
 ## Cross-references
 
 - **specs/session-state.md** — SessionObservedState schema + § Persistence
