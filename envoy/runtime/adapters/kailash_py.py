@@ -280,14 +280,26 @@ class KailashPyRuntime:
         return intersect_envelopes(a, b)
 
     def envelope_check(self, envelope: Any, action: Any) -> Any:
-        """Substrate gap: envelope_check requires the FIRST_TIME_REQUIRES_GRANT
-        dispatch into Grant Moment (Wave 2) + the structural+semantic check
-        engine (Wave 3 classifier ensemble)."""
-        raise Phase02SubstrateNotWiredError(
-            "envelope_check: requires Grant Moment dispatch + structural/semantic "
-            f"check engine; tracked at {_TODO_WAVE_2} (Grant Moment) and "
-            f"{_TODO_WAVE_3} (classifier ensemble)"
+        """Envelope-check verdict per spec § Envelope.
+
+        STRUCTURAL slice (S6a): delegates to the shared pure engine
+        `envoy.runtime.envelope_check.envelope_check_structural`, so the verdict is
+        byte-identical to the rs adapter by construction (shared pure delegation —
+        journal/0019 Pattern 1). The structural slice never dispatches the
+        classifier. SEMANTIC slice (action carries `content` bytes to classify):
+        dispatches the classifier ensemble, substrate-gated on S6c.
+        """
+        from envoy.runtime.envelope_check import (  # noqa: PLC0415
+            envelope_check_structural,
+            is_semantic_action,
         )
+
+        if is_semantic_action(action):
+            raise Phase02SubstrateNotWiredError(
+                "envelope_check semantic slice: requires the classifier ensemble "
+                f"(classifier_invoke); tracked at {_TODO_WAVE_3}"
+            )
+        return envelope_check_structural(envelope, action)
 
     def envelope_re_read_checkpoint(self, envelope: Any, depth: int) -> Any:
         """Substrate gap: T-015 envelope re-read checkpoint requires

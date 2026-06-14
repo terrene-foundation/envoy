@@ -97,10 +97,11 @@ _GATED_ERRORS: tuple[type[Exception], ...] = (
 
 # xfail reasons name the gating shard so a future session greps the message to
 # find where the wiring lands (and so a shard that flips the gate surfaces here).
-_S6A_REASON = (
-    "substrate-gated on S6a — envelope_check (structural+semantic check engine) "
-    "raises RuntimeNotReadyError until S6a lands; see runtime-abstraction.md N1/N2"
-)
+# S6a LANDED (the structural envelope-check engine): N1/N2/N3-structural drive the
+# structural slice, which now returns a real byte-identical verdict (no longer
+# raises). Their xfail markers were dropped; the gated-status guard below now pins
+# envelope_check as WIRED-for-structural / gated-for-semantic. The only S6a/S6c gate
+# remaining on this surface is the SEMANTIC slice (classifier ensemble → S6c).
 _S6C_REASON = (
     "substrate-gated on S6c — the classifier ensemble (classifier_invoke) raises "
     "RuntimeNotReadyError until S6c lands; see runtime-abstraction.md N3 semantic slice"
@@ -137,16 +138,14 @@ def _assert_byte_identical(result: ScoreResult, runtime: str, vector_id: str) ->
 _N1 = n1_vectors()
 
 
-@pytest.mark.xfail(strict=False, reason=_S6A_REASON)
 @pytest.mark.parametrize("vector", _N1, ids=[f"{RUNTIME_UNDER_TEST}-{v.vector_id}" for v in _N1])
 def test_n1_knowledge_filter_byte_identical(vector: Any) -> None:
     """N1: ``envelope_check(envelope, action)`` pre-retrieval-gate verdict is
     byte-identical (hash-equal) across kailash-py and kailash-rs-bindings. The
     gate decides which requested fields survive the envelope's
-    `field_allowlist_per_model` BEFORE classification. Substrate-gated on S6a:
-    the loop is wired + the corpus authored; the verdict-producing engine lands
-    in S6a, so this xfails until then (xfail flips to a real pass when S6a wires
-    the engine — see the gated-status guard test)."""
+    `field_allowlist_per_model` BEFORE classification. S6a LANDED: both adapters
+    delegate to the shared pure engine `envoy.runtime.envelope_check`, so the
+    verdict is byte-identical by construction (shared pure delegation)."""
     ref = harness.resolve_runtime(REFERENCE)
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     assert ref is not None and rut is not None
@@ -166,7 +165,6 @@ def test_n1_knowledge_filter_byte_identical(vector: Any) -> None:
 _N2: list[EnvelopeCacheVector] = n2_vectors()
 
 
-@pytest.mark.xfail(strict=False, reason=_S6A_REASON)
 @pytest.mark.parametrize(
     "cvector", _N2, ids=[f"{RUNTIME_UNDER_TEST}-{cv.vector.vector_id}" for cv in _N2]
 )
@@ -181,7 +179,10 @@ def test_n2_envelope_cache_invalidation_byte_identical(cvector: EnvelopeCacheVec
     runtimes; (2) the mutated verdict is byte-identical across runtimes; (3)
     WITHIN each runtime baseline != mutated (the invalidation fired — a runtime
     that ignores `property_changed` would return the stale baseline verdict). All
-    three are byte-identity-scored. Substrate-gated on S6a (xfail until then)."""
+    three are byte-identity-scored. S6a LANDED: the structural engine's verdict
+    carries a `cache_key` over exactly these five properties, so a single-property
+    mutation flips the verdict (the shared pure engine makes (1)+(2) hold by
+    construction)."""
     ref = harness.resolve_runtime(REFERENCE)
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     assert ref is not None and rut is not None
@@ -238,22 +239,22 @@ def test_n3_structural_slice_does_not_dispatch_classifier(vector: Any) -> None:
     calls, NOT output heuristics (no regex/keyword/LLM scoring per
     `rules/probe-driven-verification.md`).
 
-    Each structural fixture's check raises the S6a substrate gate BEFORE any
-    classifier dispatch could occur, so the observation reads `dispatched=False`
-    (zero dispatch_count) on both runtimes — the structural invariant holds TODAY.
-    The cross-runtime assertion is that NEITHER runtime spuriously dispatched the
-    classifier for a structural-class fixture. When S6a lands the real
-    envelope-check engine, this test continues to hold (structural checks still
-    must not dispatch); the gate-raise is simply replaced by a real
-    structural-reject verdict, both yielding dispatched=False."""
+    Post-S6a, each structural fixture's check returns a real structural-reject (or
+    field-gate) verdict WITHOUT reaching any classifier dispatch, so the
+    observation reads `dispatched=False` (zero dispatch_count) on both runtimes —
+    the structural invariant "structural ⇒ no classifier dispatch" holds by
+    construction (the structural path in `envoy.runtime.envelope_check` has no
+    dispatch site). The cross-runtime assertion is that NEITHER runtime spuriously
+    dispatched the classifier for a structural-class fixture."""
     assert vector.expected_dispatch is False, "structural-slice vector must expect no dispatch"
     for family in (REFERENCE, RUNTIME_UNDER_TEST):
         rt = harness.resolve_runtime(family)
         assert rt is not None, f"runtime {family!r} must resolve for the dispatch-observation slice"
-        # The S6a gate raises before any classifier dispatch — the structural
-        # invariant (no dispatch) holds by construction in this phase. The inner
-        # suppress swallows the gate; observe()'s finally then seals the
-        # observation on context exit, so handle.result() is valid regardless.
+        # Post-S6a the structural slice returns a verdict (no raise); the
+        # contextlib.suppress is retained DEFENSIVELY for symmetry — if a future
+        # change routes a structural-looking fixture to a gated path, the gate is
+        # swallowed and observe()'s finally still seals the observation, so the
+        # `dispatched is False` assertion below remains the load-bearing check.
         with observe() as handle, contextlib.suppress(*_GATED_ERRORS):
             rt.envelope_check(**vector.inputs)
         obs = handle.result()
@@ -370,24 +371,35 @@ def test_n1_n3_corpus_counts_match_spec() -> None:
 def test_n1_n3_methods_gated_status_is_pinned() -> None:
     """Pin the WIRED-vs-substrate-gated status of every method N1–N3 exercises so
     a future shard that flips a gate surfaces HERE (the S3a
-    `test_e1_e4_methods_are_all_in_the_wired_set` analogue, inverted: these
-    methods are EXPECTED gated, and this test asserts they STILL are).
+    `test_e1_e4_methods_are_all_in_the_wired_set` analogue).
 
-    `envelope_check` (N1/N2/N3) is substrate-gated on S6a; `classifier_invoke`
-    (N3 semantic) is substrate-gated on S6c. The test constructs both adapters
-    and asserts each method raises the gate sentinel. When S6a/S6c land, THIS
-    test flips to a failure (the method no longer raises), which is the loud
-    signal to remove the corresponding xfail markers above and let the
-    byte-identity loops run green."""
+    Post-S6a SPLIT (see journal/0021): `envelope_check`'s STRUCTURAL slice is now
+    WIRED on both adapters — a structural (content-free) action returns a real
+    byte-identical verdict, NOT a gate sentinel. The SEMANTIC slice (action carries
+    `content` bytes) AND the standalone `classifier_invoke` are still
+    substrate-gated on S6c (the classifier ensemble). When S6c lands, the two
+    semantic assertions below flip to failures — the loud signal to wire the
+    classifier dispatch + drop the N3-semantic xfail."""
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     py = harness.resolve_runtime(REFERENCE)
     assert isinstance(rut, KailashRsBindingsRuntime)
     assert isinstance(py, KailashPyRuntime)
 
-    # envelope_check — S6a-gated on BOTH adapters.
+    # envelope_check STRUCTURAL slice — WIRED (S6a landed): returns a verdict, no raise.
+    for rt in (py, rut):
+        verdict = rt.envelope_check(
+            {"schema": "envelope/1.0"}, {"model": "User", "requested_fields": []}
+        )
+        assert isinstance(verdict, dict)
+        assert verdict["verdict_class"] == "structural"
+
+    # envelope_check SEMANTIC slice (action carries `content`) — S6c-gated on BOTH.
     for rt in (py, rut):
         with pytest.raises(_GATED_ERRORS):
-            rt.envelope_check({"schema": "envelope/1.0"}, {"model": "User", "requested_fields": []})
+            rt.envelope_check(
+                {"schema": "envelope/1.0"},
+                {"model": "Document", "requested_fields": ["body"], "content": b"x"},
+            )
 
     # classifier_invoke — S6c-gated on BOTH adapters (N3 semantic dispatch site).
     for rt in (py, rut):

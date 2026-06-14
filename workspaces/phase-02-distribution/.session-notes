@@ -2,26 +2,27 @@
 
 ## Where we are
 
-Phase-02, phase **implement**. Wave-2 **batch-3 COMPLETE** — S5o gate + the
-M1 conformance families (N1–N6, E1–E7) merged (PRs #101–#104), codify landed
-(#105). Residual codify debt (S4g-1/S5b/S3a) now **CLOSED** this session
-(journal/0020) + an S6a blocker recorded (journal/0021). Next implementation
-step: **S6a — but BLOCKED pending a scope decision** (see In-flight state).
+Phase-02, phase **implement**. Wave-2 **batch-3 COMPLETE** (PRs #101–#104, codify
+#105); residual codify debt CLOSED (journal/0020, #106). **S6a SPLIT — structural
+half DONE** (user-approved): `feat/s6a-envelope-check-structural` ships the pure
+structural `envelope_check` engine; conformance **N1+N2+N3-structural+N5 flipped
+green** (~46 xfails → pass). Next implementation step: **S6b** (envelope-intersection,
+`intersect_envelopes` confirmed present) OR the deferred classifier/masking shard.
 
 ## Read first
 
 1. `todos/active/_index.md` — batch scope + value-ranking.
-2. `todos/active/02-m2-ws6-durable-substrate.md` § SAME-CLASS SERIALIZATION + the S6a→S6b→S6c shards (S6a next).
-3. `todos/active/01-m1-ws1-runtime-pluggability.md` — `RS_BINDINGS_ENABLED` flag-flip gate (NOT ready; most conformance still xfail-gated on S6a/S6c).
-4. `specs/session-runtime.md` § SessionObservedState first-time-action gate (S5o + pattern-AST grammar).
-5. `journal/0019` — batch-3 patterns; `journal/0020` — S4g-1/S5b/S3a patterns; **`journal/0021` — the S6a blocker (READ before resuming S6a)**.
+2. `todos/active/02-m2-ws6-durable-substrate.md` § S6a **SCOPE AMENDMENT** (the split: structural done; masking/T-005/semantic deferred) + the S6b/S6c shards.
+3. `todos/active/01-m1-ws1-runtime-pluggability.md` — `RS_BINDINGS_ENABLED` flag-flip gate (NOT ready; the classifier/masking + two-phase-signing + grant_moment_surface lanes still xfail-gated).
+4. `specs/session-runtime.md` § "Structural envelope-check engine (S6a)" (the verdict schema + structural/semantic partition + posture-floor) + § S5o gate.
+5. `journal/0019` (batch-3 patterns); `journal/0020` (S4g-1/S5b/S3a); `journal/0021` (the S6a SDK-gap + split rationale).
 
 ## In-flight state
 
-- This `.session-notes` + the journal/0020+0021 entries + `learning-codified.json` ride the `codify/jack-2026-06-14` PR (main protected).
-- **S6a is BLOCKED on a scope decision (journal/0021).** Empirical check: the kailash 2.29.3 binding exposes NO `ClassificationPolicy`/`MaskingStrategy`/`apply_read_classification`/5-enum/`kailash.dataflow` that S6a's todo + `specs/classification-policy.md` assume; the PACT envelope/clearance surface (`intersect_envelopes`, `ClearanceSpec`, `effective_clearance`) IS present. Drift: S6a todo says it wires `classifier_invoke`/`ensemble_aggregate`, but both adapters' docstrings + `_TODO_WAVE_3` say **S6c**. 75 conformance xfails cite S6a (`envelope_check` engine), 41 cite S6c.
-- **Recommendation on the table (user to decide):** SPLIT S6a — build the structural `envelope_check` engine now on the present PACT surface (unblocks most of the 75 xfails); realign masking + T-005 ensemble to S6c gated on upstream `kailash-rs#514`; correct `classification-policy.md:56-57`'s misleading "kailash-py ✅" claim. Alternatives: file the upstream gap first (human-gated), or pick a different unblocked shard (S6b `intersect_envelopes` confirmed present / S4g-2).
-- Codify debt for S4g-1/S5b/S3a is **CLOSED** (journal/0020).
+- **S6a structural engine LANDED** (`envoy/runtime/envelope_check.py`; both adapters delegate → byte-identical). N1/N2/N3-structural/N5 conformance lanes pass; reviewer + security-reviewer both APPROVE (security MED-1 content-type fail-closed fixed in-shard; MED-2 cache-consumer assumption documented in `specs/session-runtime.md` § S6a for the S6c wiring).
+- **DEFERRED (still gated on upstream `kailash-rs#514`):** the classifier/masking shard — `@classify`/`apply_read_classification`/`MaskingStrategy` + T-005 ensemble + N3-semantic. Its value-anchored AC is RETAINED verbatim in the S6a todo. The binding exposes none of that surface.
+- **UNRESOLVED — S6c token collision** (flag for next `/todos` re-rank): conformance/adapters tag the classifier gate "S6c" but the milestone S6c is the `chat` loop — the deferred classifier/masking work needs its own shard id.
+- **Still gated, unchanged this shard:** `grant_moment_surface` (N4 rendered text), the two-phase signing engine (E6), S6b (envelope-intersection — buildable: `intersect_envelopes` present).
 
 ## Outstanding ledger (forest)
 
@@ -51,5 +52,7 @@ Closed this session: `P10` → terrene-foundation/kailash-py#1318 filed; receipt
 
 ## Open questions for the human
 
-- **S6a scope decision (BLOCKING — see In-flight state + journal/0021):** split S6a (structural `envelope_check` now on the present PACT surface + masking/T-005 → S6c) ‖ file the upstream `kailash-rs#514` binding gap first (human-gated) ‖ pick a different unblocked shard (S6b/S4g-2)?
-- If filing upstream: the cross-repo `kailash-rs` issue needs an explicit user-authorized + journaled grant per `repo-scope-discipline.md` + `upstream-issue-hygiene.md`.
+- **S6a scope decision: RESOLVED 2026-06-14** — user approved the SPLIT; structural `envelope_check` engine shipped (`feat/s6a-envelope-check-structural`). Remaining open items below.
+- **Deferred classifier/masking shard — file `kailash-rs#514` upstream?** The masking/T-005/semantic half is gated on the rs binding exposing `apply_read_classification`/`ClassificationPolicy`. Filing the upstream gap needs an explicit user-authorized + journaled grant per `repo-scope-discipline.md` + `upstream-issue-hygiene.md` (NOT yet filed).
+- **S6c token collision** — at the next `/todos` re-rank, assign the deferred classifier/masking work its own shard id (distinct from the milestone S6c `chat` loop).
+- **Next shard pick:** S6b (envelope-intersection, buildable now) vs the deferred classifier shard (blocked on #514) vs S4g-2?

@@ -76,17 +76,14 @@ from tests.conformance.n4_n6_vectors import (
 RUNTIME_UNDER_TEST = "kailash-rs-bindings"
 REFERENCE = "kailash-py"
 
-#: The gating shard for the N4/N5 substrate-gated methods + the spec anchor; the
-#: xfail reason names both so a reader knows exactly what unblocks the lane.
+#: The gating shard for N4's substrate-gated grant_moment_surface (the rendered
+#: Grant-Moment text, owned by the semantic slice) + the spec anchor. N5
+#: (envelope_check posture-ceiling) is NO LONGER gated — S6a landed the structural
+#: envelope-check engine; see test_n5_posture_ceiling_byte_identical.
 _N4_XFAIL_REASON = (
     "substrate-gated on S6a (Grant Moment dispatch surface) — "
     "runtime-abstraction.md:152 N4 structured-payload byte-identity flips green "
-    "when S6a wires grant_moment_surface"
-)
-_N5_XFAIL_REASON = (
-    "substrate-gated on S6a (structural+semantic envelope-check engine) — "
-    "runtime-abstraction.md § N5 posture-ceiling byte-identity flips green "
-    "when S6a wires envelope_check"
+    "when the Grant-Moment rendered-text surface (grant_moment_surface) wires"
 )
 
 
@@ -150,14 +147,15 @@ def test_n4_verdict_structured_payload_byte_identical(vector: Any) -> None:
 
 # ---------------------------------------------------------------------------
 # N5 — Posture ceiling (15 vectors). envelope_check(envelope, action) -> verdict.
-# Substrate-gated on S6a → cross-runtime byte-identity xfails until S6a lands.
+# S6a LANDED (structural slice): the structural envelope-check engine computes
+# effective_posture = floor(envelope-declared, principal-current), so this lane
+# now runs green (no xfail).
 # ---------------------------------------------------------------------------
 
 
 _N5: list[PostureVector] = n5_vectors()
 
 
-@pytest.mark.xfail(strict=False, reason=_N5_XFAIL_REASON)
 @pytest.mark.parametrize(
     "pvector", _N5, ids=[f"{RUNTIME_UNDER_TEST}-{pv.vector.vector_id}" for pv in _N5]
 )
@@ -167,8 +165,10 @@ def test_n5_posture_ceiling_byte_identical(pvector: PostureVector) -> None:
     runtimes. The driver also pins the ground-truth floor (both runtimes surface
     the SPEC ceiling, not merely agree with each other).
 
-    Substrate-gated: both adapters raise RuntimeNotReadyError (S6a) until the
-    structural+semantic envelope-check engine lands; the xfail flips green then."""
+    S6a LANDED: both adapters delegate to the shared pure engine
+    `envoy.runtime.envelope_check`, whose structural verdict carries
+    `effective_posture` computed on the posture-ceiling ladder — so the verdict is
+    byte-identical by construction and the ground-truth floor is pinned below."""
     ref = harness.resolve_runtime(REFERENCE)
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     assert ref is not None and rut is not None
@@ -289,27 +289,36 @@ def test_n4_is_structured_payload_only() -> None:
         )
 
 
-def test_n4_n5_methods_are_substrate_gated() -> None:
-    """N4's grant_moment_surface + N5's envelope_check are SUBSTRATE-GATED on the
-    rs adapter (raise RuntimeNotReadyError naming the gating shard) — so the
-    cross-runtime byte-identity drivers above xfail. This pins the gated state:
-    if a future shard WIRES either method, the xfail flips to an unexpected pass
-    (xfail strict=False) AND this guard's RuntimeNotReadyError expectation fails,
-    surfacing the wiring loudly. Mirrors S3a's wired-set guard, inverted."""
+def test_n4_method_is_substrate_gated() -> None:
+    """N4's grant_moment_surface (the rendered Grant-Moment text, owned by the
+    semantic slice) is SUBSTRATE-GATED on the rs adapter (raises
+    RuntimeNotReadyError naming the gating shard) — so the N4 cross-runtime
+    byte-identity driver above xfails. This pins the gated state: if a future
+    shard WIRES the method, the xfail flips to an unexpected pass AND this guard's
+    RuntimeNotReadyError expectation fails, surfacing the wiring loudly. Mirrors
+    S3a's wired-set guard, inverted.
+
+    N5's envelope_check is NO LONGER gated — S6a landed the structural
+    envelope-check engine (effective_posture is computed structurally); its
+    wired-status is pinned by test_n5_posture_ceiling_byte_identical above + the
+    conformance N1/N2/N3 gated-status guard in test_n1_n3.py."""
     rut = harness.resolve_runtime(RUNTIME_UNDER_TEST)
     py = harness.resolve_runtime(REFERENCE)
     assert isinstance(rut, KailashRsBindingsRuntime)
     assert isinstance(py, KailashPyRuntime)
 
-    # grant_moment_surface (N4) — gated on S6a.
+    # grant_moment_surface (N4) — still gated (rendered-text / semantic surface).
     with pytest.raises(RuntimeNotReadyError) as n4_exc:
         rut.grant_moment_surface({"verdict_kind": "ALLOW"})
     assert "S6a" in str(n4_exc.value)
 
-    # envelope_check (N5) — gated on S6a.
-    with pytest.raises(RuntimeNotReadyError) as n5_exc:
-        rut.envelope_check({"schema": "envelope/1.0"}, {"kind": "check"})
-    assert "S6a" in str(n5_exc.value)
+    # envelope_check (N5) — WIRED (S6a structural slice): a structural action
+    # returns a real verdict carrying effective_posture, NOT a gate sentinel.
+    verdict = rut.envelope_check(
+        {"schema": "envelope/1.0", "metadata": {"posture_level": "SUPERVISED"}},
+        {"principal_posture": "TRUSTED", "kind": "check"},
+    )
+    assert verdict["effective_posture"] == "SUPERVISED"
 
 
 def test_n6_fingerprint_surface_is_wired() -> None:

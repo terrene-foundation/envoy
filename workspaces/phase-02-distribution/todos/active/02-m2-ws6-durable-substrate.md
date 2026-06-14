@@ -199,7 +199,20 @@ Per the `/todos` contract every data-consuming/producing component carries a **B
 
 ---
 
-## S6a — ClassificationPolicy Tier-2 (`@classify`, clearance, MaskingStrategy, T-005 fail-closed)
+## S6a — SPLIT (2026-06-14, journal/0021; user-approved): structural envelope-check engine DONE; masking + T-005 ensemble realigned to the classifier shard
+
+**⚠️ SCOPE AMENDMENT (per `rules/specs-authority.md` Rule 5c + `rules/value-prioritization.md` MUST-4 — user-approved 2026-06-14).** The original S6a below bundled TWO surfaces that the installed `kailash` 2.29.3 binding splits apart (journal/0021):
+
+1. **Structural envelope-check engine — DELIVERED this shard** (`feat/s6a-envelope-check-structural`). The pure `envoy.runtime.envelope_check.envelope_check_structural` (both adapters delegate → byte-identical) wires the conformance N1 (knowledge filter), N2 (5-property cache-key), N3-structural (6 reject classes), and N5 (posture ceiling) lanes — ~46 xfails flipped green; `specs/session-runtime.md` § "Structural envelope-check engine (S6a)" describes it. The structural slice never dispatches the classifier; a semantic action (carries `content` bytes) routes to the classifier gate.
+2. **Classification masking (`@classify` / `apply_read_classification` / MaskingStrategy) + T-005 classifier-ensemble + N3-semantic — DEFERRED, gated on upstream `kailash-rs#514`.** The binding exposes NO `ClassificationPolicy` / `apply_read_classification` / `MaskingStrategy` / `Classification`-enum / `kailash.dataflow` surface (verified live; `specs/classification-policy.md` corrected). Cannot land until that binding ships (`framework-first.md` + `zero-tolerance.md` Rule 4 — no envoy-side reimplementation of a framework surface).
+
+**⚠️ S6c naming collision (flag for next `/todos` re-rank — UNRESOLVED).** The conformance corpus + both adapters' docstrings tag the classifier-ensemble gate **"S6c"**, but the milestone's S6c section below is the **`chat` resident loop**. These are DIFFERENT shards sharing a token. The deferred masking/T-005/semantic work needs its own shard id (NOT the milestone S6c chat loop); resolve at the next re-rank. The classifier-ensemble methods (`classifier_invoke` / `ensemble_aggregate` / `classifier_registry_resolve`) + `grant_moment_surface` (N4 rendered text) + the two-phase signing engine (E6) all remain substrate-gated and are unchanged by this shard.
+
+The original acceptance criteria below are RETAINED verbatim as the spec for the DEFERRED classifier/masking shard (do not delete — they are the value-anchored scope for that shard, gated on `kailash-rs#514`).
+
+---
+
+## S6a (original — now the DEFERRED classifier/masking shard spec) — ClassificationPolicy Tier-2 (`@classify`, clearance, MaskingStrategy, T-005 fail-closed)
 
 **Type:** Build+Wire.
 **Value-anchor:** WS-6 deep-dive Q2 surface #3 — "needs a live runtime with the classifier wired, which is the `SessionRouter`"; the full PACT `ClassificationPolicy` surface "deferred to T-01-21 Tier 2 wiring" per `envoy/ledger/facade.py:399`.

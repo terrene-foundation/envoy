@@ -288,6 +288,27 @@ class TestPhase02StubsRaiseTypedErrors:
         with pytest.raises(Phase02SubstrateNotWiredError):
             kailash_py_runtime.budget_reserve(session="s1", cost=100)
 
-    def test_envelope_check_raises_typed(self, kailash_py_runtime: KailashPyRuntime) -> None:
+    def test_envelope_check_structural_returns_verdict(
+        self, kailash_py_runtime: KailashPyRuntime
+    ) -> None:
+        # S6a structural slice: a content-free action returns a real byte-identical
+        # verdict (the knowledge-filter field gate), NOT a substrate gate.
+        verdict = kailash_py_runtime.envelope_check(
+            {"schema": "envelope/1.0", "field_allowlist_per_model": {"User": ["name"]}},
+            {"model": "User", "requested_fields": ["name", "ssn"]},
+        )
+        assert verdict["verdict_class"] == "structural"
+        assert verdict["outcome"] == "partial_deny"
+        assert verdict["allowed_fields"] == ["name"]
+        assert verdict["denied_fields"] == ["ssn"]
+
+    def test_envelope_check_semantic_slice_raises_typed(
+        self, kailash_py_runtime: KailashPyRuntime
+    ) -> None:
+        # SEMANTIC slice (action carries `content` to classify) is S6c-gated until
+        # the classifier ensemble lands.
         with pytest.raises(Phase02SubstrateNotWiredError):
-            kailash_py_runtime.envelope_check(envelope=None, action=None)
+            kailash_py_runtime.envelope_check(
+                {"schema": "envelope/1.0"},
+                {"model": "Doc", "requested_fields": ["body"], "content": b"x"},
+            )
