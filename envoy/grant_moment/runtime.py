@@ -209,6 +209,14 @@ _DEFAULT_NOVELTY_READ_DELAY_SECONDS = 5.0  # spec § Novelty-aware friction
 _DEFAULT_QUEUE_CEILING = 5  # spec § Timeout "back-pressure after N parallel"
 _DEFAULT_VELOCITY_COOLING_OFF_SECONDS = 24 * 60 * 60  # spec § Velocity-raise ratchet T-093
 
+# Per-PROCESS boot id (S4g-2). Stamped onto each persisted velocity-raise
+# approval so a later cooling-off check can tell whether the persisted monotonic
+# baseline is comparable: same boot_id ⇒ ``time.monotonic()`` is on the same
+# clock epoch ⇒ the monotonic delta is authoritative and immune to forward
+# wall-clock skew; a different boot_id (process restart) ⇒ monotonic reset ⇒ fall
+# back to the wall-clock delta. Generated once per process import.
+_PROCESS_BOOT_ID = f"boot-{uuid.uuid4()}"
+
 # Phase A intent TTL — bounds how long a Phase A row stays valid for
 # matching with its Phase B (grant_moment) outcome. Per
 # ``specs/ledger.md`` § Two-phase signing: orphan Phase A rows beyond
@@ -298,6 +306,15 @@ class _PendingGrantRowShape(Protocol):
     resolution_sig: str | None
 
 
+class _VelocityRatchetShape(Protocol):
+    """Structural shape the runtime reads off an S4s ``VelocityRatchetRow``
+    (S4g-2 velocity-raise cooling-off ratchet)."""
+
+    last_approved_wallclock: float
+    last_approved_monotonic: float
+    boot_id: str
+
+
 class _SessionRouterProtocol(Protocol):
     """Subset of ``envoy.runtime.session.SessionRouter`` the rendezvous needs.
 
@@ -328,6 +345,14 @@ class _SessionRouterProtocol(Protocol):
     async def verify_resolution_signature(
         self, *, request_id: str, resolution_json: str, resolution_sig: str | None
     ) -> bool: ...
+
+    async def get_velocity_ratchet(
+        self, principal_id: str
+    ) -> _VelocityRatchetShape | None: ...
+
+    async def record_velocity_approval(
+        self, *, principal_id: str, wallclock: float, monotonic: float, boot_id: str
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,20 +521,62 @@ class EnvoyGrantMomentRuntime:
         # In-flight grants (M0 → M4 lifetime). Empty after M4 complete.
         self._inflight: dict[str, _PendingGrant] = {}
 
-        # Velocity-raise registry: last-approved wall-clock timestamp per
-        # principal. T-093 R2-H4 cooling-off ratchet. Wall-clock (time.time())
-        # rather than monotonic — the 24h window is a user-facing claim
-        # bound to calendar time; monotonic resets to 0 on process
-        # restart, which would silently advance the ratchet (security-R1
-        # HIGH-3).
-        #
-        # Phase-01 known limitation (security-R2 MED-2): forward clock
-        # skew (NTP catch-up jump, admin clock change, container clock
-        # adjustment) can shorten the cooling-off window. Backward skew
-        # is benign (still raises). Phase 02 persists this into the
-        # TrustVault alongside a monotonic baseline so forward-skew is
-        # detectable.
+        # Velocity-raise cooling-off ratchet (T-093 R2-H4). When a SessionRouter
+        # is wired (the cross-process grant/chat configuration), the last-approved
+        # record is PERSISTED durably via S4g-2 (`record_velocity_approval` /
+        # `get_velocity_ratchet`) so a process restart no longer silently resets
+        # the ratchet, AND a same-boot monotonic baseline makes the window immune
+        # to forward wall-clock skew. This in-memory dict is the Phase-01 fallback
+        # used ONLY when no router is wired (Tier-1 unit tests, legacy
+        # single-process callers); in that configuration a restart loses the
+        # ratchet and forward skew can shorten the window — the documented
+        # narrower residual the router-backed path closes.
         self._velocity_raise_last_approved_wallclock: dict[str, float] = {}
+
+    # ------------------------------------------------------------------
+    # Velocity-raise cooling-off ratchet (T-093 / S4g-2)
+    # ------------------------------------------------------------------
+
+    async def _velocity_elapsed_since_last_approval(self) -> int | None:
+        """Seconds since this principal's last velocity-raise approval, or None if
+        none recorded. Router-backed when wired (durable + skew-immune), else the
+        in-memory wall-clock fallback.
+
+        Skew handling on the router path: a record stamped by the LIVE process
+        (``boot_id`` matches ``_PROCESS_BOOT_ID``) is measured by the monotonic
+        delta — authoritative and immune to a forward wall-clock jump that would
+        otherwise shorten the window. A record from a PRIOR boot (monotonic reset,
+        not comparable) falls back to the wall-clock delta — the ratchet still
+        survives the restart (the bigger Phase-01 hole), accepting that
+        cross-restart forward skew is the documented narrower residual. Negative
+        deltas (backward skew / clock rewind) clamp to 0 so the gate stays closed.
+        """
+        if self._session_router is None:
+            last = self._velocity_raise_last_approved_wallclock.get(self._principal_id)
+            if last is None:
+                return None
+            return max(0, int(time.time() - last))
+
+        row = await self._session_router.get_velocity_ratchet(self._principal_id)
+        if row is None:
+            return None
+        if row.boot_id == _PROCESS_BOOT_ID:
+            return max(0, int(time.monotonic() - row.last_approved_monotonic))
+        return max(0, int(time.time() - row.last_approved_wallclock))
+
+    async def _record_velocity_approval(self) -> None:
+        """Record a successful velocity-raise approval for this principal —
+        durably via the router when wired, else into the in-memory fallback.
+        Stamps the wall-clock + monotonic baseline + this process's boot id."""
+        if self._session_router is None:
+            self._velocity_raise_last_approved_wallclock[self._principal_id] = time.time()
+            return
+        await self._session_router.record_velocity_approval(
+            principal_id=self._principal_id,
+            wallclock=time.time(),
+            monotonic=time.monotonic(),
+            boot_id=_PROCESS_BOOT_ID,
+        )
 
     # ------------------------------------------------------------------
     # M0 + M1 — construct + dispatch
@@ -582,17 +649,14 @@ class EnvoyGrantMomentRuntime:
         # T-093 velocity-raise cooling-off ratchet — fired BEFORE we mint a
         # nonce reservation so a refused velocity raise does not leak the
         # nonce into the dedup store (the user re-issues with a fresh nonce
-        # after the cooling-off window). Wall-clock (time.time()) so the
-        # 24h window aligns with the user-facing claim — security-R1 HIGH-3.
+        # after the cooling-off window).
         if is_velocity_raise:
-            last = self._velocity_raise_last_approved_wallclock.get(self._principal_id)
-            if last is not None:
-                elapsed = int(time.time() - last)
-                if elapsed < self._velocity_raise_cooling_off_seconds:
-                    raise VelocityRaiseCoolingOffError(
-                        elapsed_seconds=elapsed,
-                        required_seconds=self._velocity_raise_cooling_off_seconds,
-                    )
+            elapsed = await self._velocity_elapsed_since_last_approval()
+            if elapsed is not None and elapsed < self._velocity_raise_cooling_off_seconds:
+                raise VelocityRaiseCoolingOffError(
+                    elapsed_seconds=elapsed,
+                    required_seconds=self._velocity_raise_cooling_off_seconds,
+                )
 
         # Reserve the nonce + intent_id BEFORE signing so a concurrent
         # second-arrival sees the dedup hit even if signing is slow.
@@ -1293,13 +1357,13 @@ class EnvoyGrantMomentRuntime:
             content_trust_level="user-authored",
         )
 
-        # Velocity-raise registry update — only on successful Approve paths.
-        # Wall-clock (time.time()) so the 24h window matches the user-facing
-        # claim (security-R1 HIGH-3).
+        # Velocity-raise ratchet update — only on successful Approve paths.
+        # Durable + skew-immune when a router is wired (S4g-2); in-memory
+        # wall-clock fallback otherwise (see _record_velocity_approval).
         if pending.is_velocity_raise and isinstance(
             resolution, (ApproveResolution, ApproveWithModificationResolution)
         ):
-            self._velocity_raise_last_approved_wallclock[self._principal_id] = time.time()
+            await self._record_velocity_approval()
 
         # Same-process durability: persist the resolution onto the durable row
         # so a crash after M3 does not lose the answer (store is authority). On

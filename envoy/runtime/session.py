@@ -80,6 +80,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -144,6 +145,22 @@ class SessionStoreEncryptionError(Exception):
     verification failure (wrong key / tampered ciphertext / wrong AAD binding).
     All three are definitive security refusals: the row is rejected, never
     returned as if intact.
+    """
+
+
+class SessionStoreCorruptError(Exception):
+    """A session-store row holds a structurally-invalid value a tamperer (or a
+    bug) wrote around the validating writer.
+
+    Raised on read when a numeric column that MUST be finite (the velocity-raise
+    ratchet's wall-clock / monotonic timestamps) holds ``NaN`` / ``±inf``. The
+    velocity table is cleartext operational metadata (no encryption/signature
+    layer), so a direct-sqlite tamperer can poison these columns; an unguarded
+    ``int(time.x() - NaN)`` would raise an OPAQUE ``ValueError`` / ``OverflowError``
+    deep in the cooling-off gate. Surfacing a typed corruption error instead keeps
+    the gate FAIL-CLOSED (no velocity raise is issued) AND actionable. Mirrors the
+    ``math.isfinite()`` boundary-guard discipline (``rules/trust-plane-security.md``
+    MUST Rule 3).
     """
 
 
@@ -271,6 +288,26 @@ class PendingGrantRow:
     resolution_sig: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class VelocityRatchetRow:
+    """The durable last-velocity-raise-approval record for one principal (S4g-2).
+
+    ``last_approved_wallclock`` (``time.time()``) anchors the 24h cooling-off to
+    calendar time and survives process restart. ``last_approved_monotonic``
+    (``time.monotonic()``) + ``boot_id`` (the per-process uuid that captured it)
+    let a same-boot check measure elapsed time IMMUNE to forward wall-clock skew:
+    when ``boot_id`` matches the live process, the monotonic delta is
+    authoritative; across a restart (``boot_id`` differs, monotonic resets) the
+    check falls back to the wall-clock delta.
+    """
+
+    principal_id: str
+    last_approved_wallclock: float
+    last_approved_monotonic: float
+    boot_id: str
+    updated_at: str
+
+
 class SessionRouter:
     """Store-backed session substrate — re-opens two durable projections per
     process invocation.
@@ -354,6 +391,28 @@ class SessionRouter:
     )
     """
 
+    # Velocity-raise cooling-off ratchet (S4g-2). One row per principal recording
+    # the last successful velocity-raise approval. Phase-01 kept this in an
+    # in-memory dict that a process restart SILENTLY RESET (a restart bought a
+    # free velocity raise — security-R1 HIGH-3); persisting it here closes that.
+    # Each row carries BOTH a wall-clock timestamp (the 24h window is a calendar-
+    # time user-facing claim, and survives restart) AND a monotonic baseline +
+    # the per-process ``boot_id`` that captured it: within the SAME boot the
+    # monotonic delta is authoritative and IMMUNE to forward wall-clock skew
+    # (NTP catch-up / admin clock change), so the gate can no longer be shortened
+    # by moving the clock forward. Columns are operational metadata (timestamps +
+    # a boot uuid), NOT user content — cleartext, like the other index/key
+    # columns (S5o-enc encrypts only the JSON payload columns).
+    _CREATE_VELOCITY_RATCHET_SQL = """
+    CREATE TABLE IF NOT EXISTS velocity_raise_ratchet (
+        principal_id            TEXT PRIMARY KEY,
+        last_approved_wallclock REAL NOT NULL,
+        last_approved_monotonic REAL NOT NULL,
+        boot_id                 TEXT NOT NULL,
+        updated_at              TEXT NOT NULL
+    )
+    """
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -431,6 +490,7 @@ class SessionRouter:
             conn.execute(self._CREATE_PENDING_GRANT_SQL)
             conn.execute(self._CREATE_PENDING_GRANT_INDEX_SQL)
             conn.execute(self._CREATE_SESSION_OBSERVED_STATE_SQL)
+            conn.execute(self._CREATE_VELOCITY_RATCHET_SQL)
             conn.commit()
         finally:
             conn.close()
@@ -972,6 +1032,118 @@ class SessionRouter:
         finally:
             conn.close()
 
+    # ------------------------------------------------------------------
+    # Velocity-raise cooling-off ratchet (S4g-2)
+    # ------------------------------------------------------------------
+    #
+    # Durable replacement for the runtime's in-memory last-approved dict, which a
+    # process restart silently reset. The runtime (``EnvoyGrantMomentRuntime``)
+    # owns the SEMANTICS — when a velocity-raise approval fires, and how elapsed
+    # time is compared against the 24h window (incl. the same-boot monotonic
+    # skew-immunity). This store only persists + returns the raw record verbatim.
+
+    async def record_velocity_approval(
+        self,
+        *,
+        principal_id: str,
+        wallclock: float,
+        monotonic: float,
+        boot_id: str,
+    ) -> None:
+        """Durably record (upsert) the principal's last velocity-raise approval.
+
+        Called by the runtime only on a SUCCESSFUL Approve of a velocity-raise.
+        ``wallclock`` = ``time.time()`` at approval, ``monotonic`` =
+        ``time.monotonic()`` at the same instant, ``boot_id`` = the per-process
+        uuid that captured them (so a later check knows whether the monotonic
+        baseline is comparable). Overwrites any prior row for the principal — the
+        ratchet tracks only the most-recent approval."""
+        self._require_open()
+        _validate_session_id(principal_id, field="principal_id")
+        _validate_session_id(boot_id, field="boot_id")
+        # Finiteness guard at the write boundary (defense-in-depth): never persist
+        # a NaN/inf timestamp a later cooling-off check would choke on.
+        if not math.isfinite(wallclock):
+            raise ValueError(f"wallclock must be finite (got {wallclock!r})")
+        if not math.isfinite(monotonic):
+            raise ValueError(f"monotonic must be finite (got {monotonic!r})")
+        now = _now_iso()
+        await asyncio.to_thread(
+            self._sync_record_velocity_approval, principal_id, wallclock, monotonic, boot_id, now
+        )
+
+    def _sync_record_velocity_approval(
+        self,
+        principal_id: str,
+        wallclock: float,
+        monotonic: float,
+        boot_id: str,
+        now: str,
+    ) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO velocity_raise_ratchet
+                    (principal_id, last_approved_wallclock, last_approved_monotonic,
+                     boot_id, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    last_approved_wallclock=excluded.last_approved_wallclock,
+                    last_approved_monotonic=excluded.last_approved_monotonic,
+                    boot_id=excluded.boot_id,
+                    updated_at=excluded.updated_at
+                """,
+                (principal_id, wallclock, monotonic, boot_id, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def get_velocity_ratchet(self, principal_id: str) -> VelocityRatchetRow | None:
+        """Return the principal's last velocity-raise approval record, or None if
+        no velocity-raise has ever been approved (a fresh process opening the same
+        store re-hydrates the persisted ratchet — the cross-restart durability
+        that closes the in-memory-dict reset hole). Does NOT raise on absence."""
+        self._require_open()
+        _validate_session_id(principal_id, field="principal_id")
+        row = await asyncio.to_thread(self._sync_get_velocity_ratchet, principal_id)
+        if row is None:
+            return None
+        wallclock = row["last_approved_wallclock"]
+        monotonic = row["last_approved_monotonic"]
+        # Read-boundary finiteness guard (load-bearing): the velocity table is
+        # cleartext, so a direct-sqlite tamperer can write NaN/inf here. Reject a
+        # non-finite value as a corrupt/forged row — fail CLOSED with a typed
+        # error (the cooling-off gate refuses to issue) rather than crashing the
+        # gate with an opaque int(NaN)/int(inf) arithmetic error downstream.
+        if not math.isfinite(wallclock) or not math.isfinite(monotonic):
+            raise SessionStoreCorruptError(
+                f"velocity_raise_ratchet row for principal {principal_id!r} has a "
+                "non-finite timestamp (wallclock/monotonic) — corrupt or forged; "
+                "refusing to compute the cooling-off window"
+            )
+        return VelocityRatchetRow(
+            principal_id=row["principal_id"],
+            last_approved_wallclock=wallclock,
+            last_approved_monotonic=monotonic,
+            boot_id=row["boot_id"],
+            updated_at=row["updated_at"],
+        )
+
+    def _sync_get_velocity_ratchet(self, principal_id: str) -> sqlite3.Row | None:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "SELECT principal_id, last_approved_wallclock, last_approved_monotonic, "
+                "boot_id, updated_at FROM velocity_raise_ratchet WHERE principal_id = ?",
+                (principal_id,),
+            )
+            row: sqlite3.Row | None = cur.fetchone()
+            return row
+        finally:
+            conn.close()
+
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -1000,6 +1172,8 @@ __all__ = [
     "SESSION_SIGNING_KEY_ID",
     "PendingGrantRow",
     "SessionRouter",
+    "SessionStoreCorruptError",
     "SessionStoreEncryptionError",
+    "VelocityRatchetRow",
     "session_db_path",
 ]
