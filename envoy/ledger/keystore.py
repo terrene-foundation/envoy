@@ -40,11 +40,13 @@ unverifiable without a trace):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 from typing import Any
 
 import keyring
@@ -70,6 +72,21 @@ _KEYRING_MEMORY = "memory"
 # with the Connection Vault's credential entries (`envoy.connection-vault`).
 KEYRING_SERVICE_NAMESPACE = "envoy.ledger-signing-key"
 _BLOB_SCHEMA = "envoy-ledger-key/1"
+
+# Distinct keyring service namespace for the session-store AES-256 encryption key
+# (S5o-enc). Kept separate from the SIGNING key namespace above so the two key
+# materials never collide in the keychain and so the encryption key has its own
+# rotation/destroy surface. The session store's payload columns
+# (`request_json` / `resolution_json` / `state_json`) are encrypted-at-rest under
+# a key minted here; a process without OS-keychain access cannot obtain it and so
+# cannot decrypt the store (closes the `specs/threat-model.md` § Residual risks
+# session-store local-file-read residual). Keychain-gated (NOT vault-passphrase-
+# gated): the SessionRouter opens short-lived one-shot CLI processes
+# (`grant approve` in a fresh process) that have no passphrase, exactly as the
+# Ed25519 session SIGNING key is keychain-gated — see `specs/session-runtime.md`.
+KEYRING_SERVICE_NAMESPACE_SESSION_ENC = "envoy.session-encryption-key"
+_SESSION_ENC_BLOB_SCHEMA = "envoy-session-enc-key/1"
+_SESSION_ENC_KEY_LEN = 32  # AES-256
 
 # `signing_key_id` is the right half of the keyring account `genesis_id:key_id`.
 # A `:` in it would shift the per-principal namespace boundary, so it is
@@ -175,21 +192,21 @@ def _account(genesis_id: str, signing_key_id: str) -> str:
     return f"{genesis_id}:{signing_key_id}"
 
 
-def _get(account: str, backend: Any) -> str | None:
+def _get(account: str, backend: Any, *, service: str = KEYRING_SERVICE_NAMESPACE) -> str | None:
     try:
         if backend is not None:
-            return backend.get_password(KEYRING_SERVICE_NAMESPACE, account)  # type: ignore[no-any-return]
-        return keyring.get_password(KEYRING_SERVICE_NAMESPACE, account)
+            return backend.get_password(service, account)  # type: ignore[no-any-return]
+        return keyring.get_password(service, account)
     except keyring.errors.KeyringError as exc:
         raise LedgerKeyUnavailableError(f"OS keychain unavailable (get): {exc}") from exc
 
 
-def _set(account: str, blob: str, backend: Any) -> None:
+def _set(account: str, blob: str, backend: Any, *, service: str = KEYRING_SERVICE_NAMESPACE) -> None:
     try:
         if backend is not None:
-            backend.set_password(KEYRING_SERVICE_NAMESPACE, account, blob)
+            backend.set_password(service, account, blob)
         else:
-            keyring.set_password(KEYRING_SERVICE_NAMESPACE, account, blob)
+            keyring.set_password(service, account, blob)
     except keyring.errors.KeyringError as exc:
         raise LedgerKeyUnavailableError(f"OS keychain unavailable (set): {exc}") from exc
 
@@ -297,12 +314,121 @@ async def load_or_create_ledger_key_manager(
     return mgr
 
 
+def _decode_session_enc_key(blob: str, hint: str) -> bytes:
+    """Parse a stored session-encryption-key blob into 32 raw AES-256 bytes.
+
+    Fail-loud on every malformed shape (same taxonomy as ``_decode_keypair``).
+    The ``schema`` version is checked BEFORE the key bytes so a forward/legacy
+    record raises the schema-version error rather than being loaded under a
+    contract this build does not understand. Regenerating a corrupt key is
+    REFUSED by the caller (a new key would orphan every encrypted-at-rest row —
+    same discipline as the ledger signing key).
+    """
+    try:
+        record = json.loads(blob)
+    except (ValueError, TypeError) as exc:
+        raise LedgerKeyCorruptError(
+            f"session encryption-key record for {hint}… is unparseable: {exc}"
+        ) from exc
+    if not isinstance(record, dict):
+        raise LedgerKeyCorruptError(
+            f"session encryption-key record for {hint}… is not a JSON object"
+        )
+    if record.get("schema") != _SESSION_ENC_BLOB_SCHEMA:
+        raise LedgerKeySchemaVersionError(
+            f"session encryption-key record for {hint}… has schema "
+            f"{record.get('schema')!r}, expected {_SESSION_ENC_BLOB_SCHEMA!r} — upgrade Envoy"
+        )
+    try:
+        key_b64 = record["key"]
+    except KeyError as exc:
+        raise LedgerKeyCorruptError(
+            f"session encryption-key record for {hint}… is missing the 'key' field: {exc}"
+        ) from exc
+    try:
+        key = base64.b64decode(key_b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise LedgerKeyCorruptError(
+            f"session encryption-key record for {hint}… has a non-base64 key: {exc}"
+        ) from exc
+    if len(key) != _SESSION_ENC_KEY_LEN:
+        raise LedgerKeyCorruptError(
+            f"session encryption-key record for {hint}… decoded to {len(key)} bytes, "
+            f"expected {_SESSION_ENC_KEY_LEN} (AES-256) — refusing to use a wrong-size key"
+        )
+    return key
+
+
+async def load_or_create_session_encryption_key(
+    *,
+    principal_id: str,
+    key_id: str,
+    keyring_backend: Any = None,
+) -> bytes:
+    """Return a 32-byte AES-256 session-store encryption key durably backed by
+    the OS keychain — the SAME key across process restarts.
+
+    The first call for a principal mints a random 32-byte key (``secrets``) and
+    persists it in the keychain under the session-encryption namespace;
+    subsequent calls (including a fresh one-shot ``grant approve`` process)
+    reload it. The key is keychain-gated, NOT vault-passphrase-gated: a process
+    that can read the OS keychain as the principal obtains it with no typed
+    passphrase, exactly as ``load_or_create_ledger_key_manager`` loads the
+    session SIGNING key — see ``specs/session-runtime.md`` § Region encryption.
+    A process WITHOUT keychain access cannot obtain the key and so cannot decrypt
+    the session store's payload columns (the local-file-read residual closure).
+
+    Raises (all fail-loud; NEVER a silent ephemeral-key fallback, which would
+    make the encrypted-at-rest rows undecryptable on the next process without a
+    trace): ``LedgerKeyUnavailableError`` (keychain down), ``LedgerKeyCorruptError``
+    (malformed record), ``LedgerKeySchemaVersionError`` (unknown record version).
+    ``keyring_backend`` is dependency-injectable for tests (the in-process
+    ``InMemoryKeyringBackend`` via ``ENVOY_KEYRING=memory``); production uses the
+    OS-selected backend.
+    """
+    if not _SIGNING_KEY_ID_RE.match(key_id):
+        # `:`-free + control-char-free so it cannot shift the keyring account
+        # namespace. Do NOT echo the raw value (log/exception-poisoning hygiene).
+        raise LedgerKeystoreError(
+            f"key_id must match {_SIGNING_KEY_ID_RE.pattern} "
+            "(notably no ':', which separates the keyring account namespace)"
+        )
+    genesis_id = principal_genesis_id(principal_id)
+    validate_principal_genesis_id(genesis_id)
+    account = _account(genesis_id, key_id)
+    hint = genesis_id[:8]
+
+    blob = _get(account, keyring_backend, service=KEYRING_SERVICE_NAMESPACE_SESSION_ENC)
+    if blob is None:
+        key = secrets.token_bytes(_SESSION_ENC_KEY_LEN)
+        _set(
+            account,
+            json.dumps(
+                {
+                    "schema": _SESSION_ENC_BLOB_SCHEMA,
+                    "key": base64.b64encode(key).decode("ascii"),
+                },
+                sort_keys=True,
+            ),
+            keyring_backend,
+            service=KEYRING_SERVICE_NAMESPACE_SESSION_ENC,
+        )
+        logger.info("session.encryption_key.created", extra={"principal_hint": hint})
+        return key
+
+    key = _decode_session_enc_key(blob, hint)
+    logger.info("session.encryption_key.loaded", extra={"principal_hint": hint})
+    return key
+
+
 __all__ = [
     "KEYRING_SERVICE_NAMESPACE",
+    "KEYRING_SERVICE_NAMESPACE_SESSION_ENC",
     "LedgerKeyCorruptError",
     "LedgerKeySchemaVersionError",
     "LedgerKeyUnavailableError",
     "LedgerKeystoreError",
     "load_or_create_ledger_key_manager",
+    "load_or_create_session_encryption_key",
     "principal_genesis_id",
 ]

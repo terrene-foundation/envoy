@@ -107,8 +107,8 @@ The durable form of `runtime.py:403`'s in-memory `_inflight` queue.
 | `principal_id`    | TEXT    | owning principal                                                                                                                                                       |
 | `session_id`      | TEXT    | issuing session                                                                                                                                                        |
 | `state`           | TEXT    | enum `pending` / `resolved` / `expired`, enforced by a SQLite CHECK                                                                                                    |
-| `request_json`    | TEXT    | canonical-JSON `GrantMomentRequest`, stored verbatim (S4s does not parse it)                                                                                           |
-| `resolution_json` | TEXT    | nullable; the resolution row S4r writes; NULL while pending                                                                                                            |
+| `request_json`    | TEXT    | canonical-JSON `GrantMomentRequest`, validated then AES-256-GCM-encrypted-at-rest (`enc:v1:` token; S5o-enc) — stored verbatim otherwise (S4s does not parse it)       |
+| `resolution_json` | TEXT    | nullable; the resolution row S4r writes, AES-256-GCM-encrypted-at-rest (`enc:v1:` token; S5o-enc); NULL while pending                                                  |
 | `resolution_sig`  | TEXT    | nullable; hex Ed25519 signature over `resolution_signing_payload(request_id, resolution_json)`, keychain-signed by S4r (§ Resolution authenticity); NULL while pending |
 | `version`         | INTEGER | monotonic; bumped on every re-put — the lost-update primitive S4r polls                                                                                                |
 | `ttl_expires_at`  | TEXT    | ISO-8601 TTL bounding queue growth (S4g back-pressure)                                                                                                                 |
@@ -155,17 +155,19 @@ cross-process poll rendezvous, sign-resolution) is S4r / S4g.
 The durable snapshot home for `specs/session-state.md` § Persistence
 ("snapshot to a 0o600 vault-sibling SQLite store at every Ledger append, so a
 crash mid-session preserves orphan-phase-A tracking", `session-state.md` § Persistence).
-The `state_json` blob is stored as canonical JSON; the `pending_grant`
-resolution rows the same store holds carry a keychain-signed `resolution_sig`
-(§ Resolution authenticity), so this store is signed-not-encrypted-at-rest.
+The `state_json` blob is AES-256-GCM-encrypted-at-rest (`enc:v1:` token; S5o-enc);
+the `pending_grant` resolution rows the same store holds ALSO carry a
+keychain-signed `resolution_sig` (§ Resolution authenticity), so this store is
+signed AND encrypted-at-rest — the two are complementary (tamper-evidence +
+confidentiality), not a swap.
 
-| Column         | Type    | Notes                                                       |
-| -------------- | ------- | ----------------------------------------------------------- |
-| `session_id`   | TEXT PK | key shape — the `SessionObservedState.session_id` (uuid-v7) |
-| `principal_id` | TEXT    | owning principal                                            |
-| `state_json`   | TEXT    | canonical-JSON `SessionObservedState`, stored verbatim      |
-| `version`      | INTEGER | monotonic; bumped on every snapshot                         |
-| `updated_at`   | TEXT    | ISO-8601                                                    |
+| Column         | Type    | Notes                                                                                                          |
+| -------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `session_id`   | TEXT PK | key shape — the `SessionObservedState.session_id` (uuid-v7)                                                    |
+| `principal_id` | TEXT    | owning principal                                                                                               |
+| `state_json`   | TEXT    | canonical-JSON `SessionObservedState`, validated then AES-256-GCM-encrypted-at-rest (`enc:v1:` token; S5o-enc) |
+| `version`      | INTEGER | monotonic; bumped on every snapshot                                                                            |
+| `updated_at`   | TEXT    | ISO-8601                                                                                                       |
 
 Raw store surface shipped in S4s:
 
@@ -174,10 +176,51 @@ Raw store surface shipped in S4s:
 - `load_observed_state(session_id) -> str | None` — cross-process re-hydration
   read-back; None if no snapshot exists.
 
-S4s stores + returns the `state_json` verbatim. The fingerprint /
-first-time-action gate / goal-reconfirmation semantics that DERIVE the blob are
-shipped in S5o (§ SessionObservedState first-time-action gate below;
+S4s stores + returns the `state_json` verbatim (after the encrypt/decrypt
+round-trip below). The fingerprint / first-time-action gate /
+goal-reconfirmation semantics that DERIVE the blob are shipped in S5o
+(§ SessionObservedState first-time-action gate below;
 `specs/session-state.md` § Algorithm), which consumes this region.
+
+### Region encryption-at-rest (S5o-enc)
+
+The payload columns — `request_json` / `resolution_json` (Region 1) and
+`state_json` (Region 2) — are AES-256-GCM ciphertext on disk, not plaintext.
+
+- **Token format.** Each encrypted column holds `enc:v1:` + base64(`nonce ‖
+ciphertext ‖ GCM tag`), a fresh 96-bit nonce per encrypt. The versioned prefix
+  makes a future format migration detectable AND makes the read path REFUSE a
+  non-`enc:v1:` value loudly (no silent plaintext-acceptance downgrade).
+- **Key source — keychain-gated.** A dedicated 32-byte AES-256 key
+  (`SESSION_ENCRYPTION_KEY_ID`) persisted in the OS keychain via
+  `load_or_create_session_encryption_key`, namespaced distinctly from the
+  Ed25519 session signing key (key separation; own rotation/destroy surface).
+  A process without OS-keychain access cannot obtain the key → cannot decrypt.
+- **AAD binding.** Each ciphertext's additional-authenticated-data binds it to
+  `(table, row-key, column)`, so a ciphertext lifted from one row/column and
+  pasted into another fails the GCM tag check (intra-store shuffle defense).
+- **Cleartext columns.** `request_id` / `session_id` / `principal_id` / `state`
+  / `version` / `ttl_expires_at` / `created_at` / `updated_at` stay cleartext so
+  the lookup index, the `state` CHECK constraint, and the lost-update `version`
+  re-check keep working.
+- **Layered with signing.** `resolution_sig` is signed over the PLAINTEXT
+  resolution, then the column is encrypted; on read the payload is decrypted
+  first and the signature verifies against that plaintext. Signing
+  (tamper-evidence) and encryption (confidentiality) are complementary.
+- **Read failure modes.** The strict read path (`get_pending_grant`, driving the
+  security-critical poll) RAISES `SessionStoreEncryptionError` on an undecryptable
+  payload — fail-closed (a forged direct-sqlite row, written without the key, is
+  refused; the poll maps it to `GrantMomentResolutionUnauthenticatedError`). The
+  tolerant UI path (`list_pending_grants`, the `grant list` read) surfaces a
+  single undecryptable row as malformed (loud marker) without aborting the
+  listing — a read-only surface never executes a decision.
+- **Design note — keychain, not vault-passphrase.** The durable-substrate plan
+  originally anticipated "vault-unlock key material", but the `SessionRouter`
+  opens short-lived one-shot CLI processes (`grant approve` in a fresh process)
+  that hold no passphrase; a passphrase-gated key would force a vault-unlock
+  prompt on every `grant`/`chat` invocation. Keychain-gating closes the same
+  local-file-read residual (`specs/threat-model.md` § Residual risks) without
+  that UX cost, matching the existing `resolution_sig` signing key's trust model.
 
 ### Genesis write (`envoy init` — S4i)
 

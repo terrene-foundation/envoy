@@ -156,6 +156,7 @@ from envoy.grant_moment.state_machine import (
     GrantMomentState,
     next_state,
 )
+from envoy.runtime.session import SessionStoreEncryptionError
 
 __all__ = [
     "EnvoyGrantMomentRuntime",
@@ -961,7 +962,17 @@ class EnvoyGrantMomentRuntime:
             if pending.decision_future.done():
                 return pending.decision_future.result()
 
-            row = await self._session_router.get_pending_grant(request_id)
+            try:
+                row = await self._session_router.get_pending_grant(request_id)
+            except SessionStoreEncryptionError as exc:
+                # The row's encrypted-at-rest payload (S5o-enc) did not decrypt
+                # under the session key. A row written by a holder of the session
+                # key always decrypts; an undecryptable payload was therefore
+                # forged by direct sqlite tampering (a process lacking the key) or
+                # is corrupt. Fail CLOSED — same disposition as a signature
+                # verification failure: the human-authority grant gate never
+                # executes a decision it cannot attribute to a session-key holder.
+                raise GrantMomentResolutionUnauthenticatedError(request_id=request_id) from exc
             if (
                 row is not None
                 and row.state in ("resolved", "expired")
