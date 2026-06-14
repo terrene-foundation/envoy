@@ -170,7 +170,9 @@ def chat(principal: str | None, vault: str | None, session_id: str | None) -> No
 
     async def _run() -> int:
         key_manager = await load_or_create_ledger_key_manager(
-            principal_id=pid, signing_key_id=LEDGER_SIGNING_KEY_ID
+            principal_id=pid,
+            signing_key_id=LEDGER_SIGNING_KEY_ID,
+            keyring_backend=backend,
         )
         durable = await open_durable_ledger(
             vault_path=vault_path,
