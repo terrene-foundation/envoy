@@ -16,7 +16,8 @@ The STAR contract this module implements:
    by the measurement VALUE. Clients reporting the IDENTICAL measurement derive
    the SAME ``recovery_key`` (a deterministic key-derivation over the measurement
    bytes) and therefore combinable shares; below the threshold the value is
-   information-theoretically unrecoverable (Shamir over GF(2^8), threshold k).
+   information-theoretically unrecoverable (Shamir over the prime field
+   GF(2^127-1), threshold k — see the field-choice rationale below).
 2. **True-cohort k-anonymity.** :func:`check_client_side_k_anonymity` and the
    aggregator-side :func:`recover_cohort` gate on the count of DISTINCT
    submitters who shared the SAME measurement key — the **true** cohort
