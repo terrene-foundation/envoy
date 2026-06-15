@@ -30,18 +30,23 @@ is the load-bearing invariant (EC-S11.1 / EC-S11.3): conflating them would
 either leak (a noised-down cohort revealed below the true-100 floor) or
 over-withhold.
 
-Shamir secret sharing here is a self-contained GF(2^8) implementation built on
-no external dependency — ``rules/zero-tolerance.md`` Rule 4 forbids a naive
-re-implementation that DIVERGES from a reference, but Shamir over GF(2^8) is a
-fixed, well-specified algorithm (the same field ``envoy.shamir`` uses for the
-recovery ritual); this is that algorithm, not a shortcut.
+Shamir secret sharing here is a self-contained prime-field implementation built
+on no external dependency — ``rules/zero-tolerance.md`` Rule 4 forbids a naive
+re-implementation that DIVERGES from a reference, but Shamir over a prime field
+GF(p) is a fixed, well-specified algorithm; this is that algorithm, not a
+shortcut. A prime field (NOT GF(2^8)) is required because the reveal threshold
+is the k-floor (100): a 100-of-N threshold needs ≥100 distinct evaluation
+points, and clients pick their x-coordinates INDEPENDENTLY (no coordination), so
+the field MUST be large enough that random per-client x-coordinates collide only
+with cryptographically-negligible probability. GF(2^8) has only 255 points —
+100 independent draws collide with near-certainty (birthday bound); the 2^127-1
+field below makes a collision negligible for any realistic cohort.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import secrets
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -59,8 +64,11 @@ K_ANONYMITY_FLOOR: int = 100
 # recovery condition IS "k clients shared the same measurement").
 _RECOVERY_THRESHOLD: int = K_ANONYMITY_FLOOR
 
-# GF(2^8) with the AES reduction polynomial x^8 + x^4 + x^3 + x + 1 (0x11B).
-_GF_REDUCE = 0x11B
+# Shamir prime field. 2^127 - 1 (a Mersenne prime) — large enough that
+# independent per-client x-coordinates (128-bit hashes) collide only with
+# cryptographically-negligible probability, and large enough to carry any 4-byte
+# counter value as the secret without overflow.
+_FIELD_PRIME = (1 << 127) - 1
 
 # Domain-separation label for the measurement-key derivation. Identical
 # measurements across clients MUST derive the identical recovery key, so the
@@ -69,41 +77,15 @@ _GF_REDUCE = 0x11B
 # secret.
 _RECOVERY_KEY_LABEL = b"envoy.star.v1.recovery-key"
 
+# Domain-separation label for the per-client evaluation-point derivation.
+_X_COORD_LABEL = b"envoy.star.v1.x-coord"
 
-def _gf_mul(a: int, b: int) -> int:
-    """Multiply two GF(2^8) elements (AES field, 0x11B reduction)."""
-    result = 0
-    a &= 0xFF
-    b &= 0xFF
-    while b:
-        if b & 1:
-            result ^= a
-        b >>= 1
-        a <<= 1
-        if a & 0x100:
-            a ^= _GF_REDUCE
-    return result & 0xFF
-
-
-def _gf_pow(base: int, exp: int) -> int:
-    """Exponentiate in GF(2^8) by square-and-multiply."""
-    result = 1
-    while exp:
-        if exp & 1:
-            result = _gf_mul(result, base)
-        base = _gf_mul(base, base)
-        exp >>= 1
-    return result
-
-
-def _gf_inv(a: int) -> int:
-    """Multiplicative inverse in GF(2^8): a^254 (Fermat, since a^255 == 1)."""
-    if a == 0:
-        raise STARShardCorruptError(
-            "GF(2^8) inverse of zero requested during share recovery — a "
-            "duplicate or zero x-coordinate indicates a corrupt share set"
-        )
-    return _gf_pow(a, 254)
+# Domain-separation label for the polynomial coefficient derivation. Each client
+# derives the SAME polynomial coefficients (so all clients' shares lie on ONE
+# polynomial whose constant term is the measurement value), keyed by the
+# measurement — clients reporting the same measurement secret-share the SAME
+# value. This is the STAR property: combinable shares, recovered at threshold.
+_COEFF_LABEL = b"envoy.star.v1.coeff"
 
 
 def derive_recovery_key(measurement: bytes) -> bytes:
@@ -116,26 +98,55 @@ def derive_recovery_key(measurement: bytes) -> bytes:
     return hmac.new(_RECOVERY_KEY_LABEL, measurement, hashlib.sha256).digest()
 
 
-def _split_secret_byte(secret: int, threshold: int, x_coords: Sequence[int]) -> list[int]:
-    """Shamir-split one secret byte into shares at the given x-coordinates.
+def _secret_commitment(secret: int) -> str:
+    """Public commitment over a recovery secret's canonical field encoding.
 
-    The polynomial is ``secret + c1*x + ... + c(t-1)*x^(t-1)`` over GF(2^8) with
-    random non-zero-degree coefficients; share i is the polynomial evaluated at
-    ``x_coords[i]``.
+    Both the client (at split) and the aggregator (at recovery) commit over the
+    SAME fixed-width big-endian encoding so a recovered secret round-trips to the
+    identical commitment.
     """
-    coeffs = [secret & 0xFF] + [secrets.randbelow(256) for _ in range(threshold - 1)]
-    shares: list[int] = []
-    for x in x_coords:
-        acc = 0
-        # Horner evaluation in GF(2^8).
-        for c in reversed(coeffs):
-            acc = _gf_mul(acc, x) ^ c
-        shares.append(acc & 0xFF)
-    return shares
+    width = (_FIELD_PRIME.bit_length() + 7) // 8
+    return hashlib.sha256(secret.to_bytes(width, "big")).hexdigest()
+
+
+def _derive_x(submitter_id: str) -> int:
+    """Derive a non-zero prime-field x-coordinate from the submitter id.
+
+    A 128-bit hash reduced into the field; independent clients collide only with
+    negligible probability. x != 0 (x=0 is the secret itself).
+    """
+    h = int.from_bytes(hashlib.sha256(_X_COORD_LABEL + submitter_id.encode("utf-8")).digest()[:16], "big")
+    return (h % (_FIELD_PRIME - 1)) + 1
+
+
+def _derive_coeffs(measurement: bytes, threshold: int) -> list[int]:
+    """Derive the (threshold-1) non-constant polynomial coefficients.
+
+    Keyed by the measurement so all clients reporting the SAME measurement build
+    the SAME polynomial (the constant term — the secret value — is supplied
+    separately). Deterministic across clients without coordination, which is how
+    independently-produced shares interpolate to one value.
+    """
+    coeffs: list[int] = []
+    for i in range(1, threshold):
+        digest = hmac.new(
+            _COEFF_LABEL, measurement + i.to_bytes(4, "big"), hashlib.sha256
+        ).digest()
+        coeffs.append(int.from_bytes(digest, "big") % _FIELD_PRIME)
+    return coeffs
+
+
+def _eval_poly(secret: int, coeffs: Sequence[int], x: int) -> int:
+    """Evaluate ``secret + c1*x + ... + c(t-1)*x^(t-1)`` mod the field prime."""
+    acc = 0
+    # Horner with the highest-degree coefficient first.
+    for c in reversed(coeffs):
+        acc = (acc * x + c) % _FIELD_PRIME
+    return (acc * x + secret) % _FIELD_PRIME
 
 
 def _interpolate_at_zero(points: Sequence[tuple[int, int]]) -> int:
-    """Lagrange-interpolate a GF(2^8) polynomial at x=0 from (x, y) points."""
+    """Lagrange-interpolate the prime-field polynomial at x=0 from (x, y) points."""
     secret = 0
     for j, (xj, yj) in enumerate(points):
         num = 1
@@ -143,30 +154,49 @@ def _interpolate_at_zero(points: Sequence[tuple[int, int]]) -> int:
         for m, (xm, _ym) in enumerate(points):
             if m == j:
                 continue
-            num = _gf_mul(num, xm)
-            den = _gf_mul(den, xj ^ xm)
-        lagrange = _gf_mul(num, _gf_inv(den))
-        secret ^= _gf_mul(yj, lagrange)
-    return secret & 0xFF
+            num = (num * (-xm)) % _FIELD_PRIME
+            den = (den * (xj - xm)) % _FIELD_PRIME
+        if den == 0:
+            raise STARShardCorruptError(
+                "duplicate x-coordinate during Lagrange interpolation — a "
+                "corrupt or colliding share set"
+            )
+        lagrange = (num * pow(den, -1, _FIELD_PRIME)) % _FIELD_PRIME
+        secret = (secret + yj * lagrange) % _FIELD_PRIME
+    return secret % _FIELD_PRIME
 
 
 @dataclass(frozen=True, slots=True)
 class StarShare:
     """One client's STAR share for one per-counter measurement.
 
-    ``recovery_key_commitment`` is the public commitment over the derived
-    recovery key — clients sharing the IDENTICAL measurement produce the
-    IDENTICAL commitment, which is how the aggregator groups a cohort WITHOUT
-    learning the measurement. ``x`` is the client's distinct evaluation point;
-    ``value_shares`` are the per-byte Shamir shares of the (DP-noised) reported
-    value. ``submitter_id`` is the per-install random ID used ONLY to count
-    DISTINCT submitters for the true-cohort k-floor (never the measurement).
+    STAR single-server semantics: clients reporting the SAME measurement
+    secret-share the SAME measurement-derived recovery secret — so their shares
+    combine and the threshold reveals the secret (proving the cohort crossed
+    ``k``), WITHOUT the aggregator learning any individual measurement until
+    ``k`` clients agree. The per-counter (DP-noised) reported VALUE is carried
+    separately and summed by the aggregator once the cohort is revealed.
+
+    Fields:
+        metric: the flag name (one of the 21 flags).
+        recovery_key_commitment: public commitment over the measurement-derived
+            recovery key — IDENTICAL across cohort members; the grouping key the
+            aggregator uses WITHOUT learning the measurement.
+        x: the client's prime-field evaluation point (from ``submitter_id``).
+        secret_share: the measurement-derived recovery secret's polynomial
+            evaluated at ``x`` — combinable across the cohort.
+        noised_value: the DP-noised per-counter value the client contributes to
+            the cohort aggregate (already noised per EC-S11.3; the TRUE value
+            never leaves the client).
+        submitter_id: per-install random ID — counts DISTINCT submitters for the
+            true-cohort k-floor (never the measurement).
     """
 
     metric: str
     recovery_key_commitment: str
     x: int
-    value_shares: tuple[int, ...]
+    secret_share: int
+    noised_value: int
     submitter_id: str
 
 
@@ -180,27 +210,27 @@ def split_into_shares(
 ) -> StarShare:
     """Split one per-counter measurement into a combinable STAR share.
 
-    The share is keyed by ``measurement`` (identical measurements → identical
-    ``recovery_key_commitment`` → combinable shares) and carries Shamir shares
-    of ``reported_value`` (which the caller has ALREADY DP-noised per EC-S11.3 —
-    this function never sees the true value, only the noised bytes the caller
-    passes). The client's evaluation point ``x`` is a non-zero byte derived from
-    its ``submitter_id`` so two clients almost never collide on x within a
-    cohort (a collision is rejected at recovery as a corrupt share set).
+    The secret being shared is the MEASUREMENT-derived recovery secret (identical
+    across all clients reporting the same measurement → combinable shares; below
+    ``threshold`` distinct submitters it is information-theoretically
+    unrecoverable). The (already DP-noised per EC-S11.3) ``reported_value`` is
+    carried as the per-client contribution to the cohort aggregate — this
+    function never sees the true value, only the noised bytes the caller passes.
+    The client's evaluation point ``x`` is derived from ``submitter_id`` in the
+    2^127-1 field so independent clients collide only with negligible probability.
 
     Args:
         metric: the flag name this measurement is for (one of the 21 flags).
         measurement: the cohort key bytes — identical across clients with the
-            same measurement. Below ``threshold`` distinct submitters the value
-            is information-theoretically unrecoverable.
-        reported_value: the (already DP-noised) value bytes to secret-share.
+            same measurement.
+        reported_value: the (already DP-noised) per-counter value bytes.
         submitter_id: the per-install random ID; counts distinct submitters and
             seeds the distinct evaluation point.
-        threshold: Shamir reveal threshold (defaults to the k-floor).
+        threshold: STAR reveal threshold (defaults to the k-floor).
 
     Raises:
-        STARShardCorruptError: empty measurement or empty value (a degenerate
-            share that cannot participate in recovery).
+        STARShardCorruptError: empty measurement, empty value, or a degenerate
+            threshold.
     """
     if not measurement:
         raise STARShardCorruptError(
@@ -210,25 +240,29 @@ def split_into_shares(
     if not reported_value:
         raise STARShardCorruptError(
             f"STAR share for metric {metric!r} has an empty reported value; "
-            "nothing to secret-share"
+            "nothing to contribute"
         )
     if threshold < 1:
         raise STARShardCorruptError(
             f"STAR threshold {threshold} < 1 is degenerate; refusing to split"
         )
     recovery_key = derive_recovery_key(measurement)
-    commitment = hashlib.sha256(recovery_key).hexdigest()
-    # Distinct non-zero evaluation point derived from the submitter id (x != 0;
-    # x=0 is the secret itself).
-    x = (int.from_bytes(hashlib.sha256(submitter_id.encode("utf-8")).digest()[:1], "big") % 255) + 1
-    value_shares = tuple(
-        _split_secret_byte(b, threshold, [x])[0] for b in reported_value
-    )
+    # The secret shared is the measurement-derived recovery secret — the SAME for
+    # every client in the cohort, which is what makes shares combinable.
+    secret = int.from_bytes(recovery_key, "big") % _FIELD_PRIME
+    # The commitment is over the canonical encoding of the SECRET (not the raw
+    # recovery key), so the aggregator's recovered secret round-trips to the
+    # SAME commitment under `_secret_commitment`.
+    commitment = _secret_commitment(secret)
+    x = _derive_x(submitter_id)
+    coeffs = _derive_coeffs(measurement, threshold)
+    secret_share = _eval_poly(secret, coeffs, x)
     return StarShare(
         metric=metric,
         recovery_key_commitment=commitment,
         x=x,
-        value_shares=value_shares,
+        secret_share=secret_share,
+        noised_value=int.from_bytes(reported_value, "big"),
         submitter_id=submitter_id,
     )
 
@@ -252,16 +286,20 @@ class CohortRevelation:
     """The result of an aggregator-side cohort recovery attempt.
 
     ``revealed`` is True only when the true distinct-submitter cohort met the
-    k-floor AND the value shares interpolated cleanly. ``recovered_value`` is
-    the reconstructed (DP-noised) value bytes when revealed, else None.
-    ``true_cohort_size`` is the count of DISTINCT submitters (the gate input).
+    k-floor AND the secret shares interpolated to the committed recovery secret.
+    ``aggregate`` is the cohort aggregate — the SUM of the DP-noised per-client
+    values (the count-style statistic STAR computes without any individual
+    value). ``true_cohort_size`` is the count of DISTINCT submitters (the gate
+    input). ``recovered_secret`` is the reconstructed measurement-derived
+    recovery secret (proves the cohort), set only when revealed.
     """
 
     metric: str
     recovery_key_commitment: str
     revealed: bool
     true_cohort_size: int
-    recovered_value: bytes | None = None
+    aggregate: int | None = None
+    recovered_secret: int | None = None
 
 
 def recover_cohort(
@@ -270,17 +308,20 @@ def recover_cohort(
     floor: int = K_ANONYMITY_FLOOR,
     threshold: int = _RECOVERY_THRESHOLD,
 ) -> CohortRevelation:
-    """Aggregator-side: recover a cohort's value IFF the true k-floor is met.
+    """Aggregator-side: recover a cohort's aggregate IFF the true k-floor is met.
 
     All ``shares`` MUST carry the same ``recovery_key_commitment`` (the same
     cohort) and ``metric``. The TRUE cohort size is the number of DISTINCT
     ``submitter_id`` values; the k-floor gates on THAT count, never on a noised
-    number. When the floor is met, the value shares are Lagrange-interpolated at
-    x=0 per byte to recover the (DP-noised) value.
+    number. When the floor is met, the measurement-derived recovery secret is
+    Lagrange-interpolated from ``threshold`` shares and verified against the
+    commitment (proving the cohort really shares one measurement), then the
+    cohort aggregate is the SUM of the DP-noised per-client values.
 
     Raises:
         STARShardCorruptError: mixed commitments/metrics in one cohort, a
-            duplicate evaluation point, or ragged value-share lengths.
+            duplicate evaluation point, fewer distinct submitters than the
+            threshold, or a recovered secret that does not match the commitment.
         kAnonymityFloorViolatedError: the true cohort is below ``floor`` — the
             aggregate is structurally withheld; the caller records the
             withholding event in the transparency report.
@@ -289,7 +330,6 @@ def recover_cohort(
         raise STARShardCorruptError("recover_cohort called with no shares")
     commitment = shares[0].recovery_key_commitment
     metric = shares[0].metric
-    value_len = len(shares[0].value_shares)
     for s in shares:
         if s.recovery_key_commitment != commitment:
             raise STARShardCorruptError(
@@ -299,11 +339,6 @@ def recover_cohort(
         if s.metric != metric:
             raise STARShardCorruptError(
                 f"cohort recovery mixed metrics {metric!r} and {s.metric!r}"
-            )
-        if len(s.value_shares) != value_len:
-            raise STARShardCorruptError(
-                f"ragged value-share length in cohort for metric {metric!r}: "
-                f"expected {value_len}, got {len(s.value_shares)}"
             )
 
     distinct_submitters = {s.submitter_id for s in shares}
@@ -316,31 +351,48 @@ def recover_cohort(
             "(privacy gate — publish withholding event in transparency report)"
         )
 
-    # One distinct (x, y) point per distinct submitter; dedup by submitter to
-    # avoid counting one client twice toward the interpolation set.
+    # One distinct (x, y) point per distinct submitter; dedup so one client is
+    # never counted twice toward the interpolation set. Need >= threshold
+    # distinct points to interpolate the degree-(threshold-1) polynomial.
     by_submitter: dict[str, StarShare] = {}
     for s in shares:
         by_submitter.setdefault(s.submitter_id, s)
-    points = list(by_submitter.values())[:threshold]
+    points_src = list(by_submitter.values())[:threshold]
+    if len(points_src) < threshold:
+        raise STARShardCorruptError(
+            f"cohort for metric {metric!r} has {len(points_src)} distinct "
+            f"submitters < threshold {threshold}; cannot interpolate the secret"
+        )
     seen_x: set[int] = set()
-    for p in points:
+    points: list[tuple[int, int]] = []
+    for p in points_src:
         if p.x in seen_x:
             raise STARShardCorruptError(
                 f"duplicate evaluation point x={p.x} in cohort for metric "
                 f"{metric!r}; cannot interpolate"
             )
         seen_x.add(p.x)
+        points.append((p.x, p.secret_share))
 
-    recovered = bytes(
-        _interpolate_at_zero([(p.x, p.value_shares[i]) for p in points])
-        for i in range(value_len)
-    )
+    recovered_secret = _interpolate_at_zero(points)
+    # Verify the recovered secret matches the published commitment — proves the
+    # cohort really shares ONE measurement (a mixed/forged share set fails here).
+    if _secret_commitment(recovered_secret) != commitment:
+        raise STARShardCorruptError(
+            f"recovered secret for metric {metric!r} does not match the cohort "
+            "commitment — corrupt or forged share set; refusing to reveal"
+        )
+
+    # The cohort aggregate: SUM of the DP-noised per-client values (the
+    # count-style statistic STAR computes without any individual value leaking).
+    aggregate = sum(s.noised_value for s in by_submitter.values())
     return CohortRevelation(
         metric=metric,
         recovery_key_commitment=commitment,
         revealed=True,
         true_cohort_size=true_cohort_size,
-        recovered_value=recovered,
+        aggregate=aggregate,
+        recovered_secret=recovered_secret,
     )
 
 

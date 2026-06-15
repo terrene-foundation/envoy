@@ -185,6 +185,13 @@ class HeartbeatClient:
     now: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc)
     )
+    # The DP noise mechanism, injectable so the Tier-2 harness can drive a
+    # DETERMINISTIC noise function (a Protocol-satisfying adapter, NOT a mock per
+    # `rules/testing.md` § Protocol Adapters) and assert the share-split input is
+    # the noised value. Default is the real Laplace mechanism.
+    noise_fn: Callable[[int, float], int] = field(
+        default=lambda value, epsilon: add_laplace_noise(value, epsilon=epsilon)
+    )
     # Per-week counters keyed by flag name. Reset on a successful send.
     _counters: dict[str, int] = field(default_factory=dict)
     # Per-metric DP budget over the weekly window.
@@ -296,7 +303,7 @@ class HeartbeatClient:
                 continue
             # 3. DP noise BEFORE share-split (EC-S11.3) — the share-split input
             # is the noised value; the true count never leaves the client.
-            noised = add_laplace_noise(count, epsilon=budget.published)
+            noised = self.noise_fn(count, budget.published)
             # 4. Split the NOISED value into a measurement-keyed STAR share. The
             # measurement (the cohort key) is the metric name — clients reporting
             # the same active flag share a cohort; the k-floor gates on the TRUE
