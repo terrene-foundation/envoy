@@ -237,6 +237,40 @@ refuses to persist `kailash-rs-bindings` (raises
 back to `kailash-py` — the picker never records a runtime `get_runtime` cannot
 honor.
 
+### `envoy runtime` CLI + the `runtime_switch` Ledger entry
+
+`envoy runtime show` reports the active runtime from the runtime-choice config
+(and, when a principal is resolvable, verifies the config signature — reporting
+`✓ verified`, a `⚠ could-not-verify` ambiguity, or `not checked`, never a fake
+verdict). `envoy runtime switch <target>` runs the state machine
+(`envoy.runtime.runtime_switch.perform_runtime_switch`): cold passphrase unlock
+(a warm vault is re-sealed then unlocked so a real verify runs) → target
+attestation → T-015 re-read checkpoint → Genesis-signed `runtime_switch` Ledger
+entry → flip the durable default → confirm copy. The `runtime_switch` entry is
+written ONLY after the target attests (attestation-before-record).
+
+The `runtime_switch` entry content (`runtime_switch` entry type, lower_snake per
+V-05; device-key signed by the ledger facade):
+
+```json
+{
+  "from_family": "<previous runtime family>",
+  "to_family": "<new runtime family>",
+  "target_attestation_hash": "sha256:<hash of target runtime_identity>",
+  "re_read_checkpoint_result": {
+    "from_algorithm_identifier": {...},
+    "to_algorithm_identifier": {...},
+    "invalidated": true
+  },
+  "signed_by": "runtime_device_key"
+}
+```
+
+`re_read_checkpoint_result.invalidated` is true when the switch crosses an
+`algorithm_identifier` boundary (one of N2's five envelope-cache invalidation
+keys), pinning the evidence that envelopes cached under the old runtime's
+identifier are re-read.
+
 ## Security gates per phase
 
 - **Phase 00:** abstract interface spec published + binding-gap GH issues tracked.

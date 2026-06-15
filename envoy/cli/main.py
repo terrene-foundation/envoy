@@ -28,6 +28,7 @@ from envoy.cli.init import init as init_group
 from envoy.cli.ledger import ledger as ledger_group
 from envoy.cli.model import model as model_group
 from envoy.cli.posture import posture as posture_command
+from envoy.cli.runtime import runtime as runtime_group
 from envoy.cli.shamir import shamir as shamir_group
 from envoy.cli.version import version as version_command
 
@@ -46,10 +47,11 @@ logger = logging.getLogger(__name__)
 def cli(ctx: click.Context, log_level: str) -> None:
     """envoy — Autonomous AI where you set the boundaries.
 
-    Ships all 10 canonical subcommands: `envoy shamir`, `envoy digest`,
+    Ships the 10 canonical subcommands: `envoy shamir`, `envoy digest`,
     `envoy posture`, `envoy version`, `envoy connection`, `envoy model`,
     `envoy ledger`, `envoy init`, `envoy grant`, and `envoy chat` (the
-    resident chat-session loop, completed in Phase 02 WS-6 S6c).
+    resident chat-session loop, completed in Phase 02 WS-6 S6c), plus
+    `envoy runtime` (show/switch — WS-1 S3p runtime pluggability).
     """
     cli_session_id = os.environ.get("ENVOY_CLI_SESSION_ID") or uuid.uuid4().hex
     logging.basicConfig(
@@ -74,6 +76,7 @@ cli.add_command(ledger_group)
 cli.add_command(init_group)
 cli.add_command(grant_group)
 cli.add_command(chat_command)
+cli.add_command(runtime_group)
 
 
 __all__ = ["cli"]

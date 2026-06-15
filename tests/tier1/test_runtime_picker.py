@@ -130,6 +130,35 @@ async def test_read_runtime_choice_roundtrip(choice_path: Path) -> None:
     assert loaded == written
 
 
+async def test_verify_succeeds_with_fresh_key_manager_over_persistent_backend(
+    choice_path: Path,
+) -> None:
+    # The production OS-keychain scenario: the `switch` process and a later
+    # `show` process each build their OWN key manager, but over the SAME
+    # persistent backend, so the signing key reloads and the signature verifies.
+    backend = InMemoryKeyringBackend()
+    km_writer = await load_or_create_ledger_key_manager(
+        principal_id=_PRINCIPAL_ID,
+        signing_key_id=_SIGNING_KEY_ID,
+        keyring_backend=backend,
+    )
+    choice = write_runtime_choice(
+        family="kailash-py",
+        genesis_id=_GENESIS_ID,
+        key_manager=km_writer,
+        signing_key_id=_SIGNING_KEY_ID,
+    )
+    km_reader = await load_or_create_ledger_key_manager(
+        principal_id=_PRINCIPAL_ID,
+        signing_key_id=_SIGNING_KEY_ID,
+        keyring_backend=backend,
+    )
+    pubkey = km_reader.get_public_key(_SIGNING_KEY_ID)
+    assert pubkey is not None
+    # Does not raise — the fresh-manager-over-persistent-backend signature verifies.
+    await verify_runtime_choice(choice, key_manager=km_reader, expected_pubkey=pubkey)
+
+
 async def test_read_runtime_choice_absent_returns_none(choice_path: Path) -> None:
     # choice_path points at a tmp file that does not exist yet.
     assert not choice_path.exists()
