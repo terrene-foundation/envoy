@@ -32,6 +32,7 @@ from envoy.runtime.adapters.kailash_py import KailashPyRuntime
 from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
 from envoy.runtime.feature_flags import RS_BINDINGS_ENABLED
 from envoy.runtime.protocol import KailashRuntime
+from envoy.runtime.runtime_picker import read_runtime_choice
 
 
 def get_runtime(family: str | None = None, **kwargs: Any) -> KailashRuntime:
@@ -42,13 +43,20 @@ def get_runtime(family: str | None = None, **kwargs: Any) -> KailashRuntime:
     `RsBindingsNotAvailableInPhase01Error` — gated at the factory boundary so
     the Phase 02 substitution work has a single named site.
 
-    Phase 02: family resolution shifts to read the first-run picker output
-    per specs/distribution.md § First-run flow.
+    Phase 02: when `family is None`, resolution reads the first-run picker's
+    durable runtime-choice config (`envoy.runtime.runtime_picker`) instead of
+    the hardcoded `"kailash-py"`. A malformed config raises loud
+    (`RuntimeChoiceCorruptError`) rather than silently falling back; an absent
+    config (picker never ran) resolves to `"kailash-py"`, the safe pre-picker
+    production default. The rs-bindings flag gate below still applies, so a
+    choice naming `kailash-rs-bindings` while the conformance flag is False
+    raises `RsBindingsNotAvailableInPhase01Error` — defense in depth on top of
+    the picker's own write-time refusal.
 
     `**kwargs` are forwarded to the adapter constructor (e.g.
     `device_signing_private_key_hex`, `envoy_ledger`, `trust_store`).
     """
-    selected = family or "kailash-py"
+    selected = family or _resolve_selected_family()
     if selected == "kailash-py":
         return KailashPyRuntime(**kwargs)
     if selected == "kailash-rs-bindings":
@@ -72,6 +80,21 @@ def get_runtime(family: str | None = None, **kwargs: Any) -> KailashRuntime:
         f"Phase 01 supports {{'kailash-py'}} only; Phase 02 adds "
         f"'kailash-rs-bindings'."
     )
+
+
+def _resolve_selected_family() -> str:
+    """Resolve the default runtime family from the first-run picker config.
+
+    Reads the durable runtime-choice config (unsigned hot-path read — signature
+    verification is the `envoy runtime show` / switch surface's job, not the
+    per-call factory's). Returns the chosen family when the picker has run, else
+    `"kailash-py"` (the safe pre-picker production default). A malformed config
+    propagates `RuntimeChoiceCorruptError` (loud, never a silent fallback).
+    """
+    choice = read_runtime_choice()
+    if choice is None:
+        return "kailash-py"
+    return choice.runtime_family
 
 
 __all__ = ["get_runtime"]

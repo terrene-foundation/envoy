@@ -203,6 +203,40 @@ Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Em
 
 First-run picker: kailash-rs-bindings default vs kailash-py opt-in. Switch via `envoy runtime switch` — requires (a) passphrase unlock (not warm), (b) Genesis-signed `runtime_switch` Ledger entry (specs/ledger.md §Entry types; V-05 canonical naming uses lower-snake-case), (c) runtime-attestation verification of target.
 
+### Runtime-choice config (`runtime-choice/1.0`)
+
+The picker writes a durable, Genesis-signed runtime-choice config that
+`envoy.runtime.selection.get_runtime(family=None)` resolves on every call
+(`envoy/runtime/runtime_picker.py`). Default path `~/.envoy/runtime-choice.json`
+(0o600), overridable via `ENVOY_RUNTIME_CHOICE_PATH`.
+
+```json
+{
+  "schema_version": "runtime-choice/1.0",
+  "runtime_family": "kailash-rs-bindings | kailash-py",
+  "chosen_at": "<iso8601 microsecond-padded UTC>",
+  "chosen_by_genesis_id": "<principal_genesis_id — 64-hex>",
+  "signature_hex": "<ed25519 over canonical(payload minus signature_hex)>"
+}
+```
+
+Resolution (`get_runtime(family=None)`): an explicit `family` arg wins; else the
+config's `runtime_family`; else `kailash-py` (the safe pre-picker default when
+the picker has never run). A malformed config raises `RuntimeChoiceCorruptError`
+loud — never a silent fallback. The hot-path read is signature-unverified;
+`envoy runtime show` / switch verify the signature against the Genesis public
+key (`verify_runtime_choice`) and refuse a tampered config fail-closed
+(`RuntimeChoiceSignatureError`).
+
+**Availability gate.** ADR-0001 makes `kailash-rs-bindings` the picker's
+_presented_ default, but the rs adapter is selectable only once the
+byte-identical conformance slice is green on both runtimes
+(`RS_BINDINGS_ENABLED`). While that flag is False, `write_runtime_choice`
+refuses to persist `kailash-rs-bindings` (raises
+`RsBindingsNotAvailableInPhase01Error`) and `presented_default_family()` falls
+back to `kailash-py` — the picker never records a runtime `get_runtime` cannot
+honor.
+
 ## Security gates per phase
 
 - **Phase 00:** abstract interface spec published + binding-gap GH issues tracked.
