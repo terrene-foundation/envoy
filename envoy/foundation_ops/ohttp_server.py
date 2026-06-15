@@ -246,8 +246,18 @@ class OhttpKeyConfigServerHandlers:
         if key_id is not None:
             config = self.configs.get(key_id)
         elif self.configs:
-            # Most-recently published (highest key_id as a deterministic tiebreak).
-            config = self.configs[max(self.configs)]
+            # EC-S11.9 (L1 — freshest-config selection): when the client does
+            # NOT pin a key_id, select the latest NON-EXPIRED config by
+            # ``expires_at``, NOT the numerically-highest key_id. A higher key_id
+            # is not necessarily the freshest config; selecting by expiry hands
+            # the client the config with the most remaining validity. Ties on
+            # ``expires_at`` break deterministically on the higher key_id. The
+            # client re-verifies quorum + expiry regardless (availability/hygiene,
+            # not an auth gate).
+            config = max(
+                self.configs.values(),
+                key=lambda c: (_parse_iso8601(c.expires_at), c.key_id),
+            )
         else:
             config = None
         if config is None:
