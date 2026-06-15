@@ -1,63 +1,110 @@
-"""Foundation Key Configuration Server registry handshake — Phase 02 entry.
+# Copyright 2026 Terrene Foundation
+# SPDX-License-Identifier: Apache-2.0
+"""Foundation registry handshake — aggregator endpoint + operator signature (S11).
 
-Per shard 17 § 7.3 mandatory Phase 01 stub #5 (R2-H-02 partition). Every
-constructor and module-level helper raises ``PhaseDeferredError`` on call.
-Phase 01 production code MUST NEVER reach a raise site; the regression grep
-at ``tests/regression/test_r2_h_02_heartbeat_stub_partition.py`` enforces
-zero non-test imports of this module.
+The client-side counterpart to S10's Key Configuration Server. Before the
+client encapsulates a weekly heartbeat it MUST:
 
-Phase 02 entry replaces these raise sites with a real registry-handshake
-client per ``specs/foundation-ops.md`` § "Infrastructure inventory" row 3
-(Foundation OHTTP Key Configuration Server registry — published key schema,
-operator-signed configuration, expiry/rotation cadence).
+1. Discover the STAR/Prio aggregator endpoint (`specs/foundation-ops.md`
+   registry #5 — Foundation-operated aggregator gateway).
+2. Verify the published key config carries a valid 2-of-N steward operator
+   signature over the canonical config bytes — BEFORE trusting the public key it
+   will encapsulate under.
 
-Foundation-side infrastructure dependency that Phase 02 entry MUST stand up
-first: the Foundation Key Configuration Server itself (per shard 17 § 3.2:
-no deployment plan, no operator, no published key registry as of the shard
-DECISION).
+Both gate :meth:`OhttpClient.encapsulate_request` (S10's
+``encapsulate_to_config``): a tampered or expired config is rejected here, at
+``verify_operator_signature`` / ``fetch_key_configuration``, so the client never
+seals a payload for an unverified recipient. Signature verification delegates to
+the SHARED ``verify_steward_quorum`` primitive (`envoy.registry.steward_quorum`)
+— S11 does NOT grow a parallel quorum verifier.
 """
 
 from __future__ import annotations
 
-from envoy.heartbeat.errors import PhaseDeferredError
+from dataclasses import dataclass, field
 
-_PHASE_DEFERRED_MSG = (
-    "envoy.heartbeat.registry is a Phase 02 entry deliverable per shard 17 "
-    "DECISION; Phase 01 production code MUST NEVER instantiate or call into "
-    "this module. See specs/foundation-ops.md § 'Infrastructure inventory' "
-    "row 3 for the Phase 02 Foundation-ops dependency."
-)
+from envoy.foundation_ops.hpke import OhttpHpkeKeyConfig, verify_key_config_signatures
 
 
+@dataclass(frozen=True, slots=True)
+class AggregatorEndpoint:
+    """The discovered STAR aggregator gateway + the OHTTP relay it routes through.
+
+    ``relay_handler`` is the relay surface the encapsulated request POSTs to
+    (S10's ``ohttp.relay``); ``aggregator_label`` names the Foundation-operated
+    aggregator registry entry (`specs/foundation-ops.md` registry #5).
+    """
+
+    aggregator_label: str
+    relay_endpoint: str
+
+
+@dataclass(slots=True)
 class HeartbeatRegistryClient:
-    """Placeholder for the Phase 02 Foundation registry-handshake client.
+    """Client-side Foundation registry handshake for the heartbeat path.
 
-    Raises ``PhaseDeferredError`` on any instantiation attempt — this is the
-    intended Phase 01 behavior per shard 17 § 7.3.
+    Holds the client-pinned Foundation steward public keys + the cached
+    revocation list (the trust anchor — the transport is untrusted). The
+    ``key_manager`` is a kailash ``InMemoryKeyManager`` (or any object exposing
+    the async ``verify`` surface) used to check the Ed25519 steward signatures.
     """
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise PhaseDeferredError(_PHASE_DEFERRED_MSG)
+    pinned_steward_pubkeys: list[str] = field(default_factory=list)
+    revocation_list: list[str] = field(default_factory=list)
+    key_manager: object | None = None
+    steward_threshold: int = 2
 
+    def fetch_aggregator_endpoint(
+        self, *, aggregator_label: str, relay_endpoint: str
+    ) -> AggregatorEndpoint:
+        """Discover the STAR aggregator gateway + its OHTTP relay endpoint.
 
-def fetch_aggregator_endpoint(*_args: object, **_kwargs: object) -> None:
-    """Placeholder for the Phase 02 STAR/Prio aggregator endpoint discovery.
+        The Foundation publishes the aggregator registry (`foundation-ops.md`
+        registry #5); the client resolves the labelled aggregator to the relay
+        endpoint it POSTs encapsulated requests to. Returns a frozen
+        :class:`AggregatorEndpoint`.
 
-    Raises ``PhaseDeferredError`` on call.
-    """
-    raise PhaseDeferredError(_PHASE_DEFERRED_MSG)
+        Raises:
+            ValueError: an empty label or endpoint (a degenerate handshake the
+                client must not proceed past).
+        """
+        if not aggregator_label:
+            raise ValueError("aggregator_label is empty; cannot resolve the STAR aggregator")
+        if not relay_endpoint:
+            raise ValueError("relay_endpoint is empty; cannot route the encapsulated request")
+        return AggregatorEndpoint(
+            aggregator_label=aggregator_label, relay_endpoint=relay_endpoint
+        )
 
+    async def verify_operator_signature(self, config: OhttpHpkeKeyConfig) -> bool:
+        """Verify the 2-of-N steward operator signature over the key config.
 
-def verify_operator_signature(*_args: object, **_kwargs: object) -> None:
-    """Placeholder for the Phase 02 operator-signed configuration verifier.
+        Delegates to the SHARED ``verify_key_config_signatures`` primitive
+        (which itself routes through ``verify_steward_quorum``). Returns True
+        only when ``>= steward_threshold`` distinct pinned, non-revoked stewards
+        validly signed the canonical config bytes; raises
+        ``KeyConfigSignatureError`` otherwise (never fails open).
 
-    Raises ``PhaseDeferredError`` on call.
-    """
-    raise PhaseDeferredError(_PHASE_DEFERRED_MSG)
+        Raises:
+            ValueError: no ``key_manager`` was supplied (the client cannot
+                verify Ed25519 signatures without one — fail-closed, not a
+                silent "trust the transport").
+        """
+        if self.key_manager is None:
+            raise ValueError(
+                "HeartbeatRegistryClient has no key_manager; cannot verify the "
+                "operator signature — refusing to trust an unverified key config"
+            )
+        return await verify_key_config_signatures(
+            config,
+            threshold=self.steward_threshold,
+            pinned_pubkeys=self.pinned_steward_pubkeys,
+            revocation_list=self.revocation_list,
+            key_manager=self.key_manager,
+        )
 
 
 __all__ = [
+    "AggregatorEndpoint",
     "HeartbeatRegistryClient",
-    "fetch_aggregator_endpoint",
-    "verify_operator_signature",
 ]

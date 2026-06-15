@@ -146,60 +146,78 @@ class TestR2H02StubPartition:
 
 
 class TestR2H02DeferredModulesRaise:
-    """The four ``PhaseDeferredError`` modules — Phase 01 MUST NEVER call."""
+    """The LONE remaining deferred module — ``signed_consent`` (S12).
 
-    @pytest.mark.parametrize(
-        "module,class_name",
-        [
-            (hb_star_prio, "StarPrioClient"),
-            (hb_ohttp, "OhttpClient"),
-            (hb_signed_consent, "SignedConsentRecorder"),
-            (hb_registry, "HeartbeatRegistryClient"),
-        ],
-    )
-    def test_deferred_class_constructor_raises(self, module: object, class_name: str) -> None:
-        """Each deferred class raises ``PhaseDeferredError`` on instantiation."""
-        cls = getattr(module, class_name)
+    Post-S11, ``star_prio`` / ``ohttp`` / ``registry`` are REAL production
+    modules (green-by-implementation per EC-S11.7). Only ``signed_consent``
+    still raises ``PhaseDeferredError`` until S12 fills the Grant Moment +
+    cascade-revoke. This partition-shape assertion narrows to the one remaining
+    Category-B module.
+    """
+
+    def test_signed_consent_constructor_raises(self) -> None:
+        """``SignedConsentRecorder`` raises ``PhaseDeferredError`` until S12."""
         with pytest.raises(PhaseDeferredError):
-            cls()
+            hb_signed_consent.SignedConsentRecorder()
 
     @pytest.mark.parametrize(
-        "module,helper_name",
-        [
-            (hb_star_prio, "split_into_shares"),
-            (hb_star_prio, "check_client_side_k_anonymity"),
-            (hb_ohttp, "fetch_key_configuration"),
-            (hb_ohttp, "encapsulate_request"),
-            (hb_signed_consent, "record_grant_moment"),
-            (hb_signed_consent, "record_cascade_revoke"),
-            (hb_registry, "fetch_aggregator_endpoint"),
-            (hb_registry, "verify_operator_signature"),
-        ],
+        "helper_name",
+        ["record_grant_moment", "record_cascade_revoke"],
     )
-    def test_deferred_module_helper_raises(self, module: object, helper_name: str) -> None:
-        """Module-level helpers on each deferred module raise ``PhaseDeferredError``."""
-        helper = getattr(module, helper_name)
+    def test_signed_consent_helper_raises(self, helper_name: str) -> None:
+        """``signed_consent`` module-level helpers raise ``PhaseDeferredError``."""
+        helper = getattr(hb_signed_consent, helper_name)
         with pytest.raises(PhaseDeferredError):
             helper()
+
+
+class TestR2H02ImplementedModulesReal:
+    """S11 flipped star_prio / ohttp / registry green-by-implementation (EC-S11.7).
+
+    The three modules are now REAL — instantiating / calling them MUST NOT raise
+    ``PhaseDeferredError``. This is the green-by-implementation half of the
+    partition: the deferred-error contract held in Phase 01; S11 replaced the
+    raise sites with the real STAR/OHTTP/registry client crypto.
+    """
+
+    def test_star_prio_client_constructs(self) -> None:
+        client = hb_star_prio.StarPrioClient(submitter_id="install-real")
+        assert client.submitter_id == "install-real"
+
+    def test_ohttp_client_constructs(self) -> None:
+        assert hb_ohttp.OhttpClient() is not None
+
+    def test_registry_client_constructs(self) -> None:
+        assert hb_registry.HeartbeatRegistryClient() is not None
+
+    def test_star_prio_helpers_do_not_raise_phase_deferred(self) -> None:
+        # check_client_side_k_anonymity is a pure predicate — returns a bool.
+        assert hb_star_prio.check_client_side_k_anonymity(100) is True
+
+    def test_registry_helper_does_not_raise_phase_deferred(self) -> None:
+        endpoint = hb_registry.HeartbeatRegistryClient().fetch_aggregator_endpoint(
+            aggregator_label="star-aggregator", relay_endpoint="ohttp.relay"
+        )
+        assert endpoint.aggregator_label == "star-aggregator"
 
 
 class TestR2H02RegressionGrep:
     """Structural defense per ``rules/orphan-detection.md`` Rule 4a.
 
-    Phase 01 production code (anything under ``envoy/`` that is NOT a test)
-    MUST NOT import any of the four ``PhaseDeferredError`` modules. The
-    grep is the mechanical defense — when Phase 02 entry replaces the
-    raise sites, this test continues to pass (the import surface is
-    deferred-module-name-stable). When a premature Phase 01 caller lands,
-    this test fails with the exact file path and line.
+    Production code (anything under ``envoy/`` that is NOT a test) MUST NOT
+    import the LONE remaining ``PhaseDeferredError`` module — ``signed_consent``
+    (deferred to S12). Post-S11, ``star_prio`` / ``ohttp`` / ``registry`` are
+    REAL production modules the heartbeat client legitimately imports, so they
+    are NO LONGER in the deferred-import ban (EC-S11.7 green-by-implementation).
+    When S12 lands ``signed_consent``, this grep flips green for it too; a
+    premature caller before then fails with the exact file path.
     """
 
-    def test_no_production_imports_of_deferred_modules(self) -> None:
-        """Grep ``envoy/`` for any non-test import of the 4 deferred modules.
+    def test_no_production_imports_of_signed_consent(self) -> None:
+        """Grep ``envoy/`` for any non-test import of ``signed_consent``.
 
-        Asserts the regression-grep output is empty. Uses
-        ``subprocess.run`` against ``grep -rln`` per the test brief —
-        identical to the grep an operator would run manually.
+        Asserts the regression-grep output is empty. Uses ``subprocess.run``
+        against ``grep -rln`` — identical to the grep an operator would run.
         """
         envoy_dir = _REPO_ROOT / "envoy"
         assert envoy_dir.is_dir(), (
@@ -208,15 +226,12 @@ class TestR2H02RegressionGrep:
         )
 
         # Equivalent to:
-        # grep -rln "from envoy.heartbeat.(star_prio|ohttp|signed_consent|
-        #            registry)\|import envoy.heartbeat.(star_prio|ohttp|
-        #            signed_consent|registry)" envoy/ | grep -v __pycache__
-        # but executed via subprocess so the test's evidence matches what
-        # an operator would run by hand.
+        # grep -rln "from envoy.heartbeat.signed_consent\|
+        #            import envoy.heartbeat.signed_consent" envoy/ | grep -v __pycache__
         pattern = (
-            r"from envoy\.heartbeat\.\(star_prio\|ohttp\|signed_consent\|registry\)"
+            r"from envoy\.heartbeat\.signed_consent"
             r"\|"
-            r"import envoy\.heartbeat\.\(star_prio\|ohttp\|signed_consent\|registry\)"
+            r"import envoy\.heartbeat\.signed_consent"
         )
         result = subprocess.run(
             ["grep", "-rln", pattern, str(envoy_dir)],
@@ -224,18 +239,15 @@ class TestR2H02RegressionGrep:
             text=True,
             check=False,
         )
-        # grep exits 0 with output when matches found, 1 when no matches,
-        # 2+ on error. Per Rule 4a, ANY non-test match is a violation; the
-        # only acceptable outcome is exit 1 with empty stdout.
         matches = [
             line
             for line in result.stdout.splitlines()
             if line.strip() and "__pycache__" not in line
         ]
         assert matches == [], (
-            "Phase 01 production code imports a Phase-02-deferred "
-            "heartbeat module — see shard 17 § 7.3 and orphan-detection "
-            f"Rule 4a. Offending lines:\n{result.stdout}"
+            "Production code imports the S12-deferred ``signed_consent`` "
+            "module — see shard 17 § 7.3 and orphan-detection Rule 4a. "
+            f"Offending lines:\n{result.stdout}"
         )
 
 
