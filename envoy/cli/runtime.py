@@ -398,6 +398,10 @@ async def _run_switch(
             genesis_id=genesis_id,
         )
     finally:
+        # The state machine cold-unlocks the vault and does NOT re-lock it
+        # internally; this finally always hands back a LOCKED vault. The unlocked
+        # window is bounded to this single `asyncio.run` and the finally fires on
+        # every path (success or raise).
         await durable.aclose()
         if vault.is_unlocked:
             await vault.lock()

@@ -242,6 +242,11 @@ async def perform_runtime_switch(
     await vault.unlock(passphrase)  # VaultUnlockFailedError on wrong passphrase
 
     # 2. Attest the target BEFORE any record is written (attestation-before-record).
+    #    Attesting `current_family` is also fail-closed (it feeds the T-015
+    #    from_algorithm_identifier): a broken/unattestable CURRENT runtime aborts
+    #    the switch. That is intentional — the re-read checkpoint needs the
+    #    current algorithm_identifier — but it means you cannot switch AWAY from a
+    #    runtime that can no longer be constructed; reinstall is the recovery path.
     target_attestation = attest(target_family)
     current_attestation = attest(current_family)
 
@@ -280,7 +285,13 @@ async def perform_runtime_switch(
         entry_type=RUNTIME_SWITCH_ENTRY_TYPE, content=content
     )
 
-    # 5. Flip the durable default to the attested target.
+    # 6. Flip the durable default to the attested target. This is intentionally
+    #    the LAST step and is NOT transactional with the ledger writes above: the
+    #    ledger is append-only audit, so recording the attestation + switch
+    #    intent is correct even if the flip then fails. A flip failure leaves an
+    #    auditable attestation+switch record with the OLD default still active,
+    #    recoverable by re-running `envoy runtime switch` (the write is
+    #    idempotent on retry).
     choice = write_runtime_choice(
         family=target_family,
         genesis_id=genesis_id,

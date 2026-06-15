@@ -90,6 +90,16 @@ def _resolve_selected_family() -> str:
     per-call factory's). Returns the chosen family when the picker has run, else
     `"kailash-py"` (the safe pre-picker production default). A malformed config
     propagates `RuntimeChoiceCorruptError` (loud, never a silent fallback).
+
+    Security invariant (do NOT widen without adding verification): the unsigned
+    read is safe ONLY because the `runtime_family` field is allowlist-bound
+    (`from_wire` rejects any value outside `KNOWN_FAMILIES`) AND
+    `kailash-rs-bindings` is independently re-gated below by
+    `RS_BINDINGS_ENABLED`. A tampered config therefore cannot force an
+    un-conformance-green runtime; the worst a local attacker (who already owns
+    `~/.envoy`) achieves is flipping the family back to `kailash-py`, which
+    `envoy runtime show`'s signature check + attestation-at-startup surface. Any
+    field added here that carries real authority MUST be signature-verified.
     """
     choice = read_runtime_choice()
     if choice is None:

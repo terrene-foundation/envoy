@@ -106,6 +106,33 @@ async def test_write_runtime_choice_writes_signed_config(choice_path: Path) -> N
     }
 
 
+async def test_write_does_not_follow_symlink_at_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pre-planted symlink at the config path MUST NOT redirect the write to an
+    # attacker sink — the atomic temp+os.replace defeats the symlink (it is
+    # replaced by the real file, not followed). Mirrors the F53 witness-write
+    # symlink-defense regression.
+    target = tmp_path / "runtime-choice.json"
+    sink = tmp_path / "attacker-sink.json"
+    sink.write_text("ATTACKER-OWNED — MUST NOT BE OVERWRITTEN\n")
+    target.symlink_to(sink)
+    monkeypatch.setenv("ENVOY_RUNTIME_CHOICE_PATH", str(target))
+
+    km = await _key_manager()
+    write_runtime_choice(
+        family="kailash-py",
+        genesis_id=_GENESIS_ID,
+        key_manager=km,
+        signing_key_id=_SIGNING_KEY_ID,
+    )
+    # The symlink was replaced by a real regular file carrying the choice...
+    assert not target.is_symlink()
+    assert read_runtime_choice() is not None
+    # ...and the attacker sink was never written through.
+    assert sink.read_text() == "ATTACKER-OWNED — MUST NOT BE OVERWRITTEN\n"
+
+
 async def test_written_config_is_0600(choice_path: Path) -> None:
     km = await _key_manager()
     write_runtime_choice(

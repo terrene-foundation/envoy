@@ -48,6 +48,7 @@ no code change here.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -355,21 +356,36 @@ def _format_canonical_now(now: datetime | None) -> str:
 
 
 def _write_json_0600(path: Path, payload: dict[str, Any]) -> None:
-    """Write `payload` as pretty JSON with 0o600 perms, creating the parent dir.
+    """Write `payload` as 0o600 JSON atomically (temp + `os.replace`).
 
-    Mirrors `envoy/boundary_conversation/init_runtime.py:_emit_trust_anchor`:
-    create with restrictive perms BEFORE writing content so a world-readable
-    window never opens, then re-chmod in case a permissive umask widened it.
+    Hardened to the vault/trust-anchor sibling-writer standard
+    (`envoy/trust/vault.py` atomic write; F53 witness-write): the temp file is
+    opened with `O_NOFOLLOW` (a pre-planted symlink at the temp path raises
+    `ELOOP` rather than redirecting the write to an attacker sink; degrades to
+    plain semantics on platforms without `O_NOFOLLOW`, e.g. Windows), created
+    0o600 BEFORE any content so no world-readable window opens, fsync'd, then
+    atomically `os.replace`'d onto the target — so a crash mid-write never
+    truncates the durable signed config (it stays the prior file or becomes the
+    new one, never a partial). `os.replace` onto a symlinked target replaces the
+    link with the real file, defeating a symlink-redirect at the target too.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(tmp), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, sort_keys=True)
             fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(str(tmp), 0o600)  # defeat a permissive umask widening the mode
+        os.replace(str(tmp), str(path))
     except BaseException:
+        # Never leave a partial temp file behind on any failure.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(str(tmp))
         raise
-    os.chmod(str(path), 0o600)
 
 
 __all__ = [

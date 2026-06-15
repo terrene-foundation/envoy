@@ -337,7 +337,15 @@ def _head_commitment_dict(
     carries the head-signing runtime's RuntimeAttestation (S3t) — the real
     5-field identity + binary_hash when the ledger was opened with runtime
     context, else `{}` (a runtime-agnostic open). This is a VALUE change, not a
-    shape change: the `runtime_attestation` key already existed."""
+    shape change: the `runtime_attestation` key already existed.
+
+    Integrity note: `runtime_attestation` is protected by the bundle's
+    `receipt_hash` (verifier invariant 8 — `compute_receipt_hash` covers this
+    nested field via `to_dict_minus_receipt()`), NOT by the head Ed25519
+    `signature_hex` (invariant 7), which signs only
+    `{head_sequence, head_entry_id, signed_at}`. A future maintainer MUST NOT
+    assume the head signature attests the runtime — whole-bundle tamper is
+    caught by the receipt-hash recomputation, not the head-signature check."""
     return {
         "head_sequence": head.head_sequence,
         "head_entry_id": head.head_entry_id,
