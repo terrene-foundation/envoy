@@ -59,7 +59,7 @@ def test_runtime_registered_on_root_group() -> None:
 
 def test_runtime_has_show_and_switch() -> None:
     sub = cli.commands["runtime"].commands  # type: ignore[attr-defined]
-    assert set(sub) == {"show", "switch"}
+    assert set(sub) == {"show", "switch", "attest"}
 
 
 def test_show_no_config_reports_default(runtime_env: dict[str, Path]) -> None:
@@ -79,6 +79,7 @@ def test_switch_happy_path_flips_default(runtime_env: dict[str, Path]) -> None:
     assert result.exit_code == 0, result.output
     # Confirm copy — transparent disclosure of exactly what changed.
     assert "Runtime switched: kailash-py → kailash-py" in result.output
+    assert "Attestation entry:" in result.output
     assert "Ledger entry:" in result.output
     assert "Active runtime is now kailash-py." in result.output
     # The durable default was written.
@@ -124,6 +125,28 @@ def test_show_with_principal_under_memory_keyring_is_honest(
     assert "could not be verified" in show.output
     assert "TAMPERED" not in show.output
     assert "✓ verified" not in show.output
+
+
+def test_attest_reports_real_binary_hash(runtime_env: dict[str, Path]) -> None:
+    # `envoy runtime attest` computes the real binary hash, writes a signed
+    # RuntimeAttestation entry, and honestly states the manifest verdict is not
+    # yet available (S16).
+    result = CliRunner().invoke(cli, ["runtime", "attest"])
+    assert result.exit_code == 0, result.output
+    assert "Runtime attested: kailash-py" in result.output
+    assert "Binary hash: sha256:" in result.output
+    assert "Attestation entry:" in result.output
+    assert "Manifest verification: not available" in result.output
+    assert "S16" in result.output
+
+
+def test_attest_no_principal_exits_20(
+    runtime_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ENVOY_PRINCIPAL_ID", raising=False)
+    result = CliRunner().invoke(cli, ["runtime", "attest"])
+    assert result.exit_code == 20, result.output
+    assert "no principal" in result.output
 
 
 def test_switch_no_vault_exits_50(runtime_env: dict[str, Path]) -> None:

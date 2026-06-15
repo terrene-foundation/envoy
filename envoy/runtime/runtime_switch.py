@@ -61,6 +61,10 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from envoy.ledger.canonical import canonical_dumps
+from envoy.runtime.runtime_attestation import (
+    AttestedRuntimeIdentity,
+    append_runtime_attestation,
+)
 from envoy.runtime.runtime_picker import (
     KNOWN_FAMILIES,
     RuntimeChoice,
@@ -117,6 +121,7 @@ class RuntimeSwitchResult:
     target_attestation_hash: str
     re_read_checkpoint_result: dict[str, Any]
     runtime_switch_entry_id: str
+    runtime_attestation_entry_id: str
     runtime_choice: RuntimeChoice
 
 
@@ -240,7 +245,19 @@ async def perform_runtime_switch(
     target_attestation = attest(target_family)
     current_attestation = attest(current_family)
 
-    # 3. T-015 re-read checkpoint — algorithm_identifier transition.
+    # 3. Emit the target's RuntimeAttestation entry BEFORE the switch record —
+    #    the "every runtime_switch, before the switch record" moment
+    #    (specs/runtime-abstraction.md § Runtime attestation). Signed by the
+    #    device key via the ledger's per-entry signing.
+    attestation_entry_id = await append_runtime_attestation(
+        ledger,
+        AttestedRuntimeIdentity.from_identity_dict(
+            target_attestation.runtime_identity
+        ),
+        now=now,
+    )
+
+    # 4. T-015 re-read checkpoint — algorithm_identifier transition.
     re_read_checkpoint_result: dict[str, Any] = {
         "from_algorithm_identifier": current_attestation.algorithm_identifier,
         "to_algorithm_identifier": target_attestation.algorithm_identifier,
@@ -250,11 +267,12 @@ async def perform_runtime_switch(
         ),
     }
 
-    # 4. Genesis-signed runtime_switch entry (device-key signed by the ledger).
+    # 5. Genesis-signed runtime_switch entry (device-key signed by the ledger).
     content: dict[str, Any] = {
         "from_family": current_family,
         "to_family": target_family,
         "target_attestation_hash": target_attestation.attestation_hash,
+        "runtime_attestation_entry_id": attestation_entry_id,
         "re_read_checkpoint_result": re_read_checkpoint_result,
         "signed_by": _SIGNED_BY_RUNTIME_DEVICE_KEY,
     }
@@ -287,6 +305,7 @@ async def perform_runtime_switch(
         target_attestation_hash=target_attestation.attestation_hash,
         re_read_checkpoint_result=re_read_checkpoint_result,
         runtime_switch_entry_id=entry_id,
+        runtime_attestation_entry_id=attestation_entry_id,
         runtime_choice=choice,
     )
 

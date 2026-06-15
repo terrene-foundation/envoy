@@ -35,6 +35,7 @@ from envoy.ledger.keystore import (
     load_or_create_ledger_key_manager,
     principal_genesis_id,
 )
+from envoy.runtime.runtime_attestation import RUNTIME_ATTESTATION_ENTRY_TYPE
 from envoy.runtime.runtime_picker import read_runtime_choice
 from envoy.runtime.runtime_switch import (
     RUNTIME_SWITCH_ENTRY_TYPE,
@@ -134,10 +135,28 @@ async def test_switch_writes_signed_entry_and_flips_config(
         assert content["signed_by"] == "runtime_device_key"
         assert "re_read_checkpoint_result" in content
         assert content["target_attestation_hash"] == result.target_attestation_hash
+        assert (
+            content["runtime_attestation_entry_id"]
+            == result.runtime_attestation_entry_id
+        )
 
-        # The chain still verifies (the entry is Ed25519-signed by the device key).
+        # Moment 2: a RuntimeAttestation entry was emitted BEFORE the switch
+        # record (attestation-before-record), pinning the target's real binary
+        # hash; its sequence precedes the runtime_switch entry's sequence.
+        attest_entries = await stack.durable.ledger.query(
+            filter={"event_type": RUNTIME_ATTESTATION_ENTRY_TYPE},
+            since=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            until=datetime(2100, 1, 1, tzinfo=timezone.utc),
+        )
+        assert len(attest_entries) == 1
+        assert attest_entries[0].content["runtime_identity"]["binary_hash"].startswith(
+            "sha256:"
+        )
+        assert attest_entries[0].sequence < entries[0].sequence
+
+        # The chain still verifies (the entries are Ed25519-signed by the device key).
         report = await stack.durable.ledger.verify_chain()
-        assert report.entries_verified >= 1
+        assert report.entries_verified >= 2
 
         # The durable default flipped to the attested target.
         choice = read_runtime_choice()
@@ -171,7 +190,13 @@ async def test_switch_records_re_read_checkpoint_on_algorithm_change(
             runtime_family=family,
             attestation_hash=f"sha256:fake-{family}",
             algorithm_identifier=algo,
-            runtime_identity={"runtime_family": family, "algorithm_identifier": algo},
+            runtime_identity={
+                "runtime_family": family,
+                "version": "test-runtime/0.1",
+                "binary_hash": f"sha256:fake-{family}",
+                "device_bound_pubkey_hex": None,
+                "algorithm_identifier": algo,
+            },
         )
 
     stack = await _build_stack(tmp_path)

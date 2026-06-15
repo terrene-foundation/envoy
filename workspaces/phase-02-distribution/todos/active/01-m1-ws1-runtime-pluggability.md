@@ -138,6 +138,26 @@
   - `envoy runtime attest` runs the on-demand attestation and reports binary_hash vs manifest verdict.
 - **Capacity check:** invariants ≈ 5 (attestation at 3 moments, binary_hash-vs-manifest, fail-closed-on-mismatch, attestation-before-record ordering, T-015 re-read forcing); call-graph hops ≈ 3 (switch → attest → manifest/mirror → ledger); LOC ≈ 350. Live loop (testable via fixture-poisoned binary). **Within budget.**
 
+**Status: ✅ ATTESTATION CORE COMPLETE** (2026-06-15, `feat/s3p-runtime-picker`). The manifest-verification GATE is a value-anchored S16 follow-up (below — depends on unbuilt release-gated WS-2 distribution infra).
+
+### Verification (S3t)
+
+- **Dependency discovery (empirical, per Traps):** the headline T-060 gate ("poisoned target — binary_hash ≠ manifest — REFUSES the switch") + the `RevokedSigningKeyError` revocation check depend on the reproducible-build **manifest** + **N=3 mirror** + revocation-list infrastructure produced by **S16** (WS-2 distribution, `specs/distribution.md` §27/§39/§94-97), which is **unbuilt and release-gated** (M6 0/4 shards). No manifest/mirror/revocation code exists in-repo. Building manifest-verification against a non-existent manifest would be a stub (`zero-tolerance.md` Rule 2); a TOFU-pin substitute is a weaker, spec-deviating defense. User-approved scope split (2026-06-15): build the attestation core now, defer the verification gate to S16.
+- **Delivered (buildable now, real, tested):**
+  - Real `binary_hash` — sha256 of the installed `kailash` package bytes (`runtime_attestation.compute_runtime_binary_hash`, cached), replacing the Phase-01 sentinel in both adapters' `runtime_identity()`.
+  - `RuntimeAttestation` entry emitted at all **3 moments**: startup (when a ledger is wired), runtime_switch (before the switch record — attestation-before-record), on-demand `envoy runtime attest`. Centralized via `runtime_attestation.append_runtime_attestation`.
+  - **Spec-gap-1 resolved**: the 5-field `AttestedRuntimeIdentity` (attestation) is distinct from the 3-field `head.RuntimeIdentity` (halt record); documented + tested.
+  - Export bundle's `head_commitment.runtime_attestation` populated (was `{}`) via `envoy ledger export` (threaded optional `runtime_attestation` through facade/export/bootstrap; receipt-hash invariant preserved).
+  - Switch fails closed when attestation cannot be COMPUTED (the seam S16's manifest-mismatch refusal extends).
+  - T-015 re-read checkpoint records the algorithm_identifier transition (from S3p Wire).
+  - Tests: `tier1/test_runtime_attestation.py` (10), `tier2/test_runtime_attestation_wiring.py` (startup + export), switch + CLI extensions. User-flow walk receipts: `envoy runtime attest` reports real binary_hash + honest S16-deferred manifest verdict; `envoy ledger export` carries populated runtime_attestation.
+
+### S3t-manifest-gate (DEFERRED → S16)
+
+- **Value-anchor:** `briefs/00-phase-02-scope.md` §WS-1 "Phase-02 threat gates: T-060 runtime-binary-poisoning" — the security receipt that makes the picker trustworthy: a poisoned Rust binary can never become the active runtime. Without it, the switch records attestation but does not REFUSE a manifest-mismatched binary.
+- **Scope:** verify the target's `binary_hash` against the Foundation reproducible-build manifest with N=3 mirror cross-check (`distribution.md:33`); a hash mismatch (`MirrorSignatureMismatchError`/`ReproducibleBuildFailedError`) or revoked key (`RevokedSigningKeyError`) REFUSES the switch fail-closed (T-060). Extends the existing attestation-failure seam in `runtime_switch.perform_runtime_switch`.
+- **Depends:** **S16** (manifest production + N=3 mirror fetch + revocation list — all unbuilt, release-gated). Re-validate this value-anchor when S16 lands (`value-prioritization.md` MUST-3).
+
 ---
 
 ## Milestone capacity + sequencing summary

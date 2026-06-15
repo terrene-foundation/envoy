@@ -167,6 +167,7 @@ class EnvoyLedger:
         algorithm_identifier: dict[str, str],
         tenant_id: str | None = None,
         classification_policy: Any = None,
+        runtime_attestation: dict[str, Any] | None = None,
     ) -> None:
         if not signing_key_id:
             raise ValueError("signing_key_id is required")
@@ -204,6 +205,12 @@ class EnvoyLedger:
         self._algorithm_identifier = dict(algorithm_identifier)
         self._tenant_id = tenant_id
         self._classification_policy = classification_policy
+        # S3t: the head-signing runtime's attestation, surfaced in the export
+        # bundle's head_commitment.runtime_attestation. `{}` when the ledger was
+        # opened without runtime context (a runtime-agnostic open).
+        self._runtime_attestation: dict[str, Any] = (
+            dict(runtime_attestation) if runtime_attestation else {}
+        )
         self._builder = HashChainBuilder()
         # Phase 01 in-memory chain state. Persistence lives in the audit_store;
         # this is the runtime tracking for monotonic guards.
@@ -735,6 +742,7 @@ class EnvoyLedger:
             entries=tuple(dict(e) for e in envoy_envelopes),
             head_commitment=self._head,
             trust_anchor_key_set=(anchor,),
+            runtime_attestation=self._runtime_attestation,
             receipt_hash=placeholder_receipt,
         )
         receipt_hash = compute_receipt_hash(interim_bundle.to_dict_minus_receipt())

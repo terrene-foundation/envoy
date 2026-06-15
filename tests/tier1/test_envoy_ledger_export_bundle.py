@@ -250,6 +250,7 @@ class TestVerifierInvariant2GenesisOrStartSequence:
                 entries=bundle.entries,
                 head_commitment=bundle.head_commitment,
                 trust_anchor_key_set=bundle.trust_anchor_key_set,
+                runtime_attestation=bundle.runtime_attestation,
                 receipt_hash=bundle.receipt_hash,
             )
 
@@ -270,6 +271,7 @@ class TestBundlePostInitValidation:
                 entries=bundle.entries,
                 head_commitment=bundle.head_commitment,
                 trust_anchor_key_set=bundle.trust_anchor_key_set,
+                runtime_attestation=bundle.runtime_attestation,
                 receipt_hash=bundle.receipt_hash,
             )
 
@@ -285,6 +287,7 @@ class TestBundlePostInitValidation:
                 entries=bundle.entries,
                 head_commitment=bundle.head_commitment,
                 trust_anchor_key_set=bundle.trust_anchor_key_set,
+                runtime_attestation=bundle.runtime_attestation,
                 receipt_hash=bundle.receipt_hash,
             )
 
@@ -302,6 +305,7 @@ class TestBundlePostInitValidation:
                 entries=bad,
                 head_commitment=bundle.head_commitment,
                 trust_anchor_key_set=bundle.trust_anchor_key_set,
+                runtime_attestation=bundle.runtime_attestation,
                 receipt_hash=bundle.receipt_hash,
             )
 
@@ -327,6 +331,7 @@ class TestBundlePostInitValidation:
                 entries=bundle.entries,
                 head_commitment=bundle.head_commitment,
                 trust_anchor_key_set=bundle.trust_anchor_key_set,
+                runtime_attestation=bundle.runtime_attestation,
                 receipt_hash=bundle.receipt_hash,
             )
 

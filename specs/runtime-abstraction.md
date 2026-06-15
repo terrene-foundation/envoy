@@ -161,8 +161,8 @@ Inherited from doc 05 v2 / PACT N-vectors. Each vector is a cross-SDK byte-ident
 
 Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Emitted:
 
-- At every `startup()` — attests the runtime's binary hash + device-bound key pubkey + claimed algorithm_identifier matches the expected manifest.
-- At every `runtime_switch` — before the switch record is written, the target runtime is verified via its attestation.
+- At every `startup()` — records the runtime's binary hash + device-bound key pubkey + algorithm_identifier (when a ledger is wired; a no-op for a forwarding-only adapter).
+- At every `runtime_switch` — the target runtime is attested BEFORE the switch record is written (attestation-before-record; the switch refuses fail-closed if attestation cannot be computed).
 - On-demand by `envoy runtime attest` CLI.
 
 ```json
@@ -188,6 +188,26 @@ Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Em
   "signature_hex": "ed25519"
 }
 ```
+
+`binary_hash` is the real sha256 of the installed runtime package bytes
+(`envoy.runtime.runtime_attestation.compute_runtime_binary_hash`, cached per
+process), surfaced by each adapter's `runtime_identity()`. The entry's
+`runtime_identity` is the 5-field `AttestedRuntimeIdentity` — distinct from the
+3-field `envoy.ledger.head.RuntimeIdentity` (`device_id` / `signing_key_id` /
+`algorithm_identifier`) bound into a `HaltedByRollback` record (the two serve
+different purposes; the attestation vector uses the 5-field shape). The entry is
+appended via `runtime_attestation.append_runtime_attestation` at all three
+moments above, and the ledger export bundle's
+`head_commitment.runtime_attestation` carries the active runtime's attestation
+(`envoy ledger export`).
+
+The `binary_hash`-vs-reproducible-build-manifest cross-check with N=3 mirror
+verification + signing-key revocation (the T-060 binary-poisoning REFUSAL gate)
+is the WS-2 distribution responsibility (`specs/distribution.md` § N=3 mirror
+verification + § Security gates per phase "Phase 02: binary hash verification");
+the switch state machine fails closed when attestation cannot be COMPUTED, and
+the manifest-mismatch refusal extends that seam when the distribution
+manifest + mirror surface lands.
 
 ## Envoy-specific conformance E1–E7
 

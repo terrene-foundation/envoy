@@ -50,6 +50,11 @@ from envoy.ledger.keystore import (
     resolve_keyring_backend,
 )
 from envoy.runtime.errors import RsBindingsNotAvailableInPhase01Error
+from envoy.runtime.runtime_attestation import (
+    AttestedRuntimeIdentity,
+    RuntimeAttestationError,
+    append_runtime_attestation,
+)
 from envoy.runtime.runtime_picker import (
     RuntimeChoiceSignatureError,
     presented_default_family,
@@ -61,6 +66,7 @@ from envoy.runtime.runtime_switch import (
     WarmVaultSwitchRefusedError,
     perform_runtime_switch,
 )
+from envoy.runtime.selection import get_runtime
 from envoy.trust.errors import VaultUnlockFailedError
 from envoy.trust.vault import TrustVault
 
@@ -297,8 +303,54 @@ def runtime_switch(
             "  Envelope re-read checkpoint: algorithm identifier unchanged "
             "(no cached envelopes needed re-reading)."
         )
+    click.echo(f"  Attestation entry: {result.runtime_attestation_entry_id}")
     click.echo(f"  Ledger entry: {result.runtime_switch_entry_id}")
     click.echo(f"  Active runtime is now {result.to_family}.")
+
+
+@runtime.command("attest")
+@click.option("--principal", default=None, help="Principal id (or ENVOY_PRINCIPAL_ID).")
+@click.option("--vault", default=None, help="Trust vault path (or ENVOY_VAULT_PATH).")
+def runtime_attest(principal: str | None, vault: str | None) -> None:
+    """Attest the active runtime on demand — compute its real binary hash, write
+    a signed RuntimeAttestation Ledger entry, and report the result.
+
+    The reproducible-build manifest VERIFICATION of the hash (T-060) lands with
+    S16 (release-gated WS-2 distribution); this reports the computed hash and
+    states the manifest verdict is not yet available.
+    """
+    log_extra = {"cli_session_id": _cli_session_id()}
+    logger.info("envoy.runtime.attest.start", extra=log_extra)
+
+    try:
+        pid = _resolve_principal(principal)
+    except click.ClickException as exc:
+        click.echo(f"\n{exc.message}\n", err=True)
+        raise SystemExit(EXIT_NO_PRINCIPAL) from exc
+
+    vault_path = _resolve_vault_path(vault)
+    backend = _resolve_keyring_backend_or_exit(log_extra)
+
+    try:
+        family, binary_hash, entry_id = asyncio.run(
+            _run_attest(principal_id=pid, vault_path=vault_path, backend=backend)
+        )
+    except RuntimeAttestationError as exc:
+        click.echo(
+            f"\nAttestation failed — could not compute the runtime binary hash.\n"
+            f"  ({exc})\n",
+            err=True,
+        )
+        raise SystemExit(EXIT_ATTESTATION_FAILED) from exc
+
+    click.echo(f"Runtime attested: {family}")
+    click.echo(f"  Binary hash: {binary_hash}")
+    click.echo(f"  Attestation entry: {entry_id}")
+    click.echo(
+        "  Manifest verification: not available — comparing this hash against "
+        "the Foundation reproducible-build manifest (N=3 mirrors) lands with "
+        "the WS-2 distribution release (S16)."
+    )
 
 
 async def _run_switch(
@@ -349,6 +401,42 @@ async def _run_switch(
         await durable.aclose()
         if vault.is_unlocked:
             await vault.lock()
+
+
+async def _run_attest(
+    *, principal_id: str, vault_path: Path, backend: Any
+) -> tuple[str, str, str]:
+    """Compute the active runtime's attestation and append a signed
+    RuntimeAttestation entry. Returns (family, binary_hash, entry_id).
+
+    Unlike `switch`, attest does NOT cold-unlock the vault — it only appends a
+    signed attestation entry via the ledger's device key (no runtime change).
+    """
+    current_choice = read_runtime_choice()
+    family = (
+        current_choice.runtime_family if current_choice is not None else "kailash-py"
+    )
+    key_manager = await load_or_create_ledger_key_manager(
+        principal_id=principal_id,
+        signing_key_id=LEDGER_SIGNING_KEY_ID,
+        keyring_backend=backend,
+    )
+    durable = await open_durable_ledger(
+        vault_path=vault_path,
+        key_manager=key_manager,
+        signing_key_id=LEDGER_SIGNING_KEY_ID,
+        device_id=LEDGER_DEVICE_ID,
+        algorithm_identifier=LEDGER_ALGORITHM_IDENTIFIER,
+    )
+    try:
+        runtime_adapter = get_runtime(family=family)
+        identity = runtime_adapter.runtime_identity()
+        entry_id = await append_runtime_attestation(
+            durable.ledger, AttestedRuntimeIdentity.from_identity_dict(identity)
+        )
+        return family, str(identity["binary_hash"]), entry_id
+    finally:
+        await durable.aclose()
 
 
 __all__ = ["runtime"]
