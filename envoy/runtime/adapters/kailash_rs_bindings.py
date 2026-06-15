@@ -206,17 +206,23 @@ class KailashRsBindingsRuntime:
         logger.info("envoy.runtime.kailash_rs_bindings.shutdown", extra={"started": False})
 
     def runtime_identity(self) -> dict[str, Any]:
-        """Return RuntimeIdentity per spec § Lifecycle. The rs adapter reports
-        the platform device-key attestation type it owns; the reproducible-build
-        `binary_hash` is populated from the manifest in S3t (attestation), so
-        S2a reports a grep-able sentinel the S3t shard replaces."""
+        """Return RuntimeIdentity per spec § Lifecycle.
+
+        `binary_hash` is the real sha256 of the installed `kailash` package
+        bytes (S3t — `runtime_attestation.compute_runtime_binary_hash`, cached),
+        replacing the S2a sentinel. Both runtimes ship in the single `kailash`
+        wheel, so they attest the same installed artifact; S16's per-family
+        reproducible-build manifest verification distinguishes them when
+        separate artifacts ship.
+        """
+        from envoy.runtime.runtime_attestation import (  # noqa: PLC0415
+            compute_runtime_binary_hash,
+        )
+
         return {
             "runtime_family": "kailash-rs-bindings",
             "version": self._runtime_version,
-            # binary_hash is populated from the reproducible-build manifest in
-            # S3t (attestation-on-switch). S2a reports a sentinel the conformance
-            # runner can grep; this is the ONE field S3t replaces, not S2a.
-            "binary_hash": "sha256:phase-02-s2a-attestation-pending",
+            "binary_hash": compute_runtime_binary_hash("kailash-rs-bindings"),
             "device_bound_pubkey_hex": self._device_pub_hex,
             "algorithm_identifier": dict(self._algorithm_identifier),
         }

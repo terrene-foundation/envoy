@@ -127,6 +127,24 @@ class KailashPyRuntime:
         """
         self._started = True
         logger.info("envoy.runtime.kailash_py.startup", extra={"started": True})
+        await self._emit_startup_attestation()
+
+    async def _emit_startup_attestation(self) -> None:
+        """S3t: emit a RuntimeAttestation entry at every startup when a ledger
+        is wired (the "every startup()" attestation moment per
+        `specs/runtime-abstraction.md` § Runtime attestation). A no-op when the
+        adapter runs without a ledger (forwarding-only construction)."""
+        if self._envoy_ledger is None:
+            return
+        from envoy.runtime.runtime_attestation import (  # noqa: PLC0415
+            AttestedRuntimeIdentity,
+            append_runtime_attestation,
+        )
+
+        await append_runtime_attestation(
+            self._envoy_ledger,
+            AttestedRuntimeIdentity.from_identity_dict(self.runtime_identity()),
+        )
 
     async def shutdown(self) -> None:
         """Phase 01 narrow: marks the adapter as stopped. Per spec, future
@@ -137,16 +155,23 @@ class KailashPyRuntime:
         logger.info("envoy.runtime.kailash_py.shutdown", extra={"started": False})
 
     def runtime_identity(self) -> dict[str, Any]:
-        """Return RuntimeIdentity per spec § Lifecycle. Phase 01 reports the
-        software-fallback device key path (no Secure Enclave / TPM until
-        Phase 02 Rust bindings)."""
+        """Return RuntimeIdentity per spec § Lifecycle.
+
+        `binary_hash` is the real sha256 of the installed `kailash` package
+        bytes (S3t — `envoy.runtime.runtime_attestation.compute_runtime_binary_hash`,
+        cached per process), replacing the Phase-01 sentinel. The
+        device-attestation type is still `software` (no Secure Enclave / TPM
+        binding until a later phase); the reproducible-build manifest
+        VERIFICATION of this hash lands with S16 (release-gated WS-2).
+        """
+        from envoy.runtime.runtime_attestation import (  # noqa: PLC0415
+            compute_runtime_binary_hash,
+        )
+
         return {
             "runtime_family": "kailash-py",
             "version": self._runtime_version,
-            # binary_hash is the sha256 of the kailash pip wheel; Phase 02
-            # populates this from the reproducible-build manifest. Phase 01
-            # narrow: report a sentinel that the conformance runner can grep.
-            "binary_hash": "sha256:phase-01-software-fallback",
+            "binary_hash": compute_runtime_binary_hash("kailash-py"),
             "device_bound_pubkey_hex": self._device_pub_hex,
             "algorithm_identifier": dict(self._algorithm_identifier),
         }

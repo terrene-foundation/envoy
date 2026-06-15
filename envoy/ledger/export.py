@@ -221,6 +221,7 @@ class ExportBundle:
     entries: tuple[dict[str, Any], ...]
     head_commitment: HeadCommitment
     trust_anchor_key_set: tuple[TrustAnchorKey, ...]
+    runtime_attestation: dict[str, Any]
     receipt_hash: str
 
     def __post_init__(self) -> None:
@@ -306,7 +307,9 @@ class ExportBundle:
             "tenant_id": self.tenant_id,
             "segment_boundaries": [s.to_dict() for s in self.segment_boundaries],
             "entries": [dict(e) for e in self.entries],
-            "head_commitment": _head_commitment_dict(self.head_commitment),
+            "head_commitment": _head_commitment_dict(
+                self.head_commitment, self.runtime_attestation
+            ),
             "trust_anchor_key_set": [k.to_dict() for k in self.trust_anchor_key_set],
         }
 
@@ -327,14 +330,27 @@ def compute_receipt_hash(bundle_minus_receipt: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
 
 
-def _head_commitment_dict(head: HeadCommitment) -> dict[str, Any]:
-    """Bundle-shape head_commitment per spec L57-63. Phase 01 narrow scope:
-    `runtime_attestation: {}` (Phase 02 wires real attestation)."""
+def _head_commitment_dict(
+    head: HeadCommitment, runtime_attestation: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Bundle-shape head_commitment per spec L57-63. `runtime_attestation`
+    carries the head-signing runtime's RuntimeAttestation (S3t) — the real
+    5-field identity + binary_hash when the ledger was opened with runtime
+    context, else `{}` (a runtime-agnostic open). This is a VALUE change, not a
+    shape change: the `runtime_attestation` key already existed.
+
+    Integrity note: `runtime_attestation` is protected by the bundle's
+    `receipt_hash` (verifier invariant 8 — `compute_receipt_hash` covers this
+    nested field via `to_dict_minus_receipt()`), NOT by the head Ed25519
+    `signature_hex` (invariant 7), which signs only
+    `{head_sequence, head_entry_id, signed_at}`. A future maintainer MUST NOT
+    assume the head signature attests the runtime — whole-bundle tamper is
+    caught by the receipt-hash recomputation, not the head-signature check."""
     return {
         "head_sequence": head.head_sequence,
         "head_entry_id": head.head_entry_id,
         "signed_at": head.signed_at,
-        "runtime_attestation": {},
+        "runtime_attestation": dict(runtime_attestation) if runtime_attestation else {},
         "signature_hex": head.signature_hex,
     }
 

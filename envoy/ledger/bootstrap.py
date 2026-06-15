@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kailash.core.pool.sqlite_pool import AsyncSQLitePool, SQLitePoolConfig
 from kailash.trust.audit_store import SqliteAuditStore
@@ -105,6 +105,7 @@ async def open_durable_ledger(
     device_id: str,
     algorithm_identifier: dict[str, str],
     tenant_id: str | None = None,
+    runtime_attestation: dict[str, Any] | None = None,
 ) -> DurableLedger:
     """Construct a file-backed, chain-rehydrated `EnvoyLedger`.
 
@@ -147,6 +148,7 @@ async def open_durable_ledger(
             device_id=device_id,
             algorithm_identifier=algorithm_identifier,
             tenant_id=tenant_id,
+            runtime_attestation=runtime_attestation,
         )
         await ledger.rehydrate()
     except Exception:

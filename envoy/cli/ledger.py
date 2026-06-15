@@ -45,6 +45,9 @@ from envoy.ledger.bootstrap import (
 )
 from envoy.ledger.errors import LedgerError
 from envoy.ledger.keystore import load_or_create_ledger_key_manager
+from envoy.runtime.runtime_attestation import attestation_for_runtime
+from envoy.runtime.runtime_picker import read_runtime_choice
+from envoy.runtime.selection import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -112,12 +115,19 @@ def ledger_export(
         key_manager = await load_or_create_ledger_key_manager(
             principal_id=pid, signing_key_id=LEDGER_SIGNING_KEY_ID
         )
+        # S3t: populate the export bundle's head_commitment.runtime_attestation
+        # with the ACTIVE runtime's real attestation (real binary_hash), so the
+        # exported ledger is self-describing about which runtime produced it.
+        choice = read_runtime_choice()
+        family = choice.runtime_family if choice is not None else "kailash-py"
+        runtime_attestation = attestation_for_runtime(get_runtime(family=family))
         durable = await open_durable_ledger(
             vault_path=vault_path,
             key_manager=key_manager,
             signing_key_id=LEDGER_SIGNING_KEY_ID,
             device_id=LEDGER_DEVICE_ID,
             algorithm_identifier=LEDGER_ALGORITHM_IDENTIFIER,
+            runtime_attestation=runtime_attestation,
         )
         try:
             bundle = await durable.ledger.export()

@@ -161,8 +161,8 @@ Inherited from doc 05 v2 / PACT N-vectors. Each vector is a cross-SDK byte-ident
 
 Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Emitted:
 
-- At every `startup()` — attests the runtime's binary hash + device-bound key pubkey + claimed algorithm_identifier matches the expected manifest.
-- At every `runtime_switch` — before the switch record is written, the target runtime is verified via its attestation.
+- At every `startup()` — records the runtime's binary hash + device-bound key pubkey + algorithm_identifier (when a ledger is wired; a no-op for a forwarding-only adapter).
+- At every `runtime_switch` — the target runtime is attested BEFORE the switch record is written (attestation-before-record; the switch refuses fail-closed if attestation cannot be computed).
 - On-demand by `envoy runtime attest` CLI.
 
 ```json
@@ -189,6 +189,26 @@ Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Em
 }
 ```
 
+`binary_hash` is the real sha256 of the installed runtime package bytes
+(`envoy.runtime.runtime_attestation.compute_runtime_binary_hash`, cached per
+process), surfaced by each adapter's `runtime_identity()`. The entry's
+`runtime_identity` is the 5-field `AttestedRuntimeIdentity` — distinct from the
+3-field `envoy.ledger.head.RuntimeIdentity` (`device_id` / `signing_key_id` /
+`algorithm_identifier`) bound into a `HaltedByRollback` record (the two serve
+different purposes; the attestation vector uses the 5-field shape). The entry is
+appended via `runtime_attestation.append_runtime_attestation` at all three
+moments above, and the ledger export bundle's
+`head_commitment.runtime_attestation` carries the active runtime's attestation
+(`envoy ledger export`).
+
+The `binary_hash`-vs-reproducible-build-manifest cross-check with N=3 mirror
+verification + signing-key revocation (the T-060 binary-poisoning REFUSAL gate)
+is the WS-2 distribution responsibility (`specs/distribution.md` § N=3 mirror
+verification + § Security gates per phase "Phase 02: binary hash verification");
+the switch state machine fails closed when attestation cannot be COMPUTED, and
+the manifest-mismatch refusal extends that seam when the distribution
+manifest + mirror surface lands.
+
 ## Envoy-specific conformance E1–E7
 
 - **E1** Envelope canonical JSON (67 vectors).
@@ -202,6 +222,74 @@ Producer for `RuntimeAttestation` entry type (specs/ledger.md §Entry types). Em
 ## Runtime picker (§8 Phase 02)
 
 First-run picker: kailash-rs-bindings default vs kailash-py opt-in. Switch via `envoy runtime switch` — requires (a) passphrase unlock (not warm), (b) Genesis-signed `runtime_switch` Ledger entry (specs/ledger.md §Entry types; V-05 canonical naming uses lower-snake-case), (c) runtime-attestation verification of target.
+
+### Runtime-choice config (`runtime-choice/1.0`)
+
+The picker writes a durable, Genesis-signed runtime-choice config that
+`envoy.runtime.selection.get_runtime(family=None)` resolves on every call
+(`envoy/runtime/runtime_picker.py`). Default path `~/.envoy/runtime-choice.json`
+(0o600), overridable via `ENVOY_RUNTIME_CHOICE_PATH`.
+
+```json
+{
+  "schema_version": "runtime-choice/1.0",
+  "runtime_family": "kailash-rs-bindings | kailash-py",
+  "chosen_at": "<iso8601 microsecond-padded UTC>",
+  "chosen_by_genesis_id": "<principal_genesis_id — 64-hex>",
+  "signature_hex": "<ed25519 over canonical(payload minus signature_hex)>"
+}
+```
+
+Resolution (`get_runtime(family=None)`): an explicit `family` arg wins; else the
+config's `runtime_family`; else `kailash-py` (the safe pre-picker default when
+the picker has never run). A malformed config raises `RuntimeChoiceCorruptError`
+loud — never a silent fallback. The hot-path read is signature-unverified;
+`envoy runtime show` / switch verify the signature against the Genesis public
+key (`verify_runtime_choice`) and refuse a tampered config fail-closed
+(`RuntimeChoiceSignatureError`).
+
+**Availability gate.** ADR-0001 makes `kailash-rs-bindings` the picker's
+_presented_ default, but the rs adapter is selectable only once the
+byte-identical conformance slice is green on both runtimes
+(`RS_BINDINGS_ENABLED`). While that flag is False, `write_runtime_choice`
+refuses to persist `kailash-rs-bindings` (raises
+`RsBindingsNotAvailableInPhase01Error`) and `presented_default_family()` falls
+back to `kailash-py` — the picker never records a runtime `get_runtime` cannot
+honor.
+
+### `envoy runtime` CLI + the `runtime_switch` Ledger entry
+
+`envoy runtime show` reports the active runtime from the runtime-choice config
+(and, when a principal is resolvable, verifies the config signature — reporting
+`✓ verified`, a `⚠ could-not-verify` ambiguity, or `not checked`, never a fake
+verdict). `envoy runtime switch <target>` runs the state machine
+(`envoy.runtime.runtime_switch.perform_runtime_switch`): cold passphrase unlock
+(a warm vault is re-sealed then unlocked so a real verify runs) → target
+attestation → T-015 re-read checkpoint → Genesis-signed `runtime_switch` Ledger
+entry → flip the durable default → confirm copy. The `runtime_switch` entry is
+written ONLY after the target attests (attestation-before-record).
+
+The `runtime_switch` entry content (`runtime_switch` entry type, lower_snake per
+V-05; device-key signed by the ledger facade):
+
+```json
+{
+  "from_family": "<previous runtime family>",
+  "to_family": "<new runtime family>",
+  "target_attestation_hash": "sha256:<hash of target runtime_identity>",
+  "re_read_checkpoint_result": {
+    "from_algorithm_identifier": {...},
+    "to_algorithm_identifier": {...},
+    "invalidated": true
+  },
+  "signed_by": "runtime_device_key"
+}
+```
+
+`re_read_checkpoint_result.invalidated` is true when the switch crosses an
+`algorithm_identifier` boundary (one of N2's five envelope-cache invalidation
+keys), pinning the evidence that envelopes cached under the old runtime's
+identifier are re-read.
 
 ## Security gates per phase
 

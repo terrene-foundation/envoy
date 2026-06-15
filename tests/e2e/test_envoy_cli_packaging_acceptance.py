@@ -76,8 +76,9 @@ import pytest
 # ``02-plans/01-build-sequence.md`` line 264, which read
 # ``init / up / boundaries / ...`` — ``up`` and ``boundaries`` were never
 # canonical; the onboarding command is ``chat`` (start/resume the Boundary
-# Conversation, shard 8). The spec's "11 subcommands" label is an off-by-one
-# against its own 10-item list; the list membership below is authoritative.
+# Conversation, shard 8). The spec's "11 subcommands" label is reconciled by
+# ``runtime`` (WS-1 S3p runtime pluggability — show/switch), the 11th canonical
+# command; the list membership below is authoritative.
 CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
     "init",
     "chat",
@@ -89,6 +90,7 @@ CANONICAL_SUBCOMMANDS: tuple[str, ...] = (
     "connection",
     "model",
     "version",
+    "runtime",
 )
 
 # Subcommands wired in ``envoy/cli/main.py``:
@@ -116,6 +118,7 @@ REGISTERED_AS_OF_F5: frozenset[str] = frozenset(
         "init",
         "grant",
         "chat",
+        "runtime",
     }
 )
 
